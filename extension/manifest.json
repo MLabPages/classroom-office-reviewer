@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Classroom Office Reviewer",
+  "description": "Google Classroom の Word／PowerPoint 提出物を Office 本体で正確に表示し、全画面発表にも対応します。",
+  "version": "0.5.1",
+  "permissions": [
+    "downloads",
+    "storage",
+    "tabs",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "https://classroom.google.com/*",
+    "https://drive.google.com/*",
+    "https://drive.usercontent.google.com/*",
+    "https://docs.google.com/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Classroom Office Reviewer"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://classroom.google.com/*",
+        "https://drive.google.com/*",
+        "https://docs.google.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["viewer.html", "viewer.js", "vendor/pdf.mjs", "vendor/pdf.worker.mjs"],
+      "matches": ["https://classroom.google.com/*"]
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+name: 不具合報告
+description: Classroom Office Reviewerの不具合を報告します
+title: "[不具合] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        学生の氏名・学籍番号・提出物・Classroom URL・アクセストークンは記載／添付しないでください。
+  - type: input
+    id: version
+    attributes:
+      label: バージョン
+      placeholder: 例 0.5.1
+    validations:
+      required: true
+  - type: dropdown
+    id: filetype
+    attributes:
+      label: ファイル形式
+      options:
+        - Word (.docx / .doc)
+        - PowerPoint (.pptx / .ppt)
+        - その他
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 起きたことと再現手順
+      description: 個人情報を除いて記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 環境
+      placeholder: WindowsとChrome、Officeのバージョン
