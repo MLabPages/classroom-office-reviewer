@@ -1,0 +1,40 @@
+name: Build Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Build portable ZIP
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD "dist/Classroom-Office-Reviewer"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item extension, native -Destination $stage -Recurse
+          Copy-Item Start-Reviewer.cmd, Stop-Reviewer.cmd, Open-Chrome-Setup.cmd, README.md, PRIVACY.md, LICENSE, THIRD_PARTY_NOTICES.md -Destination $stage
+          $runtime = Join-Path $stage "runtime"
+          New-Item -ItemType Directory -Path $runtime -Force | Out-Null
+          Copy-Item (Get-Command node.exe).Source -Destination (Join-Path $runtime "node.exe")
+          Invoke-WebRequest "https://raw.githubusercontent.com/nodejs/node/v24.x/LICENSE" -OutFile (Join-Path $runtime "NODE-LICENSE.txt")
+          Compress-Archive -Path "$stage/*" -DestinationPath "dist/Classroom-Office-Reviewer-Windows.zip" -CompressionLevel Optimal
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Classroom-Office-Reviewer-Windows.zip
+          generate_release_notes: true

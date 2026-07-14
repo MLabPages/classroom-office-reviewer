@@ -1,0 +1,2 @@
+extension/vendor/pdf.mjs whitespace=-blank-at-eol
+extension/vendor/pdf.worker.mjs whitespace=-blank-at-eol
