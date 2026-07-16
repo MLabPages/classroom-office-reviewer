@@ -19,7 +19,7 @@ const powerPointConverterPath = path.join(nativeDir, "Convert-PowerPoint.ps1");
 const wordWindowHostPath = path.join(nativeDir, "Word-Window-Host.ps1");
 const powerPointWindowHostPath = path.join(nativeDir, "PowerPoint-Window-Host.ps1");
 const host = "127.0.0.1";
-const port = 8765;
+const port = 18765;
 const cacheMaximumAgeMs = 8 * 60 * 60 * 1000;
 const cacheMaximumPdfs = 30;
 let queue = Promise.resolve();
@@ -455,7 +455,7 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url || "/", `http://${host}:${port}`);
   if (req.method === "GET" && url.pathname === "/health") {
-    sendJson(res, 200, { ok: true, service: "Classroom Office Reviewer", version: "0.5.1", cacheHours: 8, cacheLimit: 30 });
+    sendJson(res, 200, { ok: true, service: "Classroom Office Reviewer", version: "0.5.2", cacheHours: 8, cacheLimit: 30 });
     return;
   }
   if (req.method === "GET" && url.pathname.startsWith("/file/")) {

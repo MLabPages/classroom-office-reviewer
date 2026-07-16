@@ -5,11 +5,12 @@ $logsDir = Join-Path $rootDir 'logs'
 $serverPath = Join-Path $nativeDir 'server.mjs'
 $stdoutPath = Join-Path $logsDir 'reviewer.log'
 $stderrPath = Join-Path $logsDir 'reviewer-error.log'
+$healthUri = 'http://127.0.0.1:18765/health'
 
 New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
 
 try {
-    $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/health' -TimeoutSec 1
+    $health = Invoke-RestMethod -Uri $healthUri -TimeoutSec 1
     if ($health.ok) {
         Write-Host 'Classroom Office Reviewer はすでに起動しています。' -ForegroundColor Green
         exit 0
@@ -33,7 +34,7 @@ $process = Start-Process -FilePath $node `
 for ($attempt = 0; $attempt -lt 30; $attempt++) {
     Start-Sleep -Milliseconds 200
     try {
-        $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8765/health' -TimeoutSec 1
+        $health = Invoke-RestMethod -Uri $healthUri -TimeoutSec 1
         if ($health.ok) {
             Write-Host 'Classroom Office Reviewer を起動しました。Chrome の Classroom で使用できます。' -ForegroundColor Green
             exit 0
