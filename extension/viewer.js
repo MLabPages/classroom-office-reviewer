@@ -165,7 +165,7 @@ window.addEventListener("resize", () => {
 
 (async () => {
   try {
-    if (!pdfUrl.startsWith("http://127.0.0.1:8765/file/")) {
+    if (!pdfUrl.startsWith("http://127.0.0.1:18765/file/")) {
       throw new Error("表示先が正しくありません。");
     }
     const response = await fetch(pdfUrl, { cache: "no-store" });
