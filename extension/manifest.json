@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Classroom Office Reviewer",
   "description": "Google Classroom の Word／PowerPoint 提出物を Office 本体で正確に表示し、全画面発表にも対応します。",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "permissions": [
     "downloads",
     "storage",
