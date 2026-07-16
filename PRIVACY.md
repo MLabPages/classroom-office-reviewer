@@ -13,7 +13,7 @@ Classroom Office Reviewerは、Google Classroom上のWord／PowerPoint提出物�
 ## 通信先
 
 - `classroom.google.com`、`drive.google.com`、`docs.google.com`: 利用者がログインしているGoogle Classroom／Driveから提出物を取得するため
-- `127.0.0.1:8765`: Chrome拡張と、このPC内で動く補助アプリが通信するため。インターネット上のサーバーではありません
+- `127.0.0.1:18765`: Chrome拡張と、このPC内で動く補助アプリが通信するため。インターネット上のサーバーではありません
 
 ## PC内に一時保存するもの
 

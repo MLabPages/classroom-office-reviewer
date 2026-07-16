@@ -1,4 +1,4 @@
-const HELPER_BASE = "http://127.0.0.1:8765";
+const HELPER_BASE = "http://127.0.0.1:18765";
 const PENDING_KEY = "classroomWordReviewerPending";
 const processingDownloads = new Set();
 
@@ -241,7 +241,7 @@ async function closeOfficeWindow() {
 }
 
 async function releasePdf(pdfUrl) {
-  if (typeof pdfUrl !== "string" || !/^http:\/\/127\.0\.0\.1:8765\/file\/[a-f0-9]{24}\.pdf$/.test(pdfUrl)) {
+  if (typeof pdfUrl !== "string" || !/^http:\/\/127\.0\.0\.1:18765\/file\/[a-f0-9]{24}\.pdf$/.test(pdfUrl)) {
     throw new Error("削除対象の表示用PDFが正しくありません。");
   }
   const response = await fetch(pdfUrl.replace("/file/", "/release/"), { method: "POST" });
