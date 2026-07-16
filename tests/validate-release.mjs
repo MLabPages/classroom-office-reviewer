@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.5.3";
+const expectedVersion = "0.5.4";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -23,6 +23,7 @@ assert(viewer.includes(`pdfUrl.startsWith("http://127.0.0.1:${expectedPort}/file
 assert(server.includes(`const port = ${expectedPort};`));
 assert(server.includes(`version: "${expectedVersion}"`));
 assert(start.includes(`http://127.0.0.1:${expectedPort}/health`));
+assert(start.includes('-ArgumentList @("`"$serverPath`"")'));
 assert(stop.includes(`http://127.0.0.1:${expectedPort}/health`));
 assert(stop.includes(`http://127.0.0.1:${expectedPort}/shutdown`));
 

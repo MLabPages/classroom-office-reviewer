@@ -24,7 +24,7 @@ if (Test-Path -LiteralPath $bundledNode -PathType Leaf) {
     $node = (Get-Command node.exe -ErrorAction Stop).Source
 }
 $process = Start-Process -FilePath $node `
-    -ArgumentList @($serverPath) `
+    -ArgumentList @("`"$serverPath`"") `
     -WorkingDirectory $rootDir `
     -WindowStyle Hidden `
     -RedirectStandardOutput $stdoutPath `
