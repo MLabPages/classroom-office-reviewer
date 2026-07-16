@@ -19,6 +19,9 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Validate release settings
+        run: node tests/validate-release.mjs
+
       - name: Build portable ZIP
         shell: pwsh
         run: |
