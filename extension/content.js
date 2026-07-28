@@ -7,6 +7,7 @@
     mode: "pdf",
     currentKey: "",
     convertedKey: "",
+    displayedPdfUrl: "",
     timer: null,
     ui: null,
     overlay: null
@@ -267,8 +268,10 @@
 
   function findPreviewBounds() {
     const fallback = {
-      top: Math.max(220, Math.round(window.innerHeight * 0.24)),
-      right: Math.max(300, Math.round(window.innerWidth * 0.17))
+      // Keep the Classroom navigation visible, but use nearly the whole remaining
+      // screen. This makes the normal view suitable for a classroom projector.
+      top: Math.max(92, Math.round(window.innerHeight * 0.12)),
+      right: 12
     };
     const filename = findOfficeFileName();
     let toolbarTop = Number.POSITIVE_INFINITY;
@@ -305,10 +308,12 @@
   function removeOverlay() {
     state.overlay?.remove();
     state.overlay = null;
+    state.displayedPdfUrl = "";
     state.ui?.classList.remove("cwr-hidden");
   }
 
   function renderPdf(pdfUrl, fileName, pageCount) {
+    const previousPdfUrl = state.displayedPdfUrl;
     removeOverlay();
     const bounds = findPreviewBounds();
     const overlay = document.createElement("div");
@@ -328,7 +333,11 @@
     overlay.appendChild(iframe);
     document.body.appendChild(overlay);
     state.overlay = overlay;
+    state.displayedPdfUrl = pdfUrl;
     state.ui?.classList.add("cwr-hidden");
+    if (previousPdfUrl && previousPdfUrl !== pdfUrl) {
+      chrome.runtime.sendMessage({ type: "cwr-release-pdf", pdfUrl: previousPdfUrl }).catch(() => undefined);
+    }
   }
 
   window.addEventListener("message", (event) => {
@@ -350,8 +359,11 @@
       state.currentKey = key;
       state.busy = false;
       if (hadPrevious) {
-        removeOverlay();
-        setStatus("提出者が切り替わりました。", "idle");
+        // Do not blank the projector while Office is converting the next file.
+        // The previous PDF remains visible until the replacement is ready.
+        setStatus(state.overlay
+          ? "次の提出物を裏で準備中です。表示は切替まで維持します。"
+          : "提出者が切り替わりました。", "idle");
       }
       if (state.enabled && hadPrevious && state.auto && /\.(?:docx?|pptx?)$/i.test(findOfficeFileName())) {
         setTimeout(() => {
