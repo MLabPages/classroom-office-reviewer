@@ -25,7 +25,7 @@ function updateToolbar() {
     ? `${pageCount}ページ・${zoom === 1 ? "ページ全体" : `${Math.round(zoom * 100)}%`}`
     : "読み込み中…";
   zoomOutButton.disabled = zoom <= 0.6;
-  zoomInButton.disabled = zoom >= 2;
+  zoomInButton.disabled = zoom >= 2.6;
 }
 
 function showError(error) {
@@ -42,15 +42,15 @@ async function renderPages() {
   const scrollRatio = mainElement.scrollHeight > mainElement.clientHeight
     ? mainElement.scrollTop / (mainElement.scrollHeight - mainElement.clientHeight)
     : 0;
-  const availableWidth = Math.max(320, mainElement.clientWidth - 64);
-  const availableHeight = Math.max(320, mainElement.clientHeight - 48);
+  const availableWidth = Math.max(320, mainElement.clientWidth - 32);
+  const availableHeight = Math.max(320, mainElement.clientHeight - 24);
   const fragment = document.createDocumentFragment();
 
   for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
     const page = await pdfDocument.getPage(pageNumber);
     if (generation !== renderGeneration) return;
     const original = page.getViewport({ scale: 1 });
-    const fitScale = Math.min(1.6, availableWidth / original.width, availableHeight / original.height);
+    const fitScale = Math.min(2, availableWidth / original.width, availableHeight / original.height);
     const viewport = page.getViewport({ scale: fitScale * zoom });
     const outputScale = Math.min(window.devicePixelRatio || 1, 2);
 
@@ -82,7 +82,7 @@ async function renderPages() {
 }
 
 async function changeZoom(amount) {
-  zoom = Math.max(0.6, Math.min(2, Math.round((zoom + amount) * 10) / 10));
+  zoom = Math.max(0.6, Math.min(2.6, Math.round((zoom + amount) * 10) / 10));
   updateToolbar();
   await renderPages();
 }

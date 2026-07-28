@@ -16,7 +16,7 @@
     button:disabled { opacity: .4; cursor: default; }
     main { position: absolute; inset: 46px 0 0; overflow: auto; background: #202124; }
     main.presentation-mode { scroll-snap-type: y mandatory; }
-    #pages { display: grid; justify-items: center; gap: 16px; min-width: 100%; width: max-content; min-height: 100%; padding: 18px 24px 40px; }
+    #pages { display: grid; justify-items: center; gap: 16px; min-width: 100%; width: max-content; min-height: 100%; padding: 10px 16px 28px; }
     .pdf-page { overflow: hidden; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.55); }
     .presentation-mode .pdf-page { scroll-snap-align: center; scroll-snap-stop: always; }
     .pdf-page canvas { display: block; }
@@ -24,7 +24,7 @@
     #message[data-kind="error"] { color: #f28b82; }
     html:fullscreen header { display: none; }
     html:fullscreen main { inset: 0; background: #111; }
-    html:fullscreen #pages { gap: 24px; padding: 12px 24px 48px; }
+    html:fullscreen #pages { gap: 24px; padding: 8px 16px 32px; }
   </style>
 </head>
 <body>
