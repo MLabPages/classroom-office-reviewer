@@ -70,8 +70,8 @@ async function findCurrentDocument(tabId) {
   }
 
   const downloadable = descriptors.filter((item) => item.downloadUrl || item.fileId);
-  const selected = downloadable.find((item) => /\.(?:docx?|pptx?)$/i.test(item.fileName || ""))
-    || downloadable.find((item) => ["document", "presentation"].includes(item.googleType))
+  const selected = downloadable.find((item) => ["document", "presentation"].includes(item.googleType))
+    || downloadable.find((item) => /\.(?:docx?|pptx?)$/i.test(item.fileName || ""))
     || downloadable[0]
     || null;
   if (selected && !Number.isInteger(selected.authuser) && Number.isInteger(classroomAuthuser)) {
@@ -80,12 +80,13 @@ async function findCurrentDocument(tabId) {
   return selected;
 }
 
-async function waitForCurrentDocument(tabId, expectedName = "", expectedFileId = "") {
+async function waitForCurrentDocument(tabId, expectedName = "", expectedFileId = "", expectedGoogleType = "") {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const candidate = await findCurrentDocument(tabId);
     const nameMatches = !expectedName || candidate?.fileName === expectedName;
     const idMatches = !expectedFileId || candidate?.fileId === expectedFileId;
-    if (candidate && nameMatches && idMatches) return candidate;
+    const typeMatches = !expectedGoogleType || candidate?.googleType === expectedGoogleType;
+    if (candidate && nameMatches && idMatches && typeMatches) return candidate;
     await wait(300);
   }
   return null;
@@ -413,9 +414,9 @@ function convertDescriptor(tabId, submissionKey, descriptor, options) {
     : convertInMemory(tabId, submissionKey, descriptor, options);
 }
 
-async function prepareCurrentSubmission(tabId, submissionKey, expectedName, expectedFileId) {
+async function prepareCurrentSubmission(tabId, submissionKey, expectedName, expectedFileId, expectedGoogleType) {
   await helperHealth();
-  const descriptor = await waitForCurrentDocument(tabId, expectedName, expectedFileId);
+  const descriptor = await waitForCurrentDocument(tabId, expectedName, expectedFileId, expectedGoogleType);
   if (!descriptor) throw new Error("この提出者のWord／PowerPoint／Google形式のファイルを見つけられませんでした。");
   const key = descriptorKey(descriptor);
   const prepared = await getPreparedPdf(key);
@@ -490,7 +491,7 @@ async function releasePdf(pdfUrl) {
   return { ok: true };
 }
 
-async function startConversion(tabId, submissionKey, expectedName = "", expectedFileId = "") {
+async function startConversion(tabId, submissionKey, expectedName = "", expectedFileId = "", expectedGoogleType = "") {
   await helperHealth();
   const preparedSubmission = await getPreparedSubmission(submissionKey);
   if (preparedSubmission) {
@@ -503,7 +504,7 @@ async function startConversion(tabId, submissionKey, expectedName = "", expected
     });
     return { ...preparedSubmission, mode: "prepared" };
   }
-  const descriptor = await waitForCurrentDocument(tabId, expectedName, expectedFileId);
+  const descriptor = await waitForCurrentDocument(tabId, expectedName, expectedFileId, expectedGoogleType);
   if (!descriptor) {
     throw new Error("表示中のWord／PowerPoint／Google形式のファイルを見つけられませんでした。Classroomを再読み込みしてください。");
   }
@@ -591,6 +592,14 @@ async function processCompletedDownload(downloadId) {
   }
 }
 
+if (globalThis.__CWR_BACKGROUND_TEST_HOOKS__) {
+  Object.assign(globalThis.__CWR_BACKGROUND_TEST_HOOKS__, {
+    buildGooglePdfExportUrl,
+    findCurrentDocument,
+    isGoogleNative
+  });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!new Set(["cwr-start", "cwr-prepare-one", "cwr-start-bulk-preparation", "cwr-prepare-progress", "cwr-cancel-bulk-preparation", "cwr-open-office", "cwr-close-office", "cwr-release-pdf"]).has(message?.type)) return false;
 
@@ -605,14 +614,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           : message.type === "cwr-cancel-bulk-preparation"
             ? await cancelBulkPreparation(tabId)
             : message.type === "cwr-prepare-one"
-        ? await prepareCurrentSubmission(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "")
+        ? await prepareCurrentSubmission(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "", message.expectedGoogleType || "")
         : message.type === "cwr-open-office"
         ? await startOfficeWindow(tabId, message.submissionKey || "")
         : message.type === "cwr-close-office"
           ? await closeOfficeWindow()
           : message.type === "cwr-release-pdf"
             ? await releasePdf(message.pdfUrl)
-            : await startConversion(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "");
+            : await startConversion(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "", message.expectedGoogleType || "");
       sendResponse(result);
     } catch (error) {
       sendResponse({

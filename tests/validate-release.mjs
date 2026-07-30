@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.5.11";
+const expectedVersion = "0.5.12";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -43,5 +43,8 @@ assert(start.includes(`http://127.0.0.1:${expectedPort}/shutdown`));
 assert(start.includes('-ArgumentList @("`"$serverPath`"")'));
 assert(stop.includes(`http://127.0.0.1:${expectedPort}/health`));
 assert(stop.includes(`http://127.0.0.1:${expectedPort}/shutdown`));
+
+await import("./content-detection.mjs");
+await import("./background-routing.mjs");
 
 console.log(`Release settings are consistent for v${expectedVersion} on port ${expectedPort}.`);
