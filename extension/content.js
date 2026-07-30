@@ -4,6 +4,7 @@
     enabled: true,
     busy: false,
     auto: false,
+    prefetching: false,
     mode: "pdf",
     currentKey: "",
     convertedKey: "",
@@ -87,6 +88,21 @@
     }
     if (!isClassroomTop) return false;
 
+    if (message?.type === "cwr-prefetch-next") {
+      (async () => {
+        state.prefetching = true;
+        const before = getSubmissionKey();
+        const nextButton = findNextSubmissionButton();
+        if (!nextButton) {
+          sendResponse({ ok: false });
+          return;
+        }
+        nextButton.click();
+        sendResponse({ ok: await waitForSubmissionChange(before) });
+      })();
+      return true;
+    }
+
     if (message?.type === "cwr-status") {
       if (message.submissionKey && message.submissionKey !== getSubmissionKey()) return false;
       setStatus(message.text, message.state);
@@ -132,6 +148,31 @@
     return [location.href, getStudentLabel(), findOfficeFileName()].join("|");
   }
 
+  function findNextSubmissionButton() {
+    const nextLabel = /次の(?:提出者|生徒|学生)|次へ|next(?:\s+(?:student|submission))?/i;
+    return [...document.querySelectorAll("button, [role='button']")].find((element) => {
+      if (!visible(element) || element.getAttribute("aria-disabled") === "true" || element.disabled) return false;
+      const labels = [textOf(element), element.getAttribute("aria-label"), element.getAttribute("title"), element.getAttribute("data-tooltip")];
+      return labels.some((label) => nextLabel.test(label || ""));
+    }) || null;
+  }
+
+  function waitForSubmissionChange(previousKey) {
+    return new Promise((resolve) => {
+      let checks = 0;
+      const timer = setInterval(() => {
+        checks += 1;
+        if (getSubmissionKey() !== previousKey) {
+          clearInterval(timer);
+          resolve(true);
+        } else if (checks >= 60) {
+          clearInterval(timer);
+          resolve(false);
+        }
+      }, 150);
+    });
+  }
+
   function isPowerPoint(fileName = findOfficeFileName()) {
     return /\.pptx?$/i.test(fileName);
   }
@@ -158,7 +199,7 @@
       <button id="cwr-open-window" type="button">Word別窓で表示</button>
       <label id="cwr-auto-label">
         <input id="cwr-auto" type="checkbox">
-        次の提出物も自動表示
+        次を自動表示・先読み
       </label>
       <button id="cwr-toggle" type="button">機能OFF</button>
       <span id="cwr-status" role="status">待機中</span>
@@ -181,7 +222,10 @@
     root.querySelector("#cwr-auto").addEventListener("change", (event) => {
       state.auto = event.target.checked;
       chrome.storage.local.set({ cwrAuto: state.auto });
-      setStatus(state.auto ? "自動表示オン" : "自動表示オフ", "idle");
+      setStatus(state.auto ? "自動表示・先読みオン" : "自動表示・先読みオフ", "idle");
+      if (state.auto && state.convertedKey === getSubmissionKey()) {
+        chrome.runtime.sendMessage({ type: "cwr-prefetch" }).catch(() => undefined);
+      }
     });
     root.querySelector("#cwr-toggle").addEventListener("click", () => setEnabled(!state.enabled));
     updateUiLabels();
@@ -276,6 +320,29 @@
     const filename = findOfficeFileName();
     let toolbarTop = Number.POSITIVE_INFINITY;
 
+    // Google Classroom's own file preview is a dark, wide panel. Replacing that
+    // panel keeps one document area instead of stacking two viewers vertically.
+    const previewPanel = [...document.querySelectorAll("div, section")]
+      .filter((element) => element.id !== "cwr-overlay" && !element.closest("#cwr-overlay"))
+      .map((element) => ({
+        element,
+        rect: element.getBoundingClientRect(),
+        background: getComputedStyle(element).backgroundColor
+      }))
+      .filter(({ rect, background }) => rect.left <= 4
+        && rect.top >= 80
+        && rect.width >= window.innerWidth * 0.45
+        && rect.height >= window.innerHeight * 0.45
+        && /rgb\((?:1[5-9]|2[0-9]|3[0-9]),\s*(?:1[5-9]|2[0-9]|3[0-9]),\s*(?:1[5-9]|2[0-9]|3[0-9])\)/.test(background))
+      .sort((a, b) => a.rect.top - b.rect.top)[0];
+
+    if (previewPanel) {
+      return {
+        top: Math.round(previewPanel.rect.top),
+        right: Math.max(0, Math.round(window.innerWidth - previewPanel.rect.right))
+      };
+    }
+
     if (filename) {
       const elements = [...document.querySelectorAll("div, header, section")];
       for (const element of elements) {
@@ -365,7 +432,7 @@
           ? "次の提出物を裏で準備中です。表示は切替まで維持します。"
           : "提出者が切り替わりました。", "idle");
       }
-      if (state.enabled && hadPrevious && state.auto && /\.(?:docx?|pptx?)$/i.test(findOfficeFileName())) {
+      if (state.enabled && hadPrevious && state.auto && !state.prefetching && /\.(?:docx?|pptx?)$/i.test(findOfficeFileName())) {
         setTimeout(() => {
           if (state.mode === "office") startOfficeWindow(true);
           else startConversion(true);

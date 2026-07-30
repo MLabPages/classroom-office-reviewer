@@ -8,13 +8,13 @@
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
     body { color: #e8eaed; background: #202124; font: 14px/1.4 Arial, "Noto Sans JP", sans-serif; }
-    header { position: relative; z-index: 2; height: 46px; display: flex; align-items: center; gap: 9px; padding: 0 14px; background: #292a2d; box-shadow: 0 1px 3px rgba(0,0,0,.45); }
+    header { position: relative; z-index: 2; height: 50px; display: flex; align-items: center; gap: 8px; padding: 0 16px; background: #292a2d; box-shadow: 0 1px 3px rgba(0,0,0,.45); }
     #name { min-width: 0; flex: 1; overflow: hidden; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
     #meta { color: #bdc1c6; white-space: nowrap; }
-    button { border: 1px solid #5f6368; border-radius: 999px; min-width: 32px; padding: 6px 10px; color: #e8eaed; background: transparent; cursor: pointer; }
+    button { border: 1px solid #5f6368; border-radius: 999px; min-width: 34px; padding: 7px 11px; color: #e8eaed; background: transparent; cursor: pointer; }
     button:hover, button:focus-visible { background: #3c4043; outline: 2px solid #8ab4f8; }
     button:disabled { opacity: .4; cursor: default; }
-    main { position: absolute; inset: 46px 0 0; overflow: auto; background: #202124; }
+    main { position: absolute; inset: 50px 0 0; overflow: auto; background: #202124; }
     main.presentation-mode { scroll-snap-type: y mandatory; }
     #pages { display: grid; justify-items: center; gap: 16px; min-width: 100%; width: max-content; min-height: 100%; padding: 10px 16px 28px; }
     .pdf-page { overflow: hidden; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.55); }
