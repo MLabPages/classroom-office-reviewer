@@ -160,6 +160,37 @@ async function convertOffice(sourcePath, displayName = path.basename(sourcePath)
   return metadata;
 }
 
+async function storePdfBuffer(body, displayName) {
+  if (!body.length) throw new Error("PDFのデータが空です。");
+  if (body.subarray(0, 5).toString("latin1") !== "%PDF-") throw new Error("PDF形式のデータではありません。");
+  const id = crypto.createHash("sha256").update(body).digest("hex").slice(0, 24);
+  const target = path.join(cacheDir, `${id}.pdf`);
+  const metaPath = path.join(cacheDir, `${id}.json`);
+  const metadata = {
+    ok: true,
+    pdfUrl: `/file/${id}.pdf`,
+    sourceName: displayName,
+    pageCount: null,
+    cached: false
+  };
+  try {
+    const stat = await fsp.stat(target);
+    if (stat.size > 0) {
+      const now = new Date();
+      await Promise.all([fsp.utimes(target, now, now), fsp.utimes(metaPath, now, now)]).catch(() => undefined);
+      return { ...metadata, cached: true };
+    }
+  } catch {
+    // Not cached yet.
+  }
+  await Promise.all([
+    fsp.writeFile(target, body),
+    fsp.writeFile(metaPath, JSON.stringify(metadata), "utf8")
+  ]);
+  await prunePdfCache();
+  return metadata;
+}
+
 async function prunePdfCache() {
   const cutoff = Date.now() - cacheMaximumAgeMs;
   const pdfs = [];
@@ -456,7 +487,7 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url || "/", `http://${host}:${port}`);
   if (req.method === "GET" && url.pathname === "/health") {
-    sendJson(res, 200, { ok: true, service: "Classroom Office Reviewer", version: "0.5.10", sessionId: serviceSessionId, cacheHours: 24, cacheLimit: 600 });
+    sendJson(res, 200, { ok: true, service: "Classroom Office Reviewer", version: "0.5.11", sessionId: serviceSessionId, cacheHours: 24, cacheLimit: 600 });
     return;
   }
   if (req.method === "GET" && url.pathname.startsWith("/file/")) {
@@ -505,6 +536,25 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 500, { ok: false, error: error.message || "変換に失敗しました。" });
     } finally {
       if (temporaryPath) await fsp.rm(temporaryPath, { force: true }).catch(() => undefined);
+    }
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/store-pdf-upload") {
+    try {
+      const encodedName = String(req.headers["x-file-name"] || "Google提出物.pdf");
+      let decodedName;
+      try {
+        decodedName = decodeURIComponent(encodedName);
+      } catch {
+        decodedName = "Google提出物.pdf";
+      }
+      let safeName = path.basename(decodedName).replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_");
+      if (!/\.pdf$/i.test(safeName)) safeName += ".pdf";
+      const body = await readBuffer(req, 100 * 1024 * 1024);
+      sendJson(res, 200, await storePdfBuffer(body, safeName));
+    } catch (error) {
+      log(`PDF storage error: ${error.message}`);
+      sendJson(res, 500, { ok: false, error: error.message || "PDFを保存できませんでした。" });
     }
     return;
   }

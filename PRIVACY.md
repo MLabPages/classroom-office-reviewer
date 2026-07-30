@@ -1,6 +1,6 @@
 # プライバシー説明
 
-Classroom Office Reviewerは、Google Classroom上のWord／PowerPoint提出物を、利用者自身のWindows PCにインストールされたMicrosoft Officeで表示するツールです。
+Classroom Office Reviewerは、Google Classroom上のWord／PowerPoint／Google形式の提出物を、採点画面内でPDF表示するツールです。Word／PowerPointは利用者自身のWindows PCにインストールされたMicrosoft OfficeでPDF化します。
 
 ## 外部へ送信しないもの
 
@@ -12,7 +12,7 @@ Classroom Office Reviewerは、Google Classroom上のWord／PowerPoint提出物�
 
 ## 通信先
 
-- `classroom.google.com`、`drive.google.com`、`docs.google.com`: 利用者がログインしているGoogle Classroom／Driveから提出物を取得するため
+- `classroom.google.com`、`drive.google.com`、`docs.google.com`: 利用者がログインしているGoogle Classroom／Driveから提出物を取得し、Googleドキュメント／スライドをPDFとして書き出すため
 - `127.0.0.1:18765`: Chrome拡張と、このPC内で動く補助アプリが通信するため。インターネット上のサーバーではありません
 
 ## PC内に一時保存するもの

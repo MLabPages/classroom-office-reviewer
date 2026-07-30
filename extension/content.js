@@ -58,6 +58,38 @@
     return findFileName("docx?|pptx?|pdf|xlsx?|csv|txt|rtf|odt|ods|odp|jpe?g|png|gif|webp|zip");
   }
 
+  function findGoogleFileInfo() {
+    const frames = [...document.querySelectorAll("iframe[src]")];
+    const documentFrame = frames.find((frame) => visible(frame) && /docs\.google\.com\/document\/(?:u\/\d+\/)?d\//i.test(frame.src));
+    const slidesFrame = frames.find((frame) => visible(frame) && /docs\.google\.com\/presentation\/(?:u\/\d+\/)?d\//i.test(frame.src));
+    if (!documentFrame && !slidesFrame) return null;
+    const kind = documentFrame ? "google-document" : "google-presentation";
+    const labelPattern = documentFrame
+      ? /Google\s*(?:ドキュメント|Docs?)\s*[:：]?\s*([^|\r\n]{1,160})/i
+      : /Google\s*(?:スライド|Slides?)\s*[:：]?\s*([^|\r\n]{1,160})/i;
+    const nodes = document.querySelectorAll("a, button, [aria-label], [title], [data-tooltip], span");
+    for (const node of nodes) {
+      if (!visible(node)) continue;
+      const sources = [textOf(node), node.getAttribute("aria-label"), node.getAttribute("title"), node.getAttribute("data-tooltip")];
+      for (const source of sources) {
+        const match = source?.match(labelPattern);
+        if (match) return { kind, fileName: match[1].trim(), expectedName: "", expectedFileId: parseDriveId((documentFrame || slidesFrame).src) };
+      }
+    }
+    return {
+      kind,
+      fileName: documentFrame ? "Googleドキュメント" : "Googleスライド",
+      expectedName: "",
+      expectedFileId: parseDriveId((documentFrame || slidesFrame).src)
+    };
+  }
+
+  function findSupportedFileInfo() {
+    const officeFileName = findOfficeFileName();
+    if (officeFileName) return { kind: "office", fileName: officeFileName, expectedName: officeFileName };
+    return findGoogleFileInfo();
+  }
+
   function parseDriveId(value) {
     if (!value) return "";
     const patterns = [
@@ -75,6 +107,11 @@
   function describeDocument() {
     let downloadUrl = "";
     let fileId = parseDriveId(location.href);
+    const googleType = /docs\.google\.com\/document\/(?:u\/\d+\/)?d\//i.test(location.href)
+      ? "document"
+      : /docs\.google\.com\/presentation\/(?:u\/\d+\/)?d\//i.test(location.href)
+        ? "presentation"
+        : "";
     const candidates = document.querySelectorAll("a[href], iframe[src]");
 
     for (const element of candidates) {
@@ -87,9 +124,10 @@
 
     const authMatch = location.href.match(/\/u\/(\d+)(?:\/|$)/);
     return {
-      fileName: findOfficeFileName(),
+      fileName: findOfficeFileName() || findGoogleFileInfo()?.fileName || (googleType === "document" ? "Googleドキュメント" : googleType === "presentation" ? "Googleスライド" : ""),
       fileId,
       downloadUrl,
+      googleType,
       authuser: authMatch ? Number(authMatch[1]) : null,
       frameUrl: location.href
     };
@@ -166,15 +204,17 @@
   }
 
   function getSubmissionKey() {
-    return [location.href, getStudentLabel(), findOfficeFileName()].join("|");
+    return [location.href, getStudentLabel(), findSupportedFileInfo()?.fileName || ""].join("|");
   }
 
   function findSubmissionButton(direction) {
     const labelPattern = direction === "next"
-      ? /^(?:次|next)$|次の(?:提出者|生徒|学生|ユーザー|提出物)|次へ(?:移動)?|next(?:\s+(?:student|submission|user))?/i
-      : /^(?:前|previous)$|前の(?:提出者|生徒|学生|ユーザー|提出物)|前へ(?:移動)?|previous(?:\s+(?:student|submission|user))?/i;
+      ? /^(?:次の(?:生徒|学生)を選択|Select next student|Next student)(?:[:：]|$)/i
+      : /^(?:前の(?:生徒|学生)を選択|Select previous student|Previous student)(?:[:：]|$)/i;
     return [...document.querySelectorAll("button, [role='button']")].find((element) => {
       if (!visible(element)) return false;
+      const rect = element.getBoundingClientRect();
+      if (rect.top < 0 || rect.top > 180 || rect.width > 90 || rect.height > 90) return false;
       const labels = [textOf(element), element.getAttribute("aria-label"), element.getAttribute("title"), element.getAttribute("data-tooltip")];
       return labels.some((label) => labelPattern.test(label || ""));
     }) || null;
@@ -225,12 +265,12 @@
   async function waitForSubmissionFile(timeoutMs = 20000) {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      const officeFileName = findOfficeFileName();
-      if (officeFileName) return officeFileName;
-      if (findAnyAttachmentFileName()) return "";
+      const supportedFile = findSupportedFileInfo();
+      if (supportedFile) return supportedFile;
+      if (findAnyAttachmentFileName()) return { unsupported: true };
       await wait(250);
     }
-    return "";
+    return null;
   }
 
   function showPreparationPanel() {
@@ -383,9 +423,9 @@
       }
 
       updatePreparation("最初の提出物を確認中…", "Classroomのファイルプレビューを待っています。");
-      const initialFileName = await waitForSubmissionFile(20000);
+      const initialFileInfo = await waitForSubmissionFile(20000);
       const initialNavigation = findNextSubmissionButton() || findPreviousSubmissionButton();
-      if (!initialFileName && !initialNavigation) {
+      if (!initialFileInfo && !initialNavigation) {
         throw new Error("Classroomの提出者画面を読み込めませんでした。準備専用タブで提出物が表示されているか確認してください。");
       }
 
@@ -394,13 +434,19 @@
         if (!submissionKey || seen.has(submissionKey)) break;
         seen.add(submissionKey);
         const sequence = seen.size;
-        const fileName = sequence === 1 ? initialFileName : await waitForSubmissionFile(15000);
+        const fileInfo = sequence === 1 ? initialFileInfo : await waitForSubmissionFile(15000);
 
-        if (/\.(?:docx?|pptx?)$/i.test(fileName)) {
+        if (fileInfo && !fileInfo.unsupported) {
+          const fileName = fileInfo.fileName;
           updatePreparation(`${sequence}件目を準備中`, `${fileName} を取得・PDF化しています。`);
           let response = null;
           for (let attempt = 0; attempt < 3; attempt += 1) {
-            response = await chrome.runtime.sendMessage({ type: "cwr-prepare-one", submissionKey, expectedName: fileName });
+            response = await chrome.runtime.sendMessage({
+              type: "cwr-prepare-one",
+              submissionKey,
+              expectedName: fileInfo.expectedName || "",
+              expectedFileId: fileInfo.expectedFileId || ""
+            });
             const repeatedDocument = response?.ok && preparedDocumentKeys.has(response.documentKey);
             if ((response?.ok && !repeatedDocument) || attempt === 2) break;
             response = repeatedDocument ? { ok: false, error: "画面更新を待っています。" } : response;
@@ -434,7 +480,7 @@
       finishPreparation(
         state.prepareCancelled ? "一括準備を中止しました" : "提出物の準備が完了しました",
         `${total}件準備済み${skippedCount ? `・${skippedCount}件未準備` : ""}`,
-        total ? "学生を切り替えると、準備済みPDFを直接表示します。" : "準備できるWord／PowerPoint提出物が見つかりませんでした。",
+        total ? "学生を切り替えると、準備済みPDFを直接表示します。" : "準備できるWord／PowerPoint／Google形式の提出物が見つかりませんでした。",
         state.prepareCancelled ? "cancelled" : "done"
       );
       setStatus(`${total}件の提出物を準備済み`, total ? "ready" : "idle");
@@ -455,13 +501,25 @@
   function updateUiLabels() {
     const root = state.ui;
     if (!root) return;
+    const fileInfo = findSupportedFileInfo();
+    const googleDocument = fileInfo?.kind === "google-document";
+    const googlePresentation = fileInfo?.kind === "google-presentation";
     const powerpoint = isPowerPoint();
-    root.querySelector("#cwr-open").textContent = powerpoint
-      ? "PowerPointを正確に表示"
-      : "Wordで正確に表示";
-    root.querySelector("#cwr-open-window").textContent = powerpoint
-      ? "PowerPointで発表"
-      : "Word別窓で表示";
+    const openButton = root.querySelector("#cwr-open");
+    const officeButton = root.querySelector("#cwr-open-window");
+    openButton.textContent = googleDocument
+      ? "Googleドキュメントを表示"
+      : googlePresentation
+        ? "Googleスライドを表示"
+        : powerpoint
+          ? "PowerPointを正確に表示"
+          : "Wordで正確に表示";
+    officeButton.textContent = googleDocument || googlePresentation
+      ? "Google形式はPDF表示のみ"
+      : powerpoint
+        ? "PowerPointで発表"
+        : "Word別窓で表示";
+    officeButton.disabled = googleDocument || googlePresentation;
   }
 
   function makeUi() {
@@ -549,9 +607,9 @@
 
   async function startConversion(isAutomatic) {
     if (!state.enabled || state.busy) return;
-    const fileName = findOfficeFileName();
-    if (!/\.(?:docx?|pptx?)$/i.test(fileName)) {
-      if (!isAutomatic) setStatus("表示中のWord／PowerPointファイルが見つかりません。", "error");
+    const fileInfo = findSupportedFileInfo();
+    if (!fileInfo) {
+      if (!isAutomatic) setStatus("表示中のWord／PowerPoint／Google形式のファイルが見つかりません。", "error");
       return;
     }
 
@@ -559,7 +617,12 @@
     const key = getSubmissionKey();
     setStatus("提出物を取得中…", "working");
     try {
-      const response = await chrome.runtime.sendMessage({ type: "cwr-start", submissionKey: key });
+      const response = await chrome.runtime.sendMessage({
+        type: "cwr-start",
+        submissionKey: key,
+        expectedName: fileInfo.expectedName || "",
+        expectedFileId: fileInfo.expectedFileId || ""
+      });
       if (!response?.ok) throw new Error(response?.error || "処理を開始できませんでした。");
       if (!response.completed) {
         setStatus(`${response.fileName} を一時取得中…`, "working");
@@ -755,9 +818,9 @@
           ? "次の提出物へ切り替えています。表示は切替まで維持します。"
           : "提出者が切り替わりました。", "idle");
       }
-      if (state.enabled && hadPrevious && state.auto && /\.(?:docx?|pptx?)$/i.test(findOfficeFileName())) {
+      if (state.enabled && hadPrevious && state.auto && findSupportedFileInfo()) {
         setTimeout(() => {
-          if (state.mode === "office") startOfficeWindow(true);
+          if (state.mode === "office" && findSupportedFileInfo()?.kind === "office") startOfficeWindow(true);
           else startConversion(true);
         }, 120);
       }
