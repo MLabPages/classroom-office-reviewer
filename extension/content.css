@@ -109,9 +109,11 @@
   left: 0;
   bottom: 0;
   z-index: 2147483645;
-  min-width: 420px;
-  min-height: 300px;
+  min-width: min(640px, 52vw);
+  min-height: 360px;
+  border-top: 1px solid rgba(255, 255, 255, 0.16);
   background: #202124;
+  box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.28);
 }
 
 #cwr-overlay iframe {

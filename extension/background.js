@@ -1,6 +1,10 @@
 const HELPER_BASE = "http://127.0.0.1:18765";
 const PENDING_KEY = "classroomWordReviewerPending";
+const PREFETCH_KEY = "classroomWordReviewerPrefetched";
 const processingDownloads = new Set();
+const prefetchedPdfs = new Map();
+const prefetchingPdfs = new Map();
+const prefetchingTabs = new Map();
 
 async function helperHealth() {
   const response = await fetch(`${HELPER_BASE}/health`, { cache: "no-store" });
@@ -68,6 +72,62 @@ function buildDownloadUrl(descriptor) {
     authuser: String(authuser)
   });
   return `https://drive.google.com/uc?${params.toString()}`;
+}
+
+function descriptorKey(descriptor) {
+  return [descriptor.fileId || descriptor.downloadUrl || "", descriptor.fileName || ""].join("|");
+}
+
+async function getPrefetchedPdf(key) {
+  const inMemory = prefetchedPdfs.get(key);
+  if (inMemory) return inMemory;
+  const stored = await chrome.storage.session.get(PREFETCH_KEY);
+  return stored[PREFETCH_KEY]?.[key] || null;
+}
+
+async function rememberPrefetchedPdf(key, result) {
+  prefetchedPdfs.set(key, result);
+  const stored = await chrome.storage.session.get(PREFETCH_KEY);
+  const entries = { ...(stored[PREFETCH_KEY] || {}), [key]: result };
+  const keep = Object.entries(entries).slice(-3);
+  await chrome.storage.session.set({ [PREFETCH_KEY]: Object.fromEntries(keep) });
+}
+
+async function forgetPrefetchedPdf(key) {
+  prefetchedPdfs.delete(key);
+  const stored = await chrome.storage.session.get(PREFETCH_KEY);
+  const entries = { ...(stored[PREFETCH_KEY] || {}) };
+  delete entries[key];
+  await chrome.storage.session.set({ [PREFETCH_KEY]: entries });
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function waitForTabComplete(tabId) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      reject(new Error("先読み用の画面を開けませんでした。"));
+    }, 15000);
+    function onUpdated(updatedTabId, changeInfo) {
+      if (updatedTabId !== tabId || changeInfo.status !== "complete") return;
+      clearTimeout(timeout);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      resolve();
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated);
+  });
+}
+
+async function findNextDocument(tabId, currentKey) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const descriptor = await findCurrentDocument(tabId);
+    if (descriptor && descriptorKey(descriptor) && descriptorKey(descriptor) !== currentKey) return descriptor;
+    await wait(350);
+  }
+  throw new Error("次の提出物を見つけられませんでした。");
 }
 
 async function startTemporaryDownload(tabId, submissionKey, descriptor) {
@@ -154,8 +214,8 @@ async function fetchOfficeBuffer(descriptor) {
   return { buffer, fileName };
 }
 
-async function convertInMemory(tabId, submissionKey, descriptor) {
-  await notifyTab(tabId, {
+async function convertInMemory(tabId, submissionKey, descriptor, { reportStatus = true, showPdf = true } = {}) {
+  if (reportStatus) await notifyTab(tabId, {
     type: "cwr-status",
     state: "working",
     text: "提出物をメモリ内で取得中…",
@@ -163,7 +223,7 @@ async function convertInMemory(tabId, submissionKey, descriptor) {
   });
   const { buffer, fileName } = await fetchOfficeBuffer(descriptor);
 
-  await notifyTab(tabId, {
+  if (reportStatus) await notifyTab(tabId, {
     type: "cwr-status",
     state: "converting",
     text: "Officeで表示用PDFを作成中…",
@@ -183,14 +243,55 @@ async function convertInMemory(tabId, submissionKey, descriptor) {
     throw new Error(result.error || "OfficeからPDFへの変換に失敗しました。");
   }
 
-  await notifyTab(tabId, {
-    type: "cwr-show-pdf",
-    pdfUrl: `${HELPER_BASE}${result.pdfUrl}`,
+  const converted = {
+    ok: true,
     fileName: result.sourceName || fileName,
+    pdfUrl: `${HELPER_BASE}${result.pdfUrl}`,
     pageCount: result.pageCount || null,
-    submissionKey
-  });
-  return { ok: true, fileName, mode: "memory", completed: true };
+    mode: "memory",
+    completed: true
+  };
+  if (showPdf) await notifyTab(tabId, { type: "cwr-show-pdf", submissionKey, ...converted });
+  return converted;
+}
+
+async function prefetchNextSubmission(tabId) {
+  if (prefetchingTabs.has(tabId)) return prefetchingTabs.get(tabId);
+  const task = (async () => {
+    await helperHealth();
+    const currentDescriptor = await findCurrentDocument(tabId);
+    const currentKey = descriptorKey(currentDescriptor || {});
+    if (!currentKey) return;
+
+    const sourceTab = await chrome.tabs.get(tabId);
+    if (!sourceTab.url?.startsWith("https://classroom.google.com/")) return;
+    const prefetchTab = await chrome.tabs.create({ url: sourceTab.url, active: false });
+    try {
+      await waitForTabComplete(prefetchTab.id);
+      const moved = await sendToFrame(prefetchTab.id, 0, { type: "cwr-prefetch-next" });
+      if (!moved?.ok) return;
+      const descriptor = await findNextDocument(prefetchTab.id, currentKey);
+      const key = descriptorKey(descriptor);
+      if (!key || prefetchedPdfs.has(key) || prefetchingPdfs.has(key)) return;
+      const conversion = convertInMemory(prefetchTab.id, "", descriptor, { reportStatus: false, showPdf: false });
+      prefetchingPdfs.set(key, conversion);
+      try {
+        const result = await conversion;
+        await rememberPrefetchedPdf(key, result);
+        while (prefetchedPdfs.size > 3) {
+          const [expiredKey, expired] = prefetchedPdfs.entries().next().value;
+          prefetchedPdfs.delete(expiredKey);
+          await releasePdf(expired.pdfUrl).catch(() => undefined);
+        }
+      } finally {
+        prefetchingPdfs.delete(key);
+      }
+    } finally {
+      await chrome.tabs.remove(prefetchTab.id).catch(() => undefined);
+    }
+  })().catch(() => undefined).finally(() => prefetchingTabs.delete(tabId));
+  prefetchingTabs.set(tabId, task);
+  return task;
 }
 
 async function startOfficeWindow(tabId, submissionKey) {
@@ -257,8 +358,27 @@ async function startConversion(tabId, submissionKey) {
     throw new Error("表示中のWord／PowerPointファイルを見つけられませんでした。Classroomを再読み込みしてください。");
   }
 
+  const key = descriptorKey(descriptor);
+  const prefetched = await getPrefetchedPdf(key) || await prefetchingPdfs.get(key);
+  if (prefetched) {
+    await forgetPrefetchedPdf(key);
+    await notifyTab(tabId, {
+      type: "cwr-show-pdf",
+      pdfUrl: prefetched.pdfUrl,
+      fileName: prefetched.fileName,
+      pageCount: prefetched.pageCount,
+      submissionKey
+    });
+    const { cwrAuto } = await chrome.storage.local.get("cwrAuto");
+    if (cwrAuto) prefetchNextSubmission(tabId);
+    return { ...prefetched, mode: "prefetched" };
+  }
+
   try {
-    return await convertInMemory(tabId, submissionKey, descriptor);
+    const result = await convertInMemory(tabId, submissionKey, descriptor);
+    const { cwrAuto } = await chrome.storage.local.get("cwrAuto");
+    if (cwrAuto) prefetchNextSubmission(tabId);
+    return result;
   } catch (error) {
     if (!error.allowTemporaryDownload) throw error;
     await notifyTab(tabId, {
@@ -328,13 +448,15 @@ async function processCompletedDownload(downloadId) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!new Set(["cwr-start", "cwr-open-office", "cwr-close-office", "cwr-release-pdf"]).has(message?.type)) return false;
+  if (!new Set(["cwr-start", "cwr-prefetch", "cwr-open-office", "cwr-close-office", "cwr-release-pdf"]).has(message?.type)) return false;
 
   (async () => {
     try {
       const tabId = sender.tab?.id;
       if (typeof tabId !== "number") throw new Error("Classroomのタブを特定できませんでした。");
-      const result = message.type === "cwr-open-office"
+      const result = message.type === "cwr-prefetch"
+        ? (prefetchNextSubmission(tabId), { ok: true })
+        : message.type === "cwr-open-office"
         ? await startOfficeWindow(tabId, message.submissionKey || "")
         : message.type === "cwr-close-office"
           ? await closeOfficeWindow()
