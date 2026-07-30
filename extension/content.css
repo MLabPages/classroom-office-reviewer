@@ -219,6 +219,11 @@
   cursor: default;
 }
 
+#cwr-open-window:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 @keyframes cwr-spin {
   to { transform: rotate(360deg); }
 }
