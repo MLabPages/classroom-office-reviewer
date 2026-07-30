@@ -31,7 +31,7 @@
     return (element?.textContent || "").replace(/\s+/g, " ").trim();
   }
 
-  function findOfficeFileName() {
+  function findFileName(extensionPattern) {
     const nodes = document.querySelectorAll("a, button, [role='button'], [aria-label], [title], [data-tooltip], span");
     for (const node of nodes) {
       if (!visible(node)) continue;
@@ -43,11 +43,19 @@
       ];
       for (const source of sources) {
         if (!source || source.length > 220) continue;
-        const match = source?.match(/([^\\/:*?\"<>|\r\n]{1,160}\.(?:docx?|pptx?))(?:\s|$)/i);
+        const match = source?.match(new RegExp(`([^\\\\/:*?\"<>|\\r\\n]{1,160}\\.(?:${extensionPattern}))(?:\\s|$)`, "i"));
         if (match) return match[1].trim();
       }
     }
     return "";
+  }
+
+  function findOfficeFileName() {
+    return findFileName("docx?|pptx?");
+  }
+
+  function findAnyAttachmentFileName() {
+    return findFileName("docx?|pptx?|pdf|xlsx?|csv|txt|rtf|odt|ods|odp|jpe?g|png|gif|webp|zip");
   }
 
   function parseDriveId(value) {
@@ -163,10 +171,10 @@
 
   function findSubmissionButton(direction) {
     const labelPattern = direction === "next"
-      ? /次の(?:提出者|生徒|学生)|次へ|next(?:\s+(?:student|submission))?/i
-      : /前の(?:提出者|生徒|学生)|前へ|previous(?:\s+(?:student|submission))?/i;
+      ? /^(?:次|next)$|次の(?:提出者|生徒|学生|ユーザー|提出物)|次へ(?:移動)?|next(?:\s+(?:student|submission|user))?/i
+      : /^(?:前|previous)$|前の(?:提出者|生徒|学生|ユーザー|提出物)|前へ(?:移動)?|previous(?:\s+(?:student|submission|user))?/i;
     return [...document.querySelectorAll("button, [role='button']")].find((element) => {
-      if (!visible(element) || element.getAttribute("aria-disabled") === "true" || element.disabled) return false;
+      if (!visible(element)) return false;
       const labels = [textOf(element), element.getAttribute("aria-label"), element.getAttribute("title"), element.getAttribute("data-tooltip")];
       return labels.some((label) => labelPattern.test(label || ""));
     }) || null;
@@ -188,7 +196,7 @@
         if (getSubmissionKey() !== previousKey) {
           clearInterval(timer);
           resolve(true);
-        } else if (checks >= 60) {
+        } else if (checks >= 120) {
           clearInterval(timer);
           resolve(false);
         }
@@ -198,6 +206,31 @@
 
   function wait(milliseconds) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
+
+  function submissionButtonDisabled(button) {
+    return !button || button.disabled || button.getAttribute("aria-disabled") === "true";
+  }
+
+  async function waitForSubmissionButton(direction, timeoutMs = 15000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const button = findSubmissionButton(direction);
+      if (button) return button;
+      await wait(250);
+    }
+    return null;
+  }
+
+  async function waitForSubmissionFile(timeoutMs = 20000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const officeFileName = findOfficeFileName();
+      if (officeFileName) return officeFileName;
+      if (findAnyAttachmentFileName()) return "";
+      await wait(250);
+    }
+    return "";
   }
 
   function showPreparationPanel() {
@@ -318,8 +351,8 @@
   }
 
   async function moveSubmission(direction) {
-    const button = direction === "next" ? findNextSubmissionButton() : findPreviousSubmissionButton();
-    if (!button) return false;
+    const button = await waitForSubmissionButton(direction);
+    if (submissionButtonDisabled(button)) return false;
     const before = getSubmissionKey();
     button.click();
     const changed = await waitForSubmissionChange(before);
@@ -349,12 +382,19 @@
         if (!await moveSubmission("previous")) break;
       }
 
+      updatePreparation("最初の提出物を確認中…", "Classroomのファイルプレビューを待っています。");
+      const initialFileName = await waitForSubmissionFile(20000);
+      const initialNavigation = findNextSubmissionButton() || findPreviousSubmissionButton();
+      if (!initialFileName && !initialNavigation) {
+        throw new Error("Classroomの提出者画面を読み込めませんでした。準備専用タブで提出物が表示されているか確認してください。");
+      }
+
       while (!state.prepareCancelled) {
         const submissionKey = getSubmissionKey();
         if (!submissionKey || seen.has(submissionKey)) break;
         seen.add(submissionKey);
         const sequence = seen.size;
-        const fileName = findOfficeFileName();
+        const fileName = sequence === 1 ? initialFileName : await waitForSubmissionFile(15000);
 
         if (/\.(?:docx?|pptx?)$/i.test(fileName)) {
           updatePreparation(`${sequence}件目を準備中`, `${fileName} を取得・PDF化しています。`);
