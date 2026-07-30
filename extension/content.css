@@ -138,59 +138,70 @@
 
 #cwr-preparation {
   position: fixed;
-  inset: 0;
+  right: 18px;
+  bottom: 18px;
   z-index: 2147483647;
-  display: grid;
-  place-items: center;
-  padding: 24px;
+  width: min(390px, calc(100vw - 36px));
   color: #e8eaed;
-  background: rgba(15, 16, 18, 0.76);
-  backdrop-filter: blur(4px);
   font: 14px/1.5 Arial, "Noto Sans JP", sans-serif;
+  pointer-events: none;
 }
 
 #cwr-preparation-card {
-  width: min(480px, 100%);
-  padding: 28px;
+  width: 100%;
+  padding: 18px;
   border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 20px;
-  background: #292a2d;
-  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.48);
-  text-align: center;
+  border-radius: 16px;
+  background: rgba(41, 42, 45, 0.97);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.42);
+  pointer-events: auto;
+}
+
+#cwr-preparation-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
 #cwr-preparation-spinner {
-  width: 34px;
-  height: 34px;
-  margin: 0 auto 16px;
-  border: 3px solid #5f6368;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border: 2px solid #5f6368;
   border-top-color: #8ab4f8;
   border-radius: 50%;
   animation: cwr-spin 0.9s linear infinite;
 }
 
 #cwr-preparation-title {
-  margin: 0 0 10px;
-  font-size: 22px;
+  margin: 0;
+  font-size: 16px;
 }
 
 #cwr-preparation-count {
   margin: 0 0 8px;
   color: #8ab4f8;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
 }
 
 #cwr-preparation-detail {
-  min-height: 44px;
+  min-height: 42px;
   margin: 0 0 8px;
   color: #bdc1c6;
 }
 
 #cwr-preparation-elapsed {
-  margin: 0 0 18px;
+  margin: 0 0 8px;
   color: #9aa0a6;
   font-variant-numeric: tabular-nums;
+}
+
+#cwr-preparation-note {
+  margin: 0 0 14px;
+  color: #bdc1c6;
+  font-size: 12px;
 }
 
 #cwr-preparation-cancel {
@@ -219,5 +230,11 @@
 
   #cwr-status {
     grid-column: 1;
+  }
+
+  #cwr-preparation {
+    right: 12px;
+    bottom: 12px;
+    width: min(360px, calc(100vw - 24px));
   }
 }
