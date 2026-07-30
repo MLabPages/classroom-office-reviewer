@@ -456,7 +456,7 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url || "/", `http://${host}:${port}`);
   if (req.method === "GET" && url.pathname === "/health") {
-    sendJson(res, 200, { ok: true, service: "Classroom Office Reviewer", version: "0.5.8", sessionId: serviceSessionId, cacheHours: 24, cacheLimit: 600 });
+    sendJson(res, 200, { ok: true, service: "Classroom Office Reviewer", version: "0.5.9", sessionId: serviceSessionId, cacheHours: 24, cacheLimit: 600 });
     return;
   }
   if (req.method === "GET" && url.pathname.startsWith("/file/")) {

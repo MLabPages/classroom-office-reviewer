@@ -3,6 +3,7 @@ const PENDING_KEY = "classroomWordReviewerPending";
 const PREPARED_KEY = "classroomWordReviewerPrepared";
 const PREPARED_SUBMISSIONS_KEY = "classroomWordReviewerPreparedSubmissions";
 const HELPER_SESSION_KEY = "classroomWordReviewerHelperSession";
+const PREPARATION_TAB_KEY = "classroomWordReviewerPreparationTab";
 const PREPARED_MAXIMUM = 600;
 const processingDownloads = new Set();
 const preparedPdfs = new Map();
@@ -90,6 +91,87 @@ function descriptorKey(descriptor) {
 
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function getPreparationState() {
+  const stored = await chrome.storage.session.get(PREPARATION_TAB_KEY);
+  return stored[PREPARATION_TAB_KEY] || null;
+}
+
+async function setPreparationState(value) {
+  if (value) await chrome.storage.session.set({ [PREPARATION_TAB_KEY]: value });
+  else await chrome.storage.session.remove(PREPARATION_TAB_KEY);
+}
+
+async function sendWhenReady(tabId, message) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const response = await sendToFrame(tabId, 0, message);
+    if (response?.ok) return response;
+    await wait(500);
+  }
+  throw new Error("準備専用タブを開始できませんでした。");
+}
+
+async function waitForClassroomTab(tabId) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (tab?.status === "complete" && tab.url?.startsWith("https://classroom.google.com/")) return tab;
+    await wait(500);
+  }
+  throw new Error("準備専用タブの読み込みが完了しませんでした。");
+}
+
+async function startBulkPreparation(sourceTabId) {
+  const sourceTab = await chrome.tabs.get(sourceTabId);
+  if (!sourceTab.url?.startsWith("https://classroom.google.com/")) {
+    throw new Error("Classroomの採点画面で実行してください。");
+  }
+
+  let preparationState = await getPreparationState();
+  let preparationTab = null;
+  if (preparationState?.tabId) {
+    preparationTab = await chrome.tabs.get(preparationState.tabId).catch(() => null);
+  }
+  if (preparationTab && preparationState.status === "running") {
+    await setPreparationState({ ...preparationState, sourceTabId });
+    return { ok: true, alreadyRunning: true };
+  }
+  const reused = Boolean(preparationTab);
+  if (!preparationTab) {
+    preparationTab = await chrome.tabs.create({ url: sourceTab.url, active: false });
+  } else if (preparationTab.url !== sourceTab.url) {
+    preparationTab = await chrome.tabs.update(preparationTab.id, { url: sourceTab.url, active: false });
+  }
+
+  preparationState = { tabId: preparationTab.id, sourceTabId, status: "running", startedAt: Date.now() };
+  await setPreparationState(preparationState);
+  try {
+    await waitForClassroomTab(preparationTab.id);
+    await sendWhenReady(preparationTab.id, { type: "cwr-run-preparation" });
+  } catch (error) {
+    await setPreparationState({ ...preparationState, status: "error" });
+    throw error;
+  }
+  return { ok: true, reused };
+}
+
+async function relayPreparationProgress(senderTabId, progress) {
+  const preparationState = await getPreparationState();
+  if (!preparationState || preparationState.tabId !== senderTabId) return { ok: false };
+  await notifyTab(preparationState.sourceTabId, { type: "cwr-prepare-remote-progress", ...progress });
+  if (progress.status && progress.status !== "running") {
+    await setPreparationState({ ...preparationState, status: progress.status });
+  }
+  return { ok: true };
+}
+
+async function cancelBulkPreparation(sourceTabId) {
+  const preparationState = await getPreparationState();
+  if (!preparationState || preparationState.sourceTabId !== sourceTabId || preparationState.status !== "running") {
+    return { ok: false };
+  }
+  await sendToFrame(preparationState.tabId, 0, { type: "cwr-cancel-preparation" });
+  return { ok: true };
 }
 
 async function getPreparedPdf(key) {
@@ -437,13 +519,19 @@ async function processCompletedDownload(downloadId) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!new Set(["cwr-start", "cwr-prepare-one", "cwr-open-office", "cwr-close-office", "cwr-release-pdf"]).has(message?.type)) return false;
+  if (!new Set(["cwr-start", "cwr-prepare-one", "cwr-start-bulk-preparation", "cwr-prepare-progress", "cwr-cancel-bulk-preparation", "cwr-open-office", "cwr-close-office", "cwr-release-pdf"]).has(message?.type)) return false;
 
   (async () => {
     try {
       const tabId = sender.tab?.id;
       if (typeof tabId !== "number") throw new Error("Classroomのタブを特定できませんでした。");
-      const result = message.type === "cwr-prepare-one"
+      const result = message.type === "cwr-start-bulk-preparation"
+        ? await startBulkPreparation(tabId)
+        : message.type === "cwr-prepare-progress"
+          ? await relayPreparationProgress(tabId, message.progress || {})
+          : message.type === "cwr-cancel-bulk-preparation"
+            ? await cancelBulkPreparation(tabId)
+            : message.type === "cwr-prepare-one"
         ? await prepareCurrentSubmission(tabId, message.submissionKey || "", message.expectedName || "")
         : message.type === "cwr-open-office"
         ? await startOfficeWindow(tabId, message.submissionKey || "")
@@ -463,6 +551,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
   })();
   return true;
+});
+
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const preparationState = await getPreparationState();
+  if (!preparationState || preparationState.tabId !== tabId) return;
+  if (preparationState.status === "running") {
+    await notifyTab(preparationState.sourceTabId, {
+      type: "cwr-prepare-remote-progress",
+      status: "error",
+      title: "一括準備を中断しました",
+      countText: "準備専用タブが閉じられました",
+      detailText: "もう一度「全員分を一括準備」を押してください。"
+    });
+  }
+  await setPreparationState(null);
 });
 
 chrome.downloads.onChanged.addListener(async (delta) => {
