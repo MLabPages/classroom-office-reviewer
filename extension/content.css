@@ -4,10 +4,10 @@
   bottom: 18px;
   z-index: 2147483646;
   display: grid;
-  grid-template-columns: auto auto auto auto;
+  grid-template-columns: auto auto auto auto auto;
   align-items: center;
   gap: 8px 12px;
-  max-width: min(780px, calc(100vw - 36px));
+  max-width: min(980px, calc(100vw - 36px));
   padding: 10px 12px;
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 14px;
@@ -19,6 +19,7 @@
 
 #cwr-open,
 #cwr-open-window,
+#cwr-prepare,
 #cwr-toggle {
   border: 0;
   border-radius: 999px;
@@ -34,6 +35,8 @@
 #cwr-open:focus-visible,
 #cwr-open-window:hover,
 #cwr-open-window:focus-visible,
+#cwr-prepare:hover,
+#cwr-prepare:focus-visible,
 #cwr-toggle:hover,
 #cwr-toggle:focus-visible {
   background: #1765cc;
@@ -116,11 +119,97 @@
   box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.28);
 }
 
+#cwr-prepare {
+  color: #202124;
+  background: #fdd663;
+}
+
+#cwr-prepare:hover,
+#cwr-prepare:focus-visible {
+  background: #f6c944;
+}
+
 #cwr-overlay iframe {
   display: block;
   width: 100%;
   height: 100%;
   border: 0;
+}
+
+#cwr-preparation {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: #e8eaed;
+  background: rgba(15, 16, 18, 0.76);
+  backdrop-filter: blur(4px);
+  font: 14px/1.5 Arial, "Noto Sans JP", sans-serif;
+}
+
+#cwr-preparation-card {
+  width: min(480px, 100%);
+  padding: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 20px;
+  background: #292a2d;
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.48);
+  text-align: center;
+}
+
+#cwr-preparation-spinner {
+  width: 34px;
+  height: 34px;
+  margin: 0 auto 16px;
+  border: 3px solid #5f6368;
+  border-top-color: #8ab4f8;
+  border-radius: 50%;
+  animation: cwr-spin 0.9s linear infinite;
+}
+
+#cwr-preparation-title {
+  margin: 0 0 10px;
+  font-size: 22px;
+}
+
+#cwr-preparation-count {
+  margin: 0 0 8px;
+  color: #8ab4f8;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+#cwr-preparation-detail {
+  min-height: 44px;
+  margin: 0 0 8px;
+  color: #bdc1c6;
+}
+
+#cwr-preparation-elapsed {
+  margin: 0 0 18px;
+  color: #9aa0a6;
+  font-variant-numeric: tabular-nums;
+}
+
+#cwr-preparation-cancel {
+  border: 1px solid #5f6368;
+  border-radius: 999px;
+  padding: 9px 16px;
+  color: #e8eaed;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+#cwr-preparation-cancel:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+@keyframes cwr-spin {
+  to { transform: rotate(360deg); }
 }
 
 @media (max-width: 900px) {

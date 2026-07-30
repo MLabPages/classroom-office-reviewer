@@ -154,6 +154,9 @@ async function toggleFullscreen() {
 }
 
 fullscreenButton.addEventListener("click", () => toggleFullscreen().catch(showError));
+document.getElementById("prepare").addEventListener("click", () => {
+  window.parent.postMessage({ type: "cwr-prepare-all" }, "*");
+});
 document.getElementById("disable").addEventListener("click", () => {
   window.parent.postMessage({ type: "cwr-disable" }, "*");
 });
