@@ -9,6 +9,7 @@
     currentKey: "",
     convertedKey: "",
     displayedPdfUrl: "",
+    viewerStatus: null,
     timer: null,
     ui: null,
     overlay: null
@@ -259,10 +260,13 @@
   }
 
   function setStatus(text, kind = "idle") {
+    state.viewerStatus = { text, kind };
     const status = document.getElementById("cwr-status");
-    if (!status) return;
-    status.textContent = text;
-    status.dataset.kind = kind;
+    if (status) {
+      status.textContent = text;
+      status.dataset.kind = kind;
+    }
+    state.overlay?.querySelector("iframe")?.contentWindow?.postMessage({ type: "cwr-viewer-status", text, kind }, "*");
   }
 
   async function startConversion(isAutomatic) {
@@ -319,6 +323,29 @@
     };
     const filename = findOfficeFileName();
     let toolbarTop = Number.POSITIVE_INFINITY;
+    let sidebarLeft = 0;
+    for (const element of document.querySelectorAll("div, aside, section")) {
+      if (!visible(element)) continue;
+      const rect = element.getBoundingClientRect();
+      const value = textOf(element);
+      if (rect.right < window.innerWidth - 5 || rect.height < window.innerHeight * 0.45) continue;
+      if (rect.width < 240 || rect.width > 520 || !/(成績|Grade)/.test(value)) continue;
+      sidebarLeft = Math.max(sidebarLeft, rect.left);
+    }
+    const previewRight = sidebarLeft > window.innerWidth * 0.55
+      ? Math.round(window.innerWidth - sidebarLeft)
+      : fallback.right;
+
+    const topToolbar = [...document.querySelectorAll("div, header, section")]
+      .filter((element) => element.id !== "cwr-overlay" && !element.closest("#cwr-overlay"))
+      .map((element) => ({ rect: element.getBoundingClientRect(), background: getComputedStyle(element).backgroundColor }))
+      .find(({ rect, background }) => rect.left <= 4
+        && rect.top <= 8
+        && rect.width >= window.innerWidth * 0.45
+        && rect.height >= 38
+        && rect.height <= 100
+        && /rgb\((?:1[5-9]|2[0-9]|3[0-9]),\s*(?:1[5-9]|2[0-9]|3[0-9]),\s*(?:1[5-9]|2[0-9]|3[0-9])\)/.test(background));
+    if (topToolbar) return { top: 0, right: previewRight };
 
     // Google Classroom's own file preview is a dark, wide panel. Replacing that
     // panel keeps one document area instead of stacking two viewers vertically.
@@ -339,7 +366,7 @@
     if (previewPanel) {
       return {
         top: Math.round(previewPanel.rect.top),
-        right: Math.max(0, Math.round(window.innerWidth - previewPanel.rect.right))
+        right: previewRight
       };
     }
 
@@ -354,21 +381,9 @@
       }
     }
 
-    let sidebarLeft = 0;
-    for (const element of document.querySelectorAll("div, aside, section")) {
-      if (!visible(element)) continue;
-      const rect = element.getBoundingClientRect();
-      const value = textOf(element);
-      if (rect.right < window.innerWidth - 5 || rect.height < window.innerHeight * 0.45) continue;
-      if (rect.width < 240 || rect.width > 520 || !/(成績|Grade)/.test(value)) continue;
-      sidebarLeft = Math.max(sidebarLeft, rect.left);
-    }
-
     return {
       top: Number.isFinite(toolbarTop) && toolbarTop > 120 ? Math.round(toolbarTop) : fallback.top,
-      right: sidebarLeft > window.innerWidth * 0.55
-        ? Math.round(window.innerWidth - sidebarLeft)
-        : fallback.right
+      right: previewRight
     };
   }
 
@@ -397,6 +412,10 @@
     iframe.src = viewerUrl.href;
     iframe.title = `${fileName || "Office提出物"} の高忠実度プレビュー`;
     iframe.allow = "fullscreen";
+    iframe.addEventListener("load", () => {
+      const viewerStatus = state.viewerStatus;
+      if (viewerStatus) iframe.contentWindow?.postMessage({ type: "cwr-viewer-status", ...viewerStatus }, "*");
+    });
     overlay.appendChild(iframe);
     document.body.appendChild(overlay);
     state.overlay = overlay;
@@ -436,9 +455,9 @@
         setTimeout(() => {
           if (state.mode === "office") startOfficeWindow(true);
           else startConversion(true);
-        }, 900);
+        }, 120);
       }
-    }, 450);
+    }, 200);
   }
 
   makeUi();

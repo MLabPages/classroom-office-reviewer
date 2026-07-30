@@ -7,6 +7,7 @@ const pdfUrl = params.get("pdf") || "";
 const fileName = params.get("name") || "Office提出物";
 const nameElement = document.getElementById("name");
 const metaElement = document.getElementById("meta");
+const progressElement = document.getElementById("progress");
 const mainElement = document.getElementById("main");
 const pagesElement = document.getElementById("pages");
 const zoomOutButton = document.getElementById("zoom-out");
@@ -35,6 +36,12 @@ function showError(error) {
   message.textContent = `${error.message} Start-Reviewer.cmd を起動し直してください。`;
   pagesElement.replaceChildren(message);
 }
+
+window.addEventListener("message", (event) => {
+  if (event.data?.type !== "cwr-viewer-status") return;
+  progressElement.textContent = event.data.text || "";
+  progressElement.dataset.kind = event.data.kind || "idle";
+});
 
 async function renderPages() {
   if (!pdfDocument) return;
