@@ -4,13 +4,15 @@
     enabled: true,
     busy: false,
     auto: false,
-    prefetching: false,
+    preparing: false,
+    prepareCancelled: false,
     mode: "pdf",
     currentKey: "",
     convertedKey: "",
     displayedPdfUrl: "",
     viewerStatus: null,
     timer: null,
+    preparationTimer: null,
     ui: null,
     overlay: null,
     pendingOverlay: null
@@ -90,21 +92,6 @@
     }
     if (!isClassroomTop) return false;
 
-    if (message?.type === "cwr-prefetch-next") {
-      (async () => {
-        state.prefetching = true;
-        const before = getSubmissionKey();
-        const nextButton = findNextSubmissionButton();
-        if (!nextButton) {
-          sendResponse({ ok: false });
-          return;
-        }
-        nextButton.click();
-        sendResponse({ ok: await waitForSubmissionChange(before) });
-      })();
-      return true;
-    }
-
     if (message?.type === "cwr-status") {
       if (message.submissionKey && message.submissionKey !== getSubmissionKey()) return false;
       setStatus(message.text, message.state);
@@ -150,13 +137,23 @@
     return [location.href, getStudentLabel(), findOfficeFileName()].join("|");
   }
 
-  function findNextSubmissionButton() {
-    const nextLabel = /次の(?:提出者|生徒|学生)|次へ|next(?:\s+(?:student|submission))?/i;
+  function findSubmissionButton(direction) {
+    const labelPattern = direction === "next"
+      ? /次の(?:提出者|生徒|学生)|次へ|next(?:\s+(?:student|submission))?/i
+      : /前の(?:提出者|生徒|学生)|前へ|previous(?:\s+(?:student|submission))?/i;
     return [...document.querySelectorAll("button, [role='button']")].find((element) => {
       if (!visible(element) || element.getAttribute("aria-disabled") === "true" || element.disabled) return false;
       const labels = [textOf(element), element.getAttribute("aria-label"), element.getAttribute("title"), element.getAttribute("data-tooltip")];
-      return labels.some((label) => nextLabel.test(label || ""));
+      return labels.some((label) => labelPattern.test(label || ""));
     }) || null;
+  }
+
+  function findNextSubmissionButton() {
+    return findSubmissionButton("next");
+  }
+
+  function findPreviousSubmissionButton() {
+    return findSubmissionButton("previous");
   }
 
   function waitForSubmissionChange(previousKey) {
@@ -173,6 +170,155 @@
         }
       }, 150);
     });
+  }
+
+  function wait(milliseconds) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
+
+  function showPreparationPanel() {
+    document.getElementById("cwr-preparation")?.remove();
+    const panel = document.createElement("section");
+    panel.id = "cwr-preparation";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-modal", "true");
+    panel.innerHTML = `
+      <div id="cwr-preparation-card">
+        <div id="cwr-preparation-spinner" aria-hidden="true"></div>
+        <h2 id="cwr-preparation-title">提出物の一括準備</h2>
+        <p id="cwr-preparation-count">準備を開始しています…</p>
+        <p id="cwr-preparation-detail">先頭の提出者を確認中です。</p>
+        <p id="cwr-preparation-elapsed">経過 0秒</p>
+        <button id="cwr-preparation-cancel" type="button">現在の処理後に中止</button>
+      </div>
+    `;
+    panel.querySelector("#cwr-preparation-cancel").addEventListener("click", () => {
+      if (!state.preparing) {
+        panel.remove();
+        return;
+      }
+      state.prepareCancelled = true;
+      panel.querySelector("#cwr-preparation-cancel").disabled = true;
+      panel.querySelector("#cwr-preparation-detail").textContent = "現在の1件が終わったら中止します。";
+    });
+    document.body.appendChild(panel);
+    const startedAt = Date.now();
+    clearInterval(state.preparationTimer);
+    state.preparationTimer = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      const minutes = Math.floor(elapsed / 60);
+      const seconds = elapsed % 60;
+      const elapsedElement = document.getElementById("cwr-preparation-elapsed");
+      if (elapsedElement) elapsedElement.textContent = minutes ? `経過 ${minutes}分${seconds}秒` : `経過 ${seconds}秒`;
+    }, 1000);
+  }
+
+  function updatePreparation(countText, detailText) {
+    const count = document.getElementById("cwr-preparation-count");
+    const detail = document.getElementById("cwr-preparation-detail");
+    if (count && countText) count.textContent = countText;
+    if (detail && detailText) detail.textContent = detailText;
+  }
+
+  function finishPreparation(title, countText, detailText) {
+    const panel = document.getElementById("cwr-preparation");
+    if (!panel) return;
+    clearInterval(state.preparationTimer);
+    state.preparationTimer = null;
+    panel.querySelector("#cwr-preparation-spinner")?.remove();
+    panel.querySelector("#cwr-preparation-title").textContent = title;
+    updatePreparation(countText, detailText);
+    const button = panel.querySelector("#cwr-preparation-cancel");
+    button.disabled = false;
+    button.textContent = "閉じる";
+  }
+
+  async function moveSubmission(direction) {
+    const button = direction === "next" ? findNextSubmissionButton() : findPreviousSubmissionButton();
+    if (!button) return false;
+    const before = getSubmissionKey();
+    button.click();
+    const changed = await waitForSubmissionChange(before);
+    if (changed) await wait(direction === "next" ? 650 : 180);
+    return changed;
+  }
+
+  async function prepareAllSubmissions() {
+    if (state.preparing) return;
+    state.preparing = true;
+    state.prepareCancelled = false;
+    state.busy = false;
+    removeOverlay();
+    showPreparationPanel();
+
+    let preparedCount = 0;
+    let cachedCount = 0;
+    let skippedCount = 0;
+    let forwardMoves = 0;
+    const seen = new Set();
+    const preparedDocumentKeys = new Set();
+
+    try {
+      updatePreparation("先頭へ移動中…", "提出者の最初まで戻っています。");
+      for (let attempts = 0; attempts < 1000 && !state.prepareCancelled; attempts += 1) {
+        if (!await moveSubmission("previous")) break;
+      }
+
+      while (!state.prepareCancelled) {
+        const submissionKey = getSubmissionKey();
+        if (!submissionKey || seen.has(submissionKey)) break;
+        seen.add(submissionKey);
+        const sequence = seen.size;
+        const fileName = findOfficeFileName();
+
+        if (/\.(?:docx?|pptx?)$/i.test(fileName)) {
+          updatePreparation(`${sequence}件目を準備中`, `${fileName} を取得・PDF化しています。`);
+          let response = null;
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            response = await chrome.runtime.sendMessage({ type: "cwr-prepare-one", submissionKey, expectedName: fileName });
+            const repeatedDocument = response?.ok && preparedDocumentKeys.has(response.documentKey);
+            if ((response?.ok && !repeatedDocument) || attempt === 2) break;
+            response = repeatedDocument ? { ok: false, error: "画面更新を待っています。" } : response;
+            await wait(900);
+          }
+          if (response?.ok) {
+            preparedDocumentKeys.add(response.documentKey);
+            if (response.cached) cachedCount += 1;
+            else preparedCount += 1;
+          } else {
+            skippedCount += 1;
+          }
+        } else {
+          skippedCount += 1;
+        }
+
+        updatePreparation(
+          `${preparedCount + cachedCount}件準備済み${skippedCount ? `・${skippedCount}件未準備` : ""}`,
+          "次の提出者へ移動しています。"
+        );
+        if (state.prepareCancelled || !await moveSubmission("next")) break;
+        forwardMoves += 1;
+      }
+
+      updatePreparation("先頭へ戻しています…", "準備したPDFはこのPC内に保持されています。");
+      for (let index = 0; index < forwardMoves; index += 1) {
+        if (!await moveSubmission("previous")) break;
+      }
+
+      const total = preparedCount + cachedCount;
+      finishPreparation(
+        state.prepareCancelled ? "一括準備を中止しました" : "提出物の準備が完了しました",
+        `${total}件準備済み${skippedCount ? `・${skippedCount}件未準備` : ""}`,
+        total ? "学生を切り替えると、準備済みPDFを直接表示します。" : "準備できるWord／PowerPoint提出物が見つかりませんでした。"
+      );
+      setStatus(`${total}件の提出物を準備済み`, total ? "ready" : "idle");
+    } catch (error) {
+      finishPreparation("一括準備を中断しました", `${preparedCount + cachedCount}件準備済み`, error.message || "処理中にエラーが発生しました。");
+      setStatus(error.message || "一括準備に失敗しました。", "error");
+    } finally {
+      state.preparing = false;
+      state.prepareCancelled = false;
+    }
   }
 
   function isPowerPoint(fileName = findOfficeFileName()) {
@@ -199,9 +345,10 @@
     root.innerHTML = `
       <button id="cwr-open" type="button">Wordで正確に表示</button>
       <button id="cwr-open-window" type="button">Word別窓で表示</button>
+      <button id="cwr-prepare" type="button">全員分を一括準備</button>
       <label id="cwr-auto-label">
         <input id="cwr-auto" type="checkbox">
-        次を自動表示・先読み
+        次の提出物を自動表示
       </label>
       <button id="cwr-toggle" type="button">機能OFF</button>
       <span id="cwr-status" role="status">待機中</span>
@@ -221,13 +368,11 @@
       removeOverlay();
       startOfficeWindow(false);
     });
+    root.querySelector("#cwr-prepare").addEventListener("click", prepareAllSubmissions);
     root.querySelector("#cwr-auto").addEventListener("change", (event) => {
       state.auto = event.target.checked;
       chrome.storage.local.set({ cwrAuto: state.auto });
-      setStatus(state.auto ? "自動表示・先読みオン" : "自動表示・先読みオフ", "idle");
-      if (state.auto && state.convertedKey === getSubmissionKey()) {
-        chrome.runtime.sendMessage({ type: "cwr-prefetch" }).catch(() => undefined);
-      }
+      setStatus(state.auto ? "自動表示オン" : "自動表示オフ", "idle");
     });
     root.querySelector("#cwr-toggle").addEventListener("click", () => setEnabled(!state.enabled));
     updateUiLabels();
@@ -266,6 +411,10 @@
     if (status) {
       status.textContent = text;
       status.dataset.kind = kind;
+    }
+    if (state.preparing && document.getElementById("cwr-preparation-spinner")) {
+      const detail = document.getElementById("cwr-preparation-detail");
+      if (detail) detail.textContent = text;
     }
     state.overlay?.querySelector("iframe")?.contentWindow?.postMessage({ type: "cwr-viewer-status", text, kind }, "*");
   }
@@ -457,6 +606,7 @@
       setStatus("プレビューを閉じました。", "idle");
     }
     if (event.data?.type === "cwr-disable") setEnabled(false);
+    if (event.data?.type === "cwr-prepare-all") prepareAllSubmissions();
   });
 
   function handlePossibleSubmissionChange() {
@@ -469,14 +619,15 @@
       const hadPrevious = Boolean(state.currentKey);
       state.currentKey = key;
       state.busy = false;
+      if (state.preparing) return;
       if (hadPrevious) {
         // Do not blank the projector while Office is converting the next file.
         // The previous PDF remains visible until the replacement is ready.
         setStatus(state.overlay
-          ? "次の提出物を裏で準備中です。表示は切替まで維持します。"
+          ? "次の提出物へ切り替えています。表示は切替まで維持します。"
           : "提出者が切り替わりました。", "idle");
       }
-      if (state.enabled && hadPrevious && state.auto && !state.prefetching && /\.(?:docx?|pptx?)$/i.test(findOfficeFileName())) {
+      if (state.enabled && hadPrevious && state.auto && /\.(?:docx?|pptx?)$/i.test(findOfficeFileName())) {
         setTimeout(() => {
           if (state.mode === "office") startOfficeWindow(true);
           else startConversion(true);

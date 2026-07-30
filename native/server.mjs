@@ -20,8 +20,9 @@ const wordWindowHostPath = path.join(nativeDir, "Word-Window-Host.ps1");
 const powerPointWindowHostPath = path.join(nativeDir, "PowerPoint-Window-Host.ps1");
 const host = "127.0.0.1";
 const port = 18765;
-const cacheMaximumAgeMs = 8 * 60 * 60 * 1000;
-const cacheMaximumPdfs = 30;
+const serviceSessionId = crypto.randomUUID();
+const cacheMaximumAgeMs = 24 * 60 * 60 * 1000;
+const cacheMaximumPdfs = 600;
 let queue = Promise.resolve();
 let officeWindowQueue = Promise.resolve();
 let wordHost = null;
@@ -455,7 +456,7 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url || "/", `http://${host}:${port}`);
   if (req.method === "GET" && url.pathname === "/health") {
-    sendJson(res, 200, { ok: true, service: "Classroom Office Reviewer", version: "0.5.7", cacheHours: 8, cacheLimit: 30 });
+    sendJson(res, 200, { ok: true, service: "Classroom Office Reviewer", version: "0.5.8", sessionId: serviceSessionId, cacheHours: 24, cacheLimit: 600 });
     return;
   }
   if (req.method === "GET" && url.pathname.startsWith("/file/")) {
