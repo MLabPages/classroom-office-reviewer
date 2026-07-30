@@ -12,7 +12,8 @@
     viewerStatus: null,
     timer: null,
     ui: null,
-    overlay: null
+    overlay: null,
+    pendingOverlay: null
   };
 
   function visible(element) {
@@ -388,6 +389,8 @@
   }
 
   function removeOverlay() {
+    state.pendingOverlay?.remove();
+    state.pendingOverlay = null;
     state.overlay?.remove();
     state.overlay = null;
     state.displayedPdfUrl = "";
@@ -395,8 +398,10 @@
   }
 
   function renderPdf(pdfUrl, fileName, pageCount) {
+    state.pendingOverlay?.remove();
+    state.pendingOverlay = null;
+    const previousOverlay = state.overlay;
     const previousPdfUrl = state.displayedPdfUrl;
-    removeOverlay();
     const bounds = findPreviewBounds();
     const overlay = document.createElement("div");
     overlay.id = "cwr-overlay";
@@ -417,12 +422,32 @@
       if (viewerStatus) iframe.contentWindow?.postMessage({ type: "cwr-viewer-status", ...viewerStatus }, "*");
     });
     overlay.appendChild(iframe);
+    if (previousOverlay) overlay.style.visibility = "hidden";
     document.body.appendChild(overlay);
-    state.overlay = overlay;
-    state.displayedPdfUrl = pdfUrl;
     state.ui?.classList.add("cwr-hidden");
-    if (previousPdfUrl && previousPdfUrl !== pdfUrl) {
-      chrome.runtime.sendMessage({ type: "cwr-release-pdf", pdfUrl: previousPdfUrl }).catch(() => undefined);
+
+    if (!previousOverlay) {
+      state.overlay = overlay;
+      state.displayedPdfUrl = pdfUrl;
+    } else {
+      state.pendingOverlay = overlay;
+      const activate = (event) => {
+        if (event.source !== iframe.contentWindow || !new Set(["cwr-viewer-ready", "cwr-viewer-error"]).has(event.data?.type)) return;
+        window.removeEventListener("message", activate);
+        if (state.pendingOverlay !== overlay) {
+          overlay.remove();
+          return;
+        }
+        previousOverlay.remove();
+        overlay.style.visibility = "visible";
+        state.pendingOverlay = null;
+        state.overlay = overlay;
+        state.displayedPdfUrl = pdfUrl;
+        if (previousPdfUrl && previousPdfUrl !== pdfUrl) {
+          chrome.runtime.sendMessage({ type: "cwr-release-pdf", pdfUrl: previousPdfUrl }).catch(() => undefined);
+        }
+      };
+      window.addEventListener("message", activate);
     }
   }
 

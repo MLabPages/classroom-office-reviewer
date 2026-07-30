@@ -17,6 +17,9 @@ let pdfDocument = null;
 let zoom = 1;
 let renderGeneration = 0;
 let resizeTimer = null;
+let progressTimer = null;
+let progressStartedAt = 0;
+let progressText = "";
 
 nameElement.textContent = fileName;
 
@@ -35,12 +38,27 @@ function showError(error) {
   message.dataset.kind = "error";
   message.textContent = `${error.message} Start-Reviewer.cmd を起動し直してください。`;
   pagesElement.replaceChildren(message);
+  window.parent.postMessage({ type: "cwr-viewer-error" }, "*");
 }
 
 window.addEventListener("message", (event) => {
   if (event.data?.type !== "cwr-viewer-status") return;
-  progressElement.textContent = event.data.text || "";
-  progressElement.dataset.kind = event.data.kind || "idle";
+  const kind = event.data.kind || "idle";
+  progressText = event.data.text || "";
+  clearInterval(progressTimer);
+  progressTimer = null;
+  progressStartedAt = Date.now();
+  progressElement.dataset.kind = kind;
+  const updateProgress = () => {
+    const seconds = Math.max(0, Math.floor((Date.now() - progressStartedAt) / 1000));
+    progressElement.textContent = kind === "working" || kind === "converting"
+      ? `${progressText} ${seconds}秒`
+      : progressText;
+  };
+  updateProgress();
+  if (kind === "working" || kind === "converting") {
+    progressTimer = setInterval(updateProgress, 1000);
+  }
 });
 
 async function renderPages() {
@@ -51,8 +69,6 @@ async function renderPages() {
     : 0;
   const availableWidth = Math.max(320, mainElement.clientWidth - 32);
   const availableHeight = Math.max(320, mainElement.clientHeight - 24);
-  const fragment = document.createDocumentFragment();
-
   for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
     const page = await pdfDocument.getPage(pageNumber);
     if (generation !== renderGeneration) return;
@@ -70,7 +86,6 @@ async function renderPages() {
     canvas.style.width = `${Math.ceil(viewport.width)}px`;
     canvas.style.height = `${Math.ceil(viewport.height)}px`;
     wrapper.appendChild(canvas);
-    fragment.appendChild(wrapper);
 
     const context = canvas.getContext("2d", { alpha: false });
     await page.render({
@@ -78,10 +93,17 @@ async function renderPages() {
       viewport,
       transform: outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0]
     }).promise;
+
+    if (generation !== renderGeneration) return;
+    if (pageNumber === 1) {
+      pagesElement.replaceChildren(wrapper);
+      window.parent.postMessage({ type: "cwr-viewer-ready" }, "*");
+    } else {
+      pagesElement.appendChild(wrapper);
+    }
   }
 
   if (generation !== renderGeneration) return;
-  pagesElement.replaceChildren(fragment);
   requestAnimationFrame(() => {
     const maximum = mainElement.scrollHeight - mainElement.clientHeight;
     mainElement.scrollTop = maximum > 0 ? maximum * scrollRatio : 0;
