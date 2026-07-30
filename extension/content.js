@@ -36,14 +36,14 @@
     for (const node of nodes) {
       if (!visible(node)) continue;
       const sources = [
-        textOf(node),
         node.getAttribute("aria-label"),
         node.getAttribute("title"),
-        node.getAttribute("data-tooltip")
+        node.getAttribute("data-tooltip"),
+        textOf(node)
       ];
       for (const source of sources) {
         if (!source || source.length > 220) continue;
-        const match = source?.match(new RegExp(`([^\\\\/:*?\"<>|\\r\\n]{1,160}\\.(?:${extensionPattern}))(?:\\s|$)`, "i"));
+        const match = source?.match(new RegExp(`([^\\\\/:*?\"<>|\\r\\n]{1,160}?\\.(?:${extensionPattern}))(?=\\s|$)`, "i"));
         if (match) return match[1].trim();
       }
     }
@@ -62,32 +62,47 @@
     const frames = [...document.querySelectorAll("iframe[src]")];
     const documentFrame = frames.find((frame) => visible(frame) && /docs\.google\.com\/document\/(?:u\/\d+\/)?d\//i.test(frame.src));
     const slidesFrame = frames.find((frame) => visible(frame) && /docs\.google\.com\/presentation\/(?:u\/\d+\/)?d\//i.test(frame.src));
-    if (!documentFrame && !slidesFrame) return null;
-    const kind = documentFrame ? "google-document" : "google-presentation";
-    const labelPattern = documentFrame
-      ? /Google\s*(?:ドキュメント|Docs?)\s*[:：]?\s*([^|\r\n]{1,160})/i
-      : /Google\s*(?:スライド|Slides?)\s*[:：]?\s*([^|\r\n]{1,160})/i;
+    let labeledKind = "";
+    let labeledFileName = "";
     const nodes = document.querySelectorAll("a, button, [aria-label], [title], [data-tooltip], span");
     for (const node of nodes) {
       if (!visible(node)) continue;
-      const sources = [textOf(node), node.getAttribute("aria-label"), node.getAttribute("title"), node.getAttribute("data-tooltip")];
+      const sources = [node.getAttribute("aria-label"), node.getAttribute("title"), node.getAttribute("data-tooltip"), textOf(node)];
       for (const source of sources) {
-        const match = source?.match(labelPattern);
-        if (match) return { kind, fileName: match[1].trim(), expectedName: "", expectedFileId: parseDriveId((documentFrame || slidesFrame).src) };
+        const match = source?.match(/^Google\s*(ドキュメント|Docs?|スライド|Slides?)\s*[:：]\s*(.{1,160})$/i);
+        if (!match) continue;
+        labeledKind = /ドキュメント|docs?/i.test(match[1]) ? "google-document" : "google-presentation";
+        labeledFileName = match[2].trim();
+        break;
       }
+      if (labeledKind) break;
     }
+    if (!labeledKind && !documentFrame && !slidesFrame) return null;
+    const kind = labeledKind || (documentFrame ? "google-document" : "google-presentation");
+    const matchingFrame = kind === "google-document" ? documentFrame : slidesFrame;
     return {
       kind,
-      fileName: documentFrame ? "Googleドキュメント" : "Googleスライド",
+      fileName: labeledFileName || (kind === "google-document" ? "Googleドキュメント" : "Googleスライド"),
       expectedName: "",
-      expectedFileId: parseDriveId((documentFrame || slidesFrame).src)
+      expectedFileId: parseDriveId(matchingFrame?.src || ""),
+      expectedGoogleType: kind === "google-document" ? "document" : "presentation"
     };
   }
 
   function findSupportedFileInfo() {
+    const googleFileInfo = findGoogleFileInfo();
+    if (googleFileInfo) return googleFileInfo;
     const officeFileName = findOfficeFileName();
     if (officeFileName) return { kind: "office", fileName: officeFileName, expectedName: officeFileName };
-    return findGoogleFileInfo();
+    return null;
+  }
+
+  function inspectSubmissionFile() {
+    const supportedFile = findSupportedFileInfo();
+    if (supportedFile?.kind?.startsWith("google-") && !supportedFile.expectedFileId) return { waiting: true };
+    if (supportedFile) return supportedFile;
+    if (findAnyAttachmentFileName()) return { unsupported: true };
+    return null;
   }
 
   function parseDriveId(value) {
@@ -107,11 +122,12 @@
   function describeDocument() {
     let downloadUrl = "";
     let fileId = parseDriveId(location.href);
-    const googleType = /docs\.google\.com\/document\/(?:u\/\d+\/)?d\//i.test(location.href)
+    const classroomGoogleInfo = isClassroomTop ? findGoogleFileInfo() : null;
+    const googleType = (classroomGoogleInfo?.expectedFileId ? classroomGoogleInfo.expectedGoogleType : "") || (/docs\.google\.com\/document\/(?:u\/\d+\/)?d\//i.test(location.href)
       ? "document"
       : /docs\.google\.com\/presentation\/(?:u\/\d+\/)?d\//i.test(location.href)
         ? "presentation"
-        : "";
+        : "");
     const candidates = document.querySelectorAll("a[href], iframe[src]");
 
     for (const element of candidates) {
@@ -124,13 +140,25 @@
 
     const authMatch = location.href.match(/\/u\/(\d+)(?:\/|$)/);
     return {
-      fileName: findOfficeFileName() || findGoogleFileInfo()?.fileName || (googleType === "document" ? "Googleドキュメント" : googleType === "presentation" ? "Googleスライド" : ""),
+      fileName: classroomGoogleInfo?.fileName || findOfficeFileName() || (googleType === "document" ? "Googleドキュメント" : googleType === "presentation" ? "Googleスライド" : ""),
       fileId,
       downloadUrl,
       googleType,
       authuser: authMatch ? Number(authMatch[1]) : null,
       frameUrl: location.href
     };
+  }
+
+  if (globalThis.__CWR_TEST_HOOKS__) {
+    Object.assign(globalThis.__CWR_TEST_HOOKS__, {
+      findOfficeFileName,
+      findAnyAttachmentFileName,
+      findGoogleFileInfo,
+      findSupportedFileInfo,
+      inspectSubmissionFile,
+      describeDocument
+    });
+    return;
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -265,9 +293,8 @@
   async function waitForSubmissionFile(timeoutMs = 20000) {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      const supportedFile = findSupportedFileInfo();
-      if (supportedFile) return supportedFile;
-      if (findAnyAttachmentFileName()) return { unsupported: true };
+      const fileState = inspectSubmissionFile();
+      if (fileState && !fileState.waiting) return fileState;
       await wait(250);
     }
     return null;
@@ -445,7 +472,8 @@
               type: "cwr-prepare-one",
               submissionKey,
               expectedName: fileInfo.expectedName || "",
-              expectedFileId: fileInfo.expectedFileId || ""
+              expectedFileId: fileInfo.expectedFileId || "",
+              expectedGoogleType: fileInfo.expectedGoogleType || ""
             });
             const repeatedDocument = response?.ok && preparedDocumentKeys.has(response.documentKey);
             if ((response?.ok && !repeatedDocument) || attempt === 2) break;
@@ -621,7 +649,8 @@
         type: "cwr-start",
         submissionKey: key,
         expectedName: fileInfo.expectedName || "",
-        expectedFileId: fileInfo.expectedFileId || ""
+        expectedFileId: fileInfo.expectedFileId || "",
+        expectedGoogleType: fileInfo.expectedGoogleType || ""
       });
       if (!response?.ok) throw new Error(response?.error || "処理を開始できませんでした。");
       if (!response.completed) {
