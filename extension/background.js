@@ -263,6 +263,12 @@ async function prefetchNextSubmission(tabId) {
     const currentKey = descriptorKey(currentDescriptor || {});
     if (!currentKey) return;
 
+    await notifyTab(tabId, {
+      type: "cwr-status",
+      state: "working",
+      text: "次の提出物を先読み中…"
+    });
+
     const sourceTab = await chrome.tabs.get(tabId);
     if (!sourceTab.url?.startsWith("https://classroom.google.com/")) return;
     const prefetchTab = await chrome.tabs.create({ url: sourceTab.url, active: false });
@@ -273,11 +279,21 @@ async function prefetchNextSubmission(tabId) {
       const descriptor = await findNextDocument(prefetchTab.id, currentKey);
       const key = descriptorKey(descriptor);
       if (!key || prefetchedPdfs.has(key) || prefetchingPdfs.has(key)) return;
+      await notifyTab(tabId, {
+        type: "cwr-status",
+        state: "converting",
+        text: "次の提出物をOfficeでPDF化中…"
+      });
       const conversion = convertInMemory(prefetchTab.id, "", descriptor, { reportStatus: false, showPdf: false });
       prefetchingPdfs.set(key, conversion);
       try {
         const result = await conversion;
         await rememberPrefetchedPdf(key, result);
+        await notifyTab(tabId, {
+          type: "cwr-status",
+          state: "ready",
+          text: "次の提出物の準備ができました"
+        });
         while (prefetchedPdfs.size > 3) {
           const [expiredKey, expired] = prefetchedPdfs.entries().next().value;
           prefetchedPdfs.delete(expiredKey);
@@ -289,7 +305,13 @@ async function prefetchNextSubmission(tabId) {
     } finally {
       await chrome.tabs.remove(prefetchTab.id).catch(() => undefined);
     }
-  })().catch(() => undefined).finally(() => prefetchingTabs.delete(tabId));
+  })().catch(async () => {
+    await notifyTab(tabId, {
+      type: "cwr-status",
+      state: "idle",
+      text: "次の提出物は先読みできませんでした"
+    });
+  }).finally(() => prefetchingTabs.delete(tabId));
   prefetchingTabs.set(tabId, task);
   return task;
 }

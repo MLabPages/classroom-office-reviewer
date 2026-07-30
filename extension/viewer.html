@@ -11,6 +11,9 @@
     header { position: relative; z-index: 2; height: 50px; display: flex; align-items: center; gap: 8px; padding: 0 16px; background: #292a2d; box-shadow: 0 1px 3px rgba(0,0,0,.45); }
     #name { min-width: 0; flex: 1; overflow: hidden; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
     #meta { color: #bdc1c6; white-space: nowrap; }
+    #progress { display: none; max-width: min(34vw, 340px); overflow: hidden; padding: 4px 9px; border: 1px solid #5f6368; border-radius: 999px; color: #bdc1c6; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    #progress[data-kind="working"], #progress[data-kind="converting"] { display: block; color: #fdd663; border-color: #8a6d1f; }
+    #progress[data-kind="ready"] { display: block; color: #81c995; border-color: #3c7a58; }
     button { border: 1px solid #5f6368; border-radius: 999px; min-width: 34px; padding: 7px 11px; color: #e8eaed; background: transparent; cursor: pointer; }
     button:hover, button:focus-visible { background: #3c4043; outline: 2px solid #8ab4f8; }
     button:disabled { opacity: .4; cursor: default; }
@@ -31,6 +34,7 @@
   <header>
     <span id="name">Office提出物</span>
     <span id="meta">読み込み中…</span>
+    <span id="progress" role="status"></span>
     <button id="zoom-out" type="button" aria-label="縮小">−</button>
     <button id="zoom-in" type="button" aria-label="拡大">＋</button>
     <button id="fullscreen" type="button">全画面</button>
