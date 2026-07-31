@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.7.7";
+const expectedVersion = "0.7.8";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -53,7 +53,7 @@ assert(background.includes('"cwr-open-attachment"'));
 assert(content.includes("expectedGoogleType"));
 assert(content.includes("sequence === 1 && initialFileInfo"));
 assert(content.includes('googleType'));
-assert(content.includes('次の(?:生徒|学生)を選択'));
+assert(content.includes('次の(?:生徒|学生|ユーザー|提出者)'));
 assert(content.includes("function isSubmissionView()"));
 assert(content.includes("function waitForSubmissionView"));
 assert(content.includes('id="cwr-preparation-compact"'));
