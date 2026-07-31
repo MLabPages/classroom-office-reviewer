@@ -585,6 +585,18 @@
 
   function getStudentLabel() {
     const markers = ["提出済み", "Turned in", "返却済み", "Returned", "割り当て済み", "Assigned", "遅れて提出", "Done late", "不足", "Missing"];
+    
+    // Classroomの新しいUI：ドロップダウン内で現在選択されている生徒 (aria-checked="true")
+    // data-value 属性を持つ項目は生徒リストである可能性が高い。ステータス絞り込みメニュー等の場合はマーカーが含まれるため除外される。
+    const checkedItems = document.querySelectorAll("[aria-checked='true'][data-value], [aria-selected='true'][data-value]");
+    for (const item of checkedItems) {
+      const text = textOf(item);
+      if (text && text.length < 220 && !markers.some((marker) => text.includes(marker))) {
+        return text;
+      }
+    }
+
+    // 従来のUI：提出状況マーカーを含むボタンなどから抽出
     const elements = document.querySelectorAll("button, [role='button'], [role='combobox'], [role='listbox'], [aria-haspopup], [aria-label]");
     for (const element of elements) {
       if (!visible(element)) continue;
