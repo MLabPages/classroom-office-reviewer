@@ -46,7 +46,9 @@ assert(background.includes("async function inspectPreparationTab"));
 assert(background.includes("async function fetchWithTimeout"));
 // 通信はすべて fetchWithTimeout 経由（素の fetch は helper 内の1か所だけ）。
 assert.equal((background.match(/await fetch\(/g) || []).length, 1);
-assert(background.includes("url: sourceTab.url,\n      active: true,"));
+// 準備専用タブは前面で開く。背面だとChromeが処理を止める。
+// 改行コードに左右されないよう、行をまたいだ正規表現で確かめる。
+assert(/chrome\.tabs\.create\(\{[^}]*active: true/.test(background));
 assert(content.includes("function startStallWatchdog"));
 assert(content.includes("function becomePreparationTab"));
 assert(content.includes('findFileName("docx?|pptx?|pdf|'));
