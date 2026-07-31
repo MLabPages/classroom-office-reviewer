@@ -304,4 +304,4 @@ async function loadPdf(pdfUrl, targetFileName, targetPageCount) {
   } catch (error) {
     showError(error);
   }
-})();
+loadPdf(pdfUrl, fileName, params.get("pages")).catch(showError);
