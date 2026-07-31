@@ -344,13 +344,52 @@ async function getPreparedPdf(key) {
   return stored[PREPARED_KEY]?.[key] || null;
 }
 
+function cleanFileNameForMatching(name) {
+  if (!name) return "";
+  return name
+    .replace(/\.(docx?|pptx?|pdf)$/i, "")
+    .replace(/[…\.\s_（）()【】\[\]\-]+/gu, "")
+    .toLowerCase();
+}
+
+function extractStudentPrefixForMatching(name) {
+  if (!name) return "";
+  const match = name.match(/^([a-zA-Z0-9_-]{3,20}\s*[\u3040-\u30ff\u4e00-\u9fafA-Za-z]+)/u);
+  return match ? match[1].replace(/[\s_]+/g, "").toLowerCase() : "";
+}
+
 async function getPreparedPdfByName(fileName) {
   if (!fileName) return null;
   const normalized = fileName.trim().toLowerCase();
   const inMemory = preparedPdfsByName.get(normalized);
   if (inMemory) return inMemory;
+
   const stored = await chrome.storage.session.get(PREPARED_NAMES_KEY);
-  return stored[PREPARED_NAMES_KEY]?.[normalized] || null;
+  const nameMap = stored[PREPARED_NAMES_KEY] || {};
+  if (nameMap[normalized]) return nameMap[normalized];
+
+  const targetClean = cleanFileNameForMatching(fileName);
+  const targetPrefix = extractStudentPrefixForMatching(fileName);
+
+  const allEntries = [
+    ...preparedPdfsByName.entries(),
+    ...Object.entries(nameMap)
+  ];
+
+  for (const [name, item] of allEntries) {
+    if (!item) continue;
+    const itemClean = cleanFileNameForMatching(name);
+    const itemPrefix = extractStudentPrefixForMatching(name);
+
+    if (targetPrefix && itemPrefix && targetPrefix === itemPrefix) {
+      return item;
+    }
+    if (targetClean.length >= 4 && itemClean.length >= 4 && (itemClean.includes(targetClean) || targetClean.includes(itemClean))) {
+      return item;
+    }
+  }
+
+  return null;
 }
 
 async function getPreparedSubmission(submissionKey) {
