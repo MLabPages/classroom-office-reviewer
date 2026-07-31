@@ -8,7 +8,10 @@ $stderrPath = Join-Path $logsDir 'reviewer-error.log'
 $healthUri = 'http://127.0.0.1:18765/health'
 $shutdownUri = 'http://127.0.0.1:18765/shutdown'
 $manifestPath = Join-Path $rootDir 'extension\manifest.json'
-$expectedVersion = (Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).version
+# Windows PowerShell 5.1 treats UTF-8 files without a BOM as the system code
+# page. Read the extension manifest explicitly as UTF-8 before parsing JSON.
+$manifestJson = Get-Content -LiteralPath $manifestPath -Encoding UTF8 -Raw
+$expectedVersion = ($manifestJson | ConvertFrom-Json).version
 
 New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
 
