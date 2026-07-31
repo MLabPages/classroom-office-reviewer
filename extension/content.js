@@ -423,8 +423,9 @@
   async function waitForSubmissionChange(previousKey, timeoutMs = 20000) {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      if (getSubmissionKey() !== previousKey) return true;
-      await localWait(40);
+      const currentKey = getSubmissionKey();
+      if (currentKey && currentKey !== previousKey && (findSupportedFileInfo() || inspectSubmissionFile()?.unsupported)) return true;
+      await wait(150);
     }
     return false;
   }
@@ -1383,7 +1384,7 @@
       setStatus("提出者を切り替えられませんでした。Classroomを再読み込みしてください。", "error");
       return;
     }
-    await localWait(50);
+    await waitForSubmissionFile(5000);
     sendViewerControls();
     startConversion(false);
   }
@@ -1485,6 +1486,8 @@
         fileName: fileName || "Office提出物",
         pageCount: pageCount || null
       }, "*");
+      const viewerStatus = state.viewerStatus;
+      if (viewerStatus) existingIframe.contentWindow?.postMessage({ type: "cwr-viewer-status", ...viewerStatus }, "*");
       const bounds = findPreviewBounds();
       state.overlay.style.top = `${bounds.top}px`;
       state.overlay.style.right = `${bounds.right}px`;
