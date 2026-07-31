@@ -105,6 +105,19 @@ assert.deepEqual(
 );
 assert.equal(googleHooks.describeDocument().googleType, "document");
 
+// Googleドキュメントのラベルは、アイコン用の見えない文字が前に付くことや、
+// 名前が2回続けて出ることがある（Officeのdocxdocxと同様の重複表示）。
+// 拡張子がなく境界を作れないため、前半だけを取り出せているか確認する。
+const doubledGoogleTitle = "近大ゼミ2026_期末レポート";
+const iconPrefixedDoubledHooks = runDetection({
+  nodes: [new MockElement({
+    attributes: { "aria-label": `￼Google ドキュメント: ${doubledGoogleTitle}${doubledGoogleTitle}` }
+  })],
+  frames: [new MockElement({ src: `https://docs.google.com/document/d/${googleFileId}/grading?authuser=5` })]
+});
+assert.equal(iconPrefixedDoubledHooks.findSupportedFileInfo().fileName, doubledGoogleTitle);
+assert.equal(iconPrefixedDoubledHooks.findSupportedFileInfo().expectedFileId, googleFileId);
+
 const loadingGoogleHooks = runDetection({
   nodes: [new MockElement({ attributes: { "aria-label": `Google ドキュメント: ${googleTitle}` } })]
 });

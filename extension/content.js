@@ -91,6 +91,16 @@
       .replace(/[」』〉》】）)\]}]+$/u, "");
   }
 
+  // Google形式のラベルには拡張子がなく、Officeのように境界で重複を取り除けない。
+  // 文字列全体がちょうど半分ずつの繰り返しになっているときだけ、前半を採用する。
+  function dedupeDoubledLabel(text) {
+    const half = text.length / 2;
+    if (Number.isInteger(half) && half > 0 && text.slice(0, half) === text.slice(half)) {
+      return text.slice(0, half);
+    }
+    return text;
+  }
+
   function findFileName(extensionPattern) {
     const nodes = document.querySelectorAll("a, button, [role='button'], [role='menuitem'], [aria-label], [title], [data-tooltip]");
     for (const node of nodes) {
@@ -122,10 +132,11 @@
       if (!visible(node)) continue;
       const sources = [node.getAttribute("aria-label"), node.getAttribute("title"), node.getAttribute("data-tooltip"), textOf(node)];
       for (const source of sources) {
-        const match = source?.match(/^Google\s*(ドキュメント|Docs?|スライド|Slides?)\s*[:：]\s*(.{1,160})$/i);
+        // 先頭にアイコン用の見えない文字が入ることがあるため、^では固定しない。
+        const match = source?.match(/Google\s*(ドキュメント|Docs?|スライド|Slides?)\s*[:：]\s*(.{1,160})$/i);
         if (!match) continue;
         labeledKind = /ドキュメント|docs?/i.test(match[1]) ? "google-document" : "google-presentation";
-        labeledFileName = match[2].trim();
+        labeledFileName = dedupeDoubledLabel(match[2].trim());
         break;
       }
       if (labeledKind) break;
@@ -173,8 +184,11 @@
       for (const source of labelSourcesOf(current)) {
         const officeName = matchFileName(source, "docx?|pptx?");
         if (officeName) return officeName;
-        const googleLabel = source?.match(/^Google\s*(?:ドキュメント|Docs?|スライド|Slides?)\s*[:：]\s*(.{1,160})$/i);
-        if (googleLabel) return googleLabel[1].trim();
+        // 先頭にアイコン用の見えない文字が入ることがあるため、^では固定しない。
+        // また、Officeと違って拡張子がなく境界を作れないため、名前が2回続けて
+        // 出ていたら（近大ゼミ2026…近大ゼミ2026… のように）前半だけを使う。
+        const googleLabel = source?.match(/Google\s*(?:ドキュメント|Docs?|スライド|Slides?)\s*[:：]\s*(.{1,160})$/i);
+        if (googleLabel) return dedupeDoubledLabel(googleLabel[1].trim());
       }
       current = current.parentElement;
     }
@@ -1231,7 +1245,12 @@
           const displayedIndex = Math.max(0, activeFileIndex(files));
           // 学生名だけで見分けがつかないことがあるため、提出者ごと・ファイルごとの
           // 通し番号を持つ一覧を作り、あとで画面から確認できるようにする。
-          const studentLabelForLedger = studentDisplayName(getStudentLabel());
+          // 提出状況の表示が間に合っていないことがあるので、一度だけ待って取り直す。
+          let studentLabelForLedger = studentDisplayName(getStudentLabel());
+          if (!studentLabelForLedger) {
+            await wait(300);
+            studentLabelForLedger = studentDisplayName(getStudentLabel());
+          }
           const addLedgerEntry = (fileIndex, file, extra) => {
             setPreparationProgress({
               ledger: [...progress.ledger, {
