@@ -13,6 +13,14 @@ const pagesElement = document.getElementById("pages");
 const zoomOutButton = document.getElementById("zoom-out");
 const zoomInButton = document.getElementById("zoom-in");
 const fullscreenButton = document.getElementById("fullscreen");
+const headerElement = document.querySelector("header");
+const previousButton = document.getElementById("prev");
+const nextButton = document.getElementById("next");
+const moreButton = document.getElementById("more");
+const moreMenu = document.getElementById("more-menu");
+const wideButton = document.getElementById("wide");
+const filesButton = document.getElementById("files");
+const filesMenu = document.getElementById("files-menu");
 let pdfDocument = null;
 let zoom = 1;
 let renderGeneration = 0;
@@ -41,7 +49,92 @@ function showError(error) {
   window.parent.postMessage({ type: "cwr-viewer-error" }, "*");
 }
 
+function send(message) {
+  window.parent.postMessage(message, "*");
+}
+
+function closeMoreMenu() {
+  moreMenu.hidden = true;
+  moreButton.setAttribute("aria-expanded", "false");
+}
+
+function closeFilesMenu() {
+  filesMenu.hidden = true;
+  filesButton.setAttribute("aria-expanded", "false");
+}
+
+// 1人が複数ファイルを提出している場合だけ、切り替えボタンを出す。
+function renderFileSwitcher(files, activeIndex) {
+  const list = Array.isArray(files) ? files : [];
+  filesButton.hidden = list.length < 2;
+  if (filesButton.hidden) {
+    closeFilesMenu();
+    return;
+  }
+  const current = activeIndex >= 0 ? activeIndex : 0;
+  filesButton.textContent = `${current + 1}/${list.length} ▾`;
+  filesButton.title = `この提出者のファイル（${list.length}件）を切り替える`;
+  filesMenu.replaceChildren(...list.map((file, index) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.setAttribute("role", "menuitem");
+    item.textContent = `${index + 1}. ${file.name}`;
+    if (index === current) item.dataset.active = "true";
+    item.addEventListener("click", () => {
+      closeFilesMenu();
+      send({ type: "cwr-show-file", index });
+    });
+    return item;
+  }));
+}
+
+// 横幅が足りないとボタンの文字が折り返して読めなくなる。狭いときは記号表示へ。
+function updateHeaderDensity() {
+  const compact = headerElement.clientWidth < 620;
+  headerElement.classList.toggle("compact", compact);
+}
+
+previousButton.addEventListener("click", () => send({ type: "cwr-navigate", direction: "previous" }));
+nextButton.addEventListener("click", () => send({ type: "cwr-navigate", direction: "next" }));
+
+moreButton.addEventListener("click", () => {
+  const open = moreMenu.hidden;
+  closeFilesMenu();
+  moreMenu.hidden = !open;
+  moreButton.setAttribute("aria-expanded", String(open));
+});
+filesButton.addEventListener("click", () => {
+  const open = filesMenu.hidden;
+  closeMoreMenu();
+  filesMenu.hidden = !open;
+  filesButton.setAttribute("aria-expanded", String(open));
+});
+document.addEventListener("click", (event) => {
+  if (!moreMenu.hidden && !event.target.closest("#more-wrap")) closeMoreMenu();
+  if (!filesMenu.hidden && !event.target.closest("#files-wrap")) closeFilesMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  closeMoreMenu();
+  closeFilesMenu();
+});
+wideButton.addEventListener("click", () => {
+  closeMoreMenu();
+  send({ type: "cwr-toggle-wide" });
+});
+document.getElementById("reset-size").addEventListener("click", () => {
+  closeMoreMenu();
+  send({ type: "cwr-reset-size" });
+});
+
 window.addEventListener("message", (event) => {
+  if (event.data?.type === "cwr-viewer-controls") {
+    previousButton.disabled = event.data.previous === false;
+    nextButton.disabled = event.data.next === false;
+    wideButton.textContent = event.data.wide ? "Classroomの右側を表示" : "幅いっぱいに広げる";
+    renderFileSwitcher(event.data.files, event.data.activeIndex ?? -1);
+    return;
+  }
   if (event.data?.type !== "cwr-viewer-status") return;
   const kind = event.data.kind || "idle";
   progressText = event.data.text || "";
@@ -155,15 +248,18 @@ async function toggleFullscreen() {
 
 fullscreenButton.addEventListener("click", () => toggleFullscreen().catch(showError));
 document.getElementById("prepare").addEventListener("click", () => {
-  window.parent.postMessage({ type: "cwr-prepare-all" }, "*");
+  closeMoreMenu();
+  send({ type: "cwr-prepare-all" });
 });
 document.getElementById("disable").addEventListener("click", () => {
-  window.parent.postMessage({ type: "cwr-disable" }, "*");
+  closeMoreMenu();
+  send({ type: "cwr-disable" });
 });
 
 document.addEventListener("fullscreenchange", () => {
   const active = Boolean(document.fullscreenElement);
-  fullscreenButton.textContent = active ? "全画面終了" : "全画面";
+  fullscreenButton.querySelector(".label").textContent = active ? "全画面終了" : "全画面";
+  fullscreenButton.title = active ? "全画面終了" : "全画面";
   mainElement.classList.toggle("presentation-mode", active);
   renderPages().catch(showError);
 });
@@ -186,14 +282,14 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-document.getElementById("close").addEventListener("click", () => {
-  window.parent.postMessage({ type: "cwr-close" }, "*");
-});
+document.getElementById("close").addEventListener("click", () => send({ type: "cwr-close" }));
 
 window.addEventListener("resize", () => {
+  updateHeaderDensity();
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => renderPages().catch(showError), 250);
 });
+updateHeaderDensity();
 
 (async () => {
   try {

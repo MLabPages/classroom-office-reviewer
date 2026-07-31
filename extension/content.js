@@ -28,6 +28,9 @@
     watchdogTimer: null,
     lastRemoteProgressAt: 0,
     preparationCompact: false,
+    wide: false,
+    overlayBounds: null,
+    activeFile: null,
     ui: null,
     overlay: null,
     pendingOverlay: null
@@ -59,32 +62,39 @@
     return (element?.textContent || "").replace(/\s+/g, " ").trim();
   }
 
+  function labelSourcesOf(node) {
+    return [
+      node.getAttribute("aria-label"),
+      node.getAttribute("title"),
+      node.getAttribute("data-tooltip"),
+      textOf(node)
+    ];
+  }
+
+  function matchFileName(source, extensionPattern) {
+    if (!source || source.length > 220) return "";
+    // Classroom sometimes concatenates the visible label twice without a
+    // separator (for example, `name.docxname.docx`).  Requiring whitespace
+    // after the extension misses the first, valid filename in that case.
+    // A filename cannot contain a colon, so use the last label prefix as a
+    // boundary and stop at the first supported extension.
+    const colonIndex = source.lastIndexOf(":");
+    const candidateSource = (colonIndex >= 0 ? source.slice(colonIndex + 1) : source).trim();
+    const match = candidateSource.match(new RegExp(`([^\\\\/:*?\"<>|\\r\\n]{1,160}?\\.(?:${extensionPattern}))`, "i"));
+    if (!match) return "";
+    return match[1]
+      .trim()
+      .replace(/^[「『〈《【（([{]+/u, "")
+      .replace(/[」』〉》】）)\]}]+$/u, "");
+  }
+
   function findFileName(extensionPattern) {
     const nodes = document.querySelectorAll("a, button, [role='button'], [role='menuitem'], [aria-label], [title], [data-tooltip]");
     for (const node of nodes) {
       if (!visible(node)) continue;
-      const sources = [
-        node.getAttribute("aria-label"),
-        node.getAttribute("title"),
-        node.getAttribute("data-tooltip"),
-        textOf(node)
-      ];
-      for (const source of sources) {
-        if (!source || source.length > 220) continue;
-        // Classroom sometimes concatenates the visible label twice without a
-        // separator (for example, `name.docxname.docx`).  Requiring whitespace
-        // after the extension misses the first, valid filename in that case.
-        // A filename cannot contain a colon, so use the last label prefix as a
-        // boundary and stop at the first supported extension.
-        const colonIndex = source.lastIndexOf(":");
-        const candidateSource = (colonIndex >= 0 ? source.slice(colonIndex + 1) : source).trim();
-        const match = candidateSource.match(new RegExp(`([^\\\\/:*?\"<>|\\r\\n]{1,160}?\\.(?:${extensionPattern}))`, "i"));
-        if (match) {
-          return match[1]
-            .trim()
-            .replace(/^[「『〈《【（([{]+/u, "")
-            .replace(/[」』〉》】）)\]}]+$/u, "");
-        }
+      for (const source of labelSourcesOf(node)) {
+        const fileName = matchFileName(source, extensionPattern);
+        if (fileName) return fileName;
       }
     }
     return "";
@@ -135,6 +145,68 @@
     const officeFileName = findOfficeFileName();
     if (officeFileName) return { kind: "office", fileName: officeFileName, expectedName: officeFileName };
     return null;
+  }
+
+  function googleTypeOfUrl(value) {
+    if (/docs\.google\.com\/document\//i.test(value)) return "document";
+    if (/docs\.google\.com\/presentation\//i.test(value)) return "presentation";
+    return "";
+  }
+
+  // 添付カードの名前は、リンク自身か近い親のラベルに入っている。
+  function attachmentNameOf(node, googleType) {
+    let current = node;
+    for (let depth = 0; depth < 4 && current; depth += 1) {
+      for (const source of labelSourcesOf(current)) {
+        const officeName = matchFileName(source, "docx?|pptx?");
+        if (officeName) return officeName;
+        const googleLabel = source?.match(/^Google\s*(?:ドキュメント|Docs?|スライド|Slides?)\s*[:：]\s*(.{1,160})$/i);
+        if (googleLabel) return googleLabel[1].trim();
+      }
+      current = current.parentElement;
+    }
+    if (!googleType) return "";
+    const label = textOf(node).slice(0, 160);
+    return label || (googleType === "document" ? "Googleドキュメント" : "Googleスライド");
+  }
+
+  // 1人が複数ファイルを提出することがある。1件目だけ準備して残りを取り
+  // こぼさないよう、提出者画面にある添付リンクをすべて拾う。
+  function findSubmissionAttachments() {
+    const attachments = [];
+    const seen = new Set();
+    for (const node of document.querySelectorAll("a[href]")) {
+      const url = node.href || "";
+      if (!/(?:drive|docs)\.google\.com/i.test(url)) continue;
+      if (!visible(node)) continue;
+      const fileId = parseDriveId(url);
+      if (!fileId || seen.has(fileId)) continue;
+      const googleType = googleTypeOfUrl(url);
+      const fileName = attachmentNameOf(node, googleType);
+      if (!fileName) continue;
+      if (!googleType && !/\.(?:docx?|pptx?)$/i.test(fileName)) continue;
+      seen.add(fileId);
+      attachments.push({
+        kind: googleType ? (googleType === "document" ? "google-document" : "google-presentation") : "office",
+        fileName,
+        expectedName: googleType ? "" : fileName,
+        expectedFileId: fileId,
+        expectedGoogleType: googleType
+      });
+    }
+    return attachments;
+  }
+
+  // 表示中の1件（従来の検出）を先頭に、見つかった添付を続ける。
+  // 添付の検出に失敗しても、これまでどおり1件目は必ず準備できる。
+  function listSubmissionFiles(primary = findSupportedFileInfo()) {
+    const files = primary && !primary.unsupported && !primary.waiting ? [primary] : [];
+    for (const attachment of findSubmissionAttachments()) {
+      const duplicate = files.some((item) => (item.expectedFileId && item.expectedFileId === attachment.expectedFileId)
+        || (!item.expectedFileId && item.fileName === attachment.fileName));
+      if (!duplicate) files.push(attachment);
+    }
+    return files;
   }
 
   function inspectSubmissionFile() {
@@ -200,7 +272,9 @@
       describeDocument,
       isSubmissionView,
       formatDuration,
-      preparationCountText
+      preparationCountText,
+      findSubmissionAttachments,
+      listSubmissionFiles
     });
     return;
   }
@@ -850,37 +924,48 @@
         if (!submissionKey || seen.has(submissionKey)) break;
         seen.add(submissionKey);
 
-        if (fileInfo && !fileInfo.unsupported) {
-          const fileName = fileInfo.fileName;
-          setPreparationProgress({
-            countText: preparationCountText(preparedCount + cachedCount, skippedCount + failedCount, sequence),
-            detailText: `${fileName} を取得してPDFに変換しています。`,
-            fileName
-          });
-          let response = null;
-          for (let attempt = 0; attempt < 3; attempt += 1) {
-            response = await chrome.runtime.sendMessage({
-              type: "cwr-prepare-one",
-              submissionKey,
-              expectedName: fileInfo.expectedName || "",
-              expectedFileId: fileInfo.expectedFileId || "",
-              expectedGoogleType: fileInfo.expectedGoogleType || ""
+        // 1人が複数ファイルを出していることがあるので、全部まとめて準備する。
+        const files = fileInfo && !fileInfo.unsupported ? listSubmissionFiles(fileInfo) : [];
+        if (files.length) {
+          for (const [fileIndex, file] of files.entries()) {
+            if (state.prepareCancelled) break;
+            const fileName = file.fileName;
+            const ofFiles = files.length > 1 ? `（${fileIndex + 1}/${files.length}件目）` : "";
+            setPreparationProgress({
+              countText: preparationCountText(preparedCount + cachedCount, skippedCount + failedCount, sequence),
+              detailText: `${fileName}${ofFiles} を取得してPDFに変換しています。`,
+              fileName
             });
-            const repeatedDocument = response?.ok && preparedDocumentKeys.has(response.documentKey);
-            if ((response?.ok && !repeatedDocument) || attempt === 2) break;
-            response = repeatedDocument ? { ok: false, error: "画面更新を待っています。" } : response;
-            await wait(900);
-          }
-          if (response?.ok) {
-            preparedDocumentKeys.add(response.documentKey);
-            if (response.cached) cachedCount += 1;
-            else preparedCount += 1;
-          } else {
-            if (/補助アプリ|Start-Reviewer|古い版|起動していません/.test(response?.error || "")) {
-              throw new Error(response.error);
+            let response = null;
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+              response = await chrome.runtime.sendMessage({
+                // 1件目は表示中のファイルなので、画面と突き合わせる確実な経路を使う。
+                // 2件目以降は画面に出ていないため、ファイル番号を直接指定して取得する。
+                type: fileIndex === 0 ? "cwr-prepare-one" : "cwr-prepare-attachment",
+                submissionKey,
+                primary: fileIndex === 0,
+                fileName,
+                expectedName: file.expectedName || "",
+                expectedFileId: file.expectedFileId || "",
+                expectedGoogleType: file.expectedGoogleType || ""
+              });
+              // 画面と突き合わせる1件目だけ、前の提出者と同じ結果なら画面更新待ちとみなす。
+              const repeatedDocument = fileIndex === 0 && response?.ok && preparedDocumentKeys.has(response.documentKey);
+              if ((response?.ok && !repeatedDocument) || attempt === 2) break;
+              response = repeatedDocument ? { ok: false, error: "画面更新を待っています。" } : response;
+              await wait(900);
             }
-            failedCount += 1;
-            failedNames.push(fileName);
+            if (response?.ok) {
+              preparedDocumentKeys.add(response.documentKey);
+              if (response.cached) cachedCount += 1;
+              else preparedCount += 1;
+            } else {
+              if (/補助アプリ|Start-Reviewer|古い版|起動していません/.test(response?.error || "")) {
+                throw new Error(response.error);
+              }
+              failedCount += 1;
+              failedNames.push(fileName);
+            }
           }
         } else {
           skippedCount += 1;
@@ -1087,6 +1172,7 @@
 
     state.busy = true;
     const key = getSubmissionKey();
+    setActiveFile(fileInfo);
     setStatus("提出物を取得中…", "working");
     try {
       const response = await chrome.runtime.sendMessage({
@@ -1138,7 +1224,171 @@
     }
   }
 
+  // 画面の端から表示枠までの余白（px）。上端と右端だけを持ち、左下は常に画面の角。
+  function clampBounds(bounds) {
+    const maxTop = Math.max(0, window.innerHeight - 220);
+    const maxRight = Math.max(0, window.innerWidth - 360);
+    return {
+      top: Math.min(Math.max(0, Math.round(bounds.top)), maxTop),
+      right: Math.min(Math.max(0, Math.round(bounds.right)), maxRight)
+    };
+  }
+
+  // 自動計算 → 幅いっぱい設定 → 手動で変えた大きさ、の順に上書きする。
   function findPreviewBounds() {
+    const automatic = detectPreviewBounds();
+    const base = state.wide ? { top: automatic.top, right: 0 } : automatic;
+    return clampBounds({
+      top: Number.isFinite(state.overlayBounds?.top) ? state.overlayBounds.top : base.top,
+      right: Number.isFinite(state.overlayBounds?.right) ? state.overlayBounds.right : base.right
+    });
+  }
+
+  function applyOverlayBounds() {
+    const bounds = findPreviewBounds();
+    for (const element of [state.overlay, state.pendingOverlay]) {
+      if (!element) continue;
+      element.style.top = `${bounds.top}px`;
+      element.style.right = `${bounds.right}px`;
+    }
+  }
+
+  function saveOverlayBounds() {
+    chrome.storage.local.set({ cwrOverlayBounds: state.overlayBounds || null }).catch(() => undefined);
+  }
+
+  function setWideLayout(value) {
+    state.wide = Boolean(value);
+    // 幅の指定が残っていると「幅いっぱい」が効かないので、横方向だけ手動値を捨てる。
+    if (state.overlayBounds) delete state.overlayBounds.right;
+    chrome.storage.local.set({ cwrWide: state.wide }).catch(() => undefined);
+    saveOverlayBounds();
+    applyOverlayBounds();
+    sendViewerControls();
+  }
+
+  function resetOverlayBounds() {
+    state.overlayBounds = null;
+    saveOverlayBounds();
+    applyOverlayBounds();
+    sendViewerControls();
+    setStatus("表示の大きさを自動に戻しました。", "idle");
+  }
+
+  // 表示枠の上辺・右辺・角をつまんで、好きな大きさにできるようにする。
+  function attachResizeHandles(overlay) {
+    for (const handle of overlay.querySelectorAll(".cwr-resize")) {
+      handle.addEventListener("dblclick", resetOverlayBounds);
+      handle.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        const edge = handle.dataset.edge;
+        handle.setPointerCapture(event.pointerId);
+        overlay.classList.add("cwr-resizing");
+
+        const move = (moveEvent) => {
+          const next = { ...findPreviewBounds() };
+          if (edge !== "right") next.top = moveEvent.clientY;
+          if (edge !== "top") next.right = window.innerWidth - moveEvent.clientX;
+          state.overlayBounds = clampBounds(next);
+          applyOverlayBounds();
+        };
+        const stop = () => {
+          handle.removeEventListener("pointermove", move);
+          handle.removeEventListener("pointerup", stop);
+          handle.removeEventListener("pointercancel", stop);
+          overlay.classList.remove("cwr-resizing");
+          saveOverlayBounds();
+          sendViewerControls();
+        };
+        handle.addEventListener("pointermove", move);
+        handle.addEventListener("pointerup", stop);
+        handle.addEventListener("pointercancel", stop);
+      });
+    }
+  }
+
+  function setActiveFile(file) {
+    state.activeFile = file ? { id: file.expectedFileId || "", name: file.fileName || "" } : null;
+  }
+
+  function activeFileIndex(files) {
+    if (!state.activeFile) return 0;
+    return files.findIndex((file) => (state.activeFile.id && file.expectedFileId === state.activeFile.id)
+      || (!state.activeFile.id && file.fileName === state.activeFile.name));
+  }
+
+  function sendViewerControls() {
+    const frame = state.overlay?.querySelector("iframe");
+    if (!frame) return;
+    const previousButton = findSubmissionButton("previous");
+    const nextButton = findSubmissionButton("next");
+    const files = isSubmissionView() ? listSubmissionFiles() : [];
+    frame.contentWindow?.postMessage({
+      type: "cwr-viewer-controls",
+      previous: Boolean(previousButton) && !submissionButtonDisabled(previousButton),
+      next: Boolean(nextButton) && !submissionButtonDisabled(nextButton),
+      wide: state.wide,
+      files: files.map((file) => ({ name: file.fileName })),
+      activeIndex: activeFileIndex(files)
+    }, "*");
+  }
+
+  // 同じ提出者の2件目以降を表示する。画面に出ていないファイルは
+  // Drive上のファイル番号から直接取得する。
+  async function showSubmissionFile(index) {
+    if (!state.enabled || state.busy) return;
+    const files = listSubmissionFiles();
+    const file = files[index];
+    if (!file) {
+      setStatus("選んだファイルが見つかりませんでした。Classroomを再読み込みしてください。", "error");
+      return;
+    }
+    if (index === 0) {
+      startConversion(false);
+      return;
+    }
+    state.busy = true;
+    setActiveFile(file);
+    setStatus(`${file.fileName} を取得中…`, "working");
+    sendViewerControls();
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "cwr-open-attachment",
+        submissionKey: getSubmissionKey(),
+        primary: false,
+        fileName: file.fileName,
+        expectedName: file.expectedName || "",
+        expectedFileId: file.expectedFileId || "",
+        expectedGoogleType: file.expectedGoogleType || ""
+      });
+      if (!response?.ok) throw new Error(response?.error || "このファイルを表示できませんでした。");
+    } catch (error) {
+      state.busy = false;
+      setStatus(error.message || "このファイルを表示できませんでした。", "error");
+    }
+  }
+
+  async function moveToAdjacentSubmission(direction) {
+    if (!state.enabled) return;
+    const button = findSubmissionButton(direction);
+    if (!button || submissionButtonDisabled(button)) {
+      setStatus(direction === "next" ? "最後の提出者です。" : "最初の提出者です。", "idle");
+      return;
+    }
+    const before = getSubmissionKey();
+    setStatus(direction === "next" ? "次の提出者へ移動しています…" : "前の提出者へ移動しています…", "working");
+    button.click();
+    if (!await waitForSubmissionChange(before, 8000)) {
+      setStatus("提出者を切り替えられませんでした。Classroomを再読み込みしてください。", "error");
+      return;
+    }
+    await wait(350);
+    sendViewerControls();
+    startConversion(false);
+  }
+
+  function detectPreviewBounds() {
     const fallback = {
       // Keep the Classroom navigation visible, but use nearly the whole remaining
       // screen. This makes the normal view suitable for a classroom projector.
@@ -1243,8 +1493,15 @@
     iframe.addEventListener("load", () => {
       const viewerStatus = state.viewerStatus;
       if (viewerStatus) iframe.contentWindow?.postMessage({ type: "cwr-viewer-status", ...viewerStatus }, "*");
+      sendViewerControls();
     });
     overlay.appendChild(iframe);
+    overlay.insertAdjacentHTML("beforeend", `
+      <div class="cwr-resize cwr-resize-top" data-edge="top" title="上下の大きさを変更（ダブルクリックで自動に戻す）"></div>
+      <div class="cwr-resize cwr-resize-right" data-edge="right" title="左右の大きさを変更（ダブルクリックで自動に戻す）"></div>
+      <div class="cwr-resize cwr-resize-corner" data-edge="corner" title="大きさを変更（ダブルクリックで自動に戻す）"></div>
+    `);
+    attachResizeHandles(overlay);
     if (previousOverlay) overlay.style.visibility = "hidden";
     document.body.appendChild(overlay);
     state.ui?.classList.add("cwr-hidden");
@@ -1281,6 +1538,10 @@
     }
     if (event.data?.type === "cwr-disable") setEnabled(false);
     if (event.data?.type === "cwr-prepare-all") startDedicatedPreparation();
+    if (event.data?.type === "cwr-navigate") moveToAdjacentSubmission(event.data.direction === "previous" ? "previous" : "next");
+    if (event.data?.type === "cwr-toggle-wide") setWideLayout(!state.wide);
+    if (event.data?.type === "cwr-reset-size") resetOverlayBounds();
+    if (event.data?.type === "cwr-show-file") showSubmissionFile(Number(event.data.index) || 0);
   });
 
   function handlePossibleSubmissionChange() {
@@ -1310,7 +1571,9 @@
       const hadPrevious = Boolean(state.currentKey);
       state.currentKey = key;
       state.busy = false;
+      state.activeFile = null;
       if (state.preparing) return;
+      sendViewerControls();
       if (hadPrevious) {
         // Do not blank the projector while Office is converting the next file.
         // The previous PDF remains visible until the replacement is ready.
@@ -1332,9 +1595,12 @@
     if (response?.role === "preparation" && !response.interrupted) becomePreparationTab();
     if (response?.role === "source" && response.progress) handleRemotePreparationProgress(response.progress);
   }, () => undefined);
-  chrome.storage.local.get("cwrPreparationCompact").then(({ cwrPreparationCompact }) => {
-    state.preparationCompact = Boolean(cwrPreparationCompact);
+  chrome.storage.local.get(["cwrPreparationCompact", "cwrWide", "cwrOverlayBounds"]).then((stored) => {
+    state.preparationCompact = Boolean(stored.cwrPreparationCompact);
+    state.wide = Boolean(stored.cwrWide);
+    state.overlayBounds = stored.cwrOverlayBounds || null;
     renderPreparation();
+    if (state.overlay) applyOverlayBounds();
   }, () => undefined);
 
   makeUi();
@@ -1352,10 +1618,7 @@
     characterData: true
   });
   window.addEventListener("resize", () => {
-    if (!state.overlay) return;
-    const bounds = findPreviewBounds();
-    state.overlay.style.top = `${bounds.top}px`;
-    state.overlay.style.right = `${bounds.right}px`;
+    if (state.overlay) applyOverlayBounds();
   });
   window.addEventListener("unload", () => {
     if (state.mode === "office") {

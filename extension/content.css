@@ -112,8 +112,9 @@
   left: 0;
   bottom: 0;
   z-index: 2147483645;
-  min-width: min(640px, 52vw);
-  min-height: 360px;
+  /* これより狭いとビューアのボタンが収まらない。 */
+  min-width: 360px;
+  min-height: 200px;
   border-top: 1px solid rgba(255, 255, 255, 0.16);
   background: #202124;
   box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.28);
@@ -134,6 +135,49 @@
   width: 100%;
   height: 100%;
   border: 0;
+}
+
+/* 表示枠の上辺・右辺・角をつまんで大きさを変える。 */
+.cwr-resize {
+  position: absolute;
+  z-index: 1;
+  background: transparent;
+  touch-action: none;
+}
+
+.cwr-resize:hover,
+#cwr-overlay.cwr-resizing .cwr-resize {
+  background: rgba(138, 180, 248, 0.55);
+}
+
+.cwr-resize-top {
+  top: -3px;
+  right: 14px;
+  left: 0;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.cwr-resize-right {
+  top: 14px;
+  right: -3px;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.cwr-resize-corner {
+  top: -3px;
+  right: -3px;
+  width: 18px;
+  height: 18px;
+  border-top-right-radius: 4px;
+  cursor: nesw-resize;
+}
+
+/* つまんでいる間はiframeにマウスを取られないようにする。 */
+#cwr-overlay.cwr-resizing iframe {
+  pointer-events: none;
 }
 
 #cwr-preparation {

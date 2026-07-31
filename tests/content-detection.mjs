@@ -5,12 +5,13 @@ import { readFile } from "node:fs/promises";
 const content = await readFile(new URL("../extension/content.js", import.meta.url), "utf8");
 
 class MockElement {
-  constructor({ text = "", attributes = {}, src = "", rect = { width: 600, height: 60, top: 60 } } = {}) {
+  constructor({ text = "", attributes = {}, src = "", href = "", rect = { width: 600, height: 60, top: 60 } } = {}) {
     this.textContent = text;
     this.attributes = attributes;
     this.src = src;
-    this.href = "";
+    this.href = href;
     this.rect = rect;
+    this.parentElement = null;
   }
 
   getAttribute(name) {
@@ -111,6 +112,39 @@ assert.equal(slidesHooks.findSupportedFileInfo().kind, "google-presentation");
 assert.equal(slidesHooks.findSupportedFileInfo().expectedGoogleType, "presentation");
 assert.equal(slidesHooks.findSupportedFileInfo().expectedFileId, googleFileId);
 
+// vm内で作られた配列は素の配列へ直してから比べる。
+const plain = (value) => JSON.parse(JSON.stringify(value));
+
+// 1人が複数ファイルを提出した場合、2件目以降も拾えること。
+const firstFile = "26_0249 西山 期末レポート.docx";
+const secondFile = "26_0249 西山 発表資料.pptx";
+const multiHooks = runDetection({
+  nodes: [
+    new MockElement({ text: `Microsoft Word: ${firstFile}` }),
+    new MockElement({ text: firstFile, href: "https://drive.google.com/file/d/1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/view" }),
+    new MockElement({ text: secondFile, href: "https://drive.google.com/file/d/1BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB/view" }),
+    new MockElement({ text: "提出済みの記録.pdf", href: "https://drive.google.com/file/d/1CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC/view" }),
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ]
+});
+const attachments = multiHooks.findSubmissionAttachments();
+assert.deepEqual(plain(attachments.map((item) => item.fileName)), [firstFile, secondFile]);
+assert.equal(attachments[1].expectedFileId, "1BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+assert.equal(attachments[1].kind, "office");
+// 表示中の1件は先頭のまま、重複させずに続きを並べる。
+const files = multiHooks.listSubmissionFiles();
+assert.deepEqual(plain(files.map((item) => item.fileName)), [firstFile, secondFile]);
+
+// 添付リンクを1件も拾えなくても、従来どおり表示中の1件は準備できる。
+const singleHooks = runDetection({
+  nodes: [
+    new MockElement({ text: `Microsoft Word: ${firstFile}` }),
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ]
+});
+assert.deepEqual(plain(singleHooks.findSubmissionAttachments()), []);
+assert.deepEqual(plain(singleHooks.listSubmissionFiles().map((item) => item.fileName)), [firstFile]);
+
 const textHooks = runDetection({ nodes: [] });
 assert.equal(textHooks.formatDuration(45000), "45秒");
 assert.equal(textHooks.formatDuration(125000), "2分5秒");
@@ -118,4 +152,4 @@ assert.equal(textHooks.preparationCountText(0, 0, 1), "準備中…（1人目を
 assert.equal(textHooks.preparationCountText(3, 2, 6), "3件を準備しました・未準備 2件（6人目を処理中）");
 assert.equal(textHooks.preparationCountText(4, 0, 0), "4件を準備しました");
 
-console.log("Content detection handles Word duplicates, native Google documents, PDF submissions, and progress wording.");
+console.log("Content detection handles Word duplicates, native Google documents, PDF submissions, multiple attachments, and progress wording.");

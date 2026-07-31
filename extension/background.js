@@ -348,9 +348,11 @@ async function getPreparedSubmission(submissionKey) {
   return stored[PREPARED_SUBMISSIONS_KEY]?.[submissionKey] || null;
 }
 
-async function rememberPreparedPdf(key, submissionKey, result) {
+// primary=false は「その提出者の2件目以降」。提出者から引く索引は1件目のまま
+// 残し、2件目以降はファイル単位の索引（key）からだけ取り出せるようにする。
+async function rememberPreparedPdf(key, submissionKey, result, { primary = true } = {}) {
   preparedPdfs.set(key, result);
-  preparedSubmissions.set(submissionKey, result);
+  if (primary) preparedSubmissions.set(submissionKey, result);
   const stored = await chrome.storage.session.get(PREPARED_KEY);
   const entries = { ...(stored[PREPARED_KEY] || {}), [key]: result };
   const keep = Object.entries(entries).slice(-PREPARED_MAXIMUM);
@@ -559,6 +561,39 @@ async function prepareCurrentSubmission(tabId, submissionKey, expectedName, expe
   return { ...result, documentKey: key, mode: "prepared", cached: false };
 }
 
+// 画面に出ていない2件目以降の添付は、Drive上のファイル番号から直接取得する。
+// Classroomの表示を切り替える必要がないので、提出者ごとの往復が増えない。
+async function prepareAttachment(tabId, message, { showPdf = false } = {}) {
+  await helperHealth();
+  const fileId = message.expectedFileId || "";
+  if (!/^[a-zA-Z0-9_-]{20,}$/.test(fileId)) {
+    throw new Error("添付ファイルの識別番号を取得できませんでした。");
+  }
+  const googleType = ["document", "presentation"].includes(message.expectedGoogleType) ? message.expectedGoogleType : "";
+  const page = await sendToFrame(tabId, 0, { type: "cwr-describe-document" });
+  const descriptor = {
+    fileId,
+    fileName: message.fileName || message.expectedName || "",
+    googleType,
+    downloadUrl: "",
+    authuser: Number.isInteger(page?.authuser) ? page.authuser : 0
+  };
+
+  const submissionKey = message.submissionKey || "";
+  const primary = message.primary === true;
+  const key = descriptorKey(descriptor);
+  const prepared = await getPreparedPdf(key);
+  if (prepared) {
+    await rememberPreparedPdf(key, submissionKey, prepared, { primary });
+    if (showPdf) await notifyTab(tabId, { type: "cwr-show-pdf", submissionKey, ...prepared });
+    return { ...prepared, documentKey: key, mode: "prepared", cached: true };
+  }
+
+  const result = await convertDescriptor(tabId, submissionKey, descriptor, { reportStatus: true, showPdf });
+  await rememberPreparedPdf(key, submissionKey, result, { primary });
+  return { ...result, documentKey: key, mode: "prepared", cached: false };
+}
+
 async function startOfficeWindow(tabId, submissionKey, expectedName = "", expectedFileId = "") {
   await helperHealth();
   const descriptor = await waitForCurrentDocument(tabId, expectedName, expectedFileId);
@@ -680,6 +715,8 @@ if (globalThis.__CWR_BACKGROUND_TEST_HOOKS__) {
 const messageHandlers = {
   "cwr-start": (tabId, message) => startConversion(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "", message.expectedGoogleType || ""),
   "cwr-prepare-one": (tabId, message) => prepareCurrentSubmission(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "", message.expectedGoogleType || ""),
+  "cwr-prepare-attachment": (tabId, message) => prepareAttachment(tabId, message),
+  "cwr-open-attachment": (tabId, message) => prepareAttachment(tabId, message, { showPdf: true }),
   "cwr-start-bulk-preparation": (tabId) => startBulkPreparation(tabId),
   "cwr-prepare-progress": (tabId, message) => relayPreparationProgress(tabId, message.progress || {}),
   "cwr-cancel-bulk-preparation": () => cancelBulkPreparation(),
