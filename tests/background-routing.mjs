@@ -126,8 +126,8 @@ assert.equal((await hooks.getPreparedPdfById("second-id")).fileName, "second.ppt
 assert.equal(await hooks.getPreparedPdfById("unknown-id"), null);
 assert.equal(storageData.classroomWordReviewerPreparedIds["second-id"].fileName, "second.pptx");
 
-// 1人が複数ファイルを出していると、学籍番号だけの一致では絞り込めない。
-// 取り違えて別のファイルを表示しないよう、あいまい一致は諦める。
+// 同じファイル名で提出する学生が別にいても取り違えないよう、Drive上の
+// ファイル番号（ID）だけで引き当てる。名前だけでの代替検索は行わない。
 await hooks.rememberPreparedPdf("id-a|26_0249 西山 期末レポート.docx", "nishiyama", {
   ok: true,
   fileName: "26_0249 西山 期末レポート.docx",
@@ -138,11 +138,8 @@ await hooks.rememberPreparedPdf("id-b|26_0249 西山 発表資料.pptx", "nishiy
   fileName: "26_0249 西山 発表資料.pptx",
   pdfUrl: "http://127.0.0.1:18765/file/dddddddddddddddddddddddd.pdf"
 }, { primary: false, fileId: "id-b" });
-assert.equal(await hooks.getPreparedPdfByName("26_0249 西山 …"), null);
-// 名前がそのまま一致する場合は、これまでどおり再利用する。
-assert.equal(
-  (await hooks.getPreparedPdfByName("26_0249 西山 発表資料.pptx")).pdfUrl,
-  "http://127.0.0.1:18765/file/dddddddddddddddddddddddd.pdf"
-);
+assert.equal((await hooks.getPreparedPdfById("id-a")).fileName, "26_0249 西山 期末レポート.docx");
+assert.equal((await hooks.getPreparedPdfById("id-b")).fileName, "26_0249 西山 発表資料.pptx");
+assert.equal(typeof hooks.getPreparedPdfByName, "undefined");
 
 console.log("Background routing only accepts an open submission, then distinguishes native Google documents from Office files.");

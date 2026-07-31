@@ -23,7 +23,7 @@ assert(background.includes(`const HELPER_BASE = "http://127.0.0.1:${expectedPort
 assert(background.includes(`127\\.0\\.0\\.1:${expectedPort}`));
 assert(background.includes("const PREPARED_MAXIMUM = 600;"));
 assert(background.includes("chrome.storage.local"));
-assert(background.includes("preparedPdfsByName.clear()"));
+assert(!background.includes("getPreparedPdfByName"));
 assert(background.includes("if (primary)"));
 assert(background.includes("chrome.runtime.getManifest().version"));
 assert(background.includes("buildGooglePdfExportUrl"));

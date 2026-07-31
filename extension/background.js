@@ -1,7 +1,6 @@
 const HELPER_BASE = "http://127.0.0.1:18765";
 const PREPARED_KEY = "classroomWordReviewerPrepared";
 const PREPARED_SUBMISSIONS_KEY = "classroomWordReviewerPreparedSubmissions";
-const PREPARED_NAMES_KEY = "classroomWordReviewerPreparedNames";
 const PREPARED_IDS_KEY = "classroomWordReviewerPreparedIds";
 const HELPER_SESSION_KEY = "classroomWordReviewerHelperSession";
 const PREPARATION_TAB_KEY = "classroomWordReviewerPreparationTab";
@@ -42,9 +41,8 @@ async function helperHealth() {
   if (health.sessionId && stored[HELPER_SESSION_KEY] !== health.sessionId) {
     preparedPdfs.clear();
     preparedSubmissions.clear();
-    preparedPdfsByName.clear();
     preparedPdfsById.clear();
-    await chrome.storage.local.remove([PREPARED_KEY, PREPARED_SUBMISSIONS_KEY, PREPARED_NAMES_KEY, PREPARED_IDS_KEY]);
+    await chrome.storage.local.remove([PREPARED_KEY, PREPARED_SUBMISSIONS_KEY, PREPARED_IDS_KEY]);
     await chrome.storage.local.set({ [HELPER_SESSION_KEY]: health.sessionId });
   }
   return health;
@@ -339,68 +337,11 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(() => resolve({ ok: true }), safe));
 }
 
-const preparedPdfsByName = new Map();
-
 async function getPreparedPdf(key) {
   const inMemory = preparedPdfs.get(key);
   if (inMemory) return inMemory;
   const stored = await chrome.storage.local.get(PREPARED_KEY);
   return stored[PREPARED_KEY]?.[key] || null;
-}
-
-function cleanFileNameForMatching(name) {
-  if (!name) return "";
-  return name
-    .replace(/\.(docx?|pptx?|pdf)$/i, "")
-    .replace(/[…\.\s_（）()【】\[\]\-]+/gu, "")
-    .toLowerCase();
-}
-
-function extractStudentPrefixForMatching(name) {
-  if (!name) return "";
-  const match = name.match(/^([a-zA-Z0-9_-]{3,20}\s*[\u3040-\u30ff\u4e00-\u9fafA-Za-z]+)/u);
-  return match ? match[1].replace(/[\s_]+/g, "").toLowerCase() : "";
-}
-
-async function getPreparedPdfByName(fileName) {
-  if (!fileName) return null;
-  const normalized = fileName.trim().toLowerCase();
-  const inMemory = preparedPdfsByName.get(normalized);
-  if (inMemory) return inMemory;
-
-  const stored = await chrome.storage.local.get(PREPARED_NAMES_KEY);
-  const nameMap = stored[PREPARED_NAMES_KEY] || {};
-  if (nameMap[normalized]) return nameMap[normalized];
-
-  const targetClean = cleanFileNameForMatching(fileName);
-  const targetPrefix = extractStudentPrefixForMatching(fileName);
-
-  const allEntries = [
-    ...preparedPdfsByName.entries(),
-    ...Object.entries(nameMap)
-  ];
-
-  // 名前が省略表示されたときの救済策。ただし1人が複数ファイルを出していると
-  // 同じ学籍番号の候補が複数並ぶ。取り違えると別のファイルを表示してしまうため、
-  // 候補が1つに絞れるときだけ採用する。
-  const prefixMatches = new Map();
-  const partialMatches = new Map();
-  for (const [name, item] of allEntries) {
-    if (!item) continue;
-    const itemClean = cleanFileNameForMatching(name);
-    const itemPrefix = extractStudentPrefixForMatching(name);
-    if (targetClean.length >= 4 && itemClean.length >= 4
-      && (itemClean.includes(targetClean) || targetClean.includes(itemClean))) {
-      partialMatches.set(item.pdfUrl || name, item);
-      continue;
-    }
-    if (targetPrefix && itemPrefix && targetPrefix === itemPrefix) {
-      prefixMatches.set(item.pdfUrl || name, item);
-    }
-  }
-  if (partialMatches.size === 1) return [...partialMatches.values()][0];
-  if (partialMatches.size === 0 && prefixMatches.size === 1) return [...prefixMatches.values()][0];
-  return null;
 }
 
 async function getPreparedSubmission(submissionKey) {
@@ -425,9 +366,6 @@ async function getPreparedPdfById(fileId) {
 async function rememberPreparedPdf(key, submissionKey, result, { primary = true, fileId = "" } = {}) {
   preparedPdfs.set(key, result);
   if (primary) preparedSubmissions.set(submissionKey, result);
-  if (result?.fileName) {
-    preparedPdfsByName.set(result.fileName.trim().toLowerCase(), result);
-  }
   const documentId = fileId || String(key).split("|")[0] || "";
   if (documentId) preparedPdfsById.set(documentId, result);
 
@@ -443,13 +381,6 @@ async function rememberPreparedPdf(key, submissionKey, result, { primary = true,
     await chrome.storage.local.set({ [PREPARED_SUBMISSIONS_KEY]: Object.fromEntries(submissionKeep) });
   }
 
-  if (result?.fileName) {
-    const nameStored = await chrome.storage.local.get(PREPARED_NAMES_KEY);
-    const nameEntries = { ...(nameStored[PREPARED_NAMES_KEY] || {}), [result.fileName.trim().toLowerCase()]: result };
-    const nameKeep = Object.entries(nameEntries).slice(-PREPARED_MAXIMUM);
-    await chrome.storage.local.set({ [PREPARED_NAMES_KEY]: Object.fromEntries(nameKeep) });
-  }
-
   if (documentId) {
     const idStored = await chrome.storage.local.get(PREPARED_IDS_KEY);
     const idEntries = { ...(idStored[PREPARED_IDS_KEY] || {}), [documentId]: result };
@@ -462,9 +393,6 @@ async function rememberPreparedPdf(key, submissionKey, result, { primary = true,
   }
   while (preparedSubmissions.size > PREPARED_MAXIMUM) {
     preparedSubmissions.delete(preparedSubmissions.keys().next().value);
-  }
-  while (preparedPdfsByName.size > PREPARED_MAXIMUM) {
-    preparedPdfsByName.delete(preparedPdfsByName.keys().next().value);
   }
   while (preparedPdfsById.size > PREPARED_MAXIMUM) {
     preparedPdfsById.delete(preparedPdfsById.keys().next().value);
@@ -792,11 +720,11 @@ async function startConversion(tabId, submissionKey, expectedName = "", expected
   // 提出者単位の索引を先に見ると、2件目を選んでいるのに1件目が出てしまう。
   if (expectedFileId || expectedName) {
     const directKey = descriptorKey({ fileId: expectedFileId, fileName: expectedName });
-    let preparedByFile = await getPreparedPdf(directKey)
+    // ファイル番号が分からないときに名前だけで代替検索すると、同じファイル名で
+    // 提出する別の学生の準備済みPDFを取り違える恐れがあるため、ここでは
+    // ファイル番号（Drive上のID）が確認できた場合しか再利用しない。
+    const preparedByFile = await getPreparedPdf(directKey)
       || await getPreparedPdfById(expectedFileId);
-    if (!preparedByFile && expectedName && !expectedFileId) {
-      preparedByFile = await getPreparedPdfByName(expectedName);
-    }
     if (preparedByFile) {
       await rememberPreparedPdf(directKey, submissionKey, preparedByFile, { fileId: expectedFileId });
       await notifyTab(tabId, {
@@ -857,7 +785,6 @@ if (globalThis.__CWR_BACKGROUND_TEST_HOOKS__) {
     findCurrentDocument,
     isGoogleNative,
     getPreparedPdf,
-    getPreparedPdfByName,
     getPreparedPdfById,
     getPreparedSubmission,
     rememberPreparedPdf
