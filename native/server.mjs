@@ -21,6 +21,8 @@ const powerPointWindowHostPath = path.join(nativeDir, "PowerPoint-Window-Host.ps
 const host = "127.0.0.1";
 const port = 18765;
 const serviceSessionId = crypto.randomUUID();
+const manifestPath = path.join(rootDir, "extension", "manifest.json");
+let appVersion = "unknown";
 const cacheMaximumAgeMs = 24 * 60 * 60 * 1000;
 const cacheMaximumPdfs = 600;
 let queue = Promise.resolve();
@@ -34,6 +36,12 @@ let powerPointHostSequence = 0;
 let currentPowerPointPath = "";
 const powerPointHostRequests = new Map();
 let shuttingDown = false;
+
+try {
+  appVersion = JSON.parse(await fsp.readFile(manifestPath, "utf8")).version || appVersion;
+} catch {
+  // Health still responds when the source manifest cannot be read.
+}
 
 await fsp.mkdir(cacheDir, { recursive: true });
 await fsp.mkdir(logsDir, { recursive: true });
@@ -487,7 +495,7 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url || "/", `http://${host}:${port}`);
   if (req.method === "GET" && url.pathname === "/health") {
-    sendJson(res, 200, { ok: true, service: "Classroom Office Reviewer", version: "0.5.12", sessionId: serviceSessionId, cacheHours: 24, cacheLimit: 600 });
+    sendJson(res, 200, { ok: true, service: "Classroom Office Reviewer", version: appVersion, sessionId: serviceSessionId, cacheHours: 24, cacheLimit: 600 });
     return;
   }
   if (req.method === "GET" && url.pathname.startsWith("/file/")) {

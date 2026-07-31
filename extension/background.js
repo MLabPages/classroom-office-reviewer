@@ -74,6 +74,12 @@ async function findCurrentDocument(tabId) {
     || downloadable.find((item) => /\.(?:docx?|pptx?)$/i.test(item.fileName || ""))
     || downloadable[0]
     || null;
+  if (selected && isGoogleNative(selected)) {
+    const friendly = descriptors.find((item) => item.fileId === selected.fileId
+      && item.fileName
+      && !/^Google(?:ドキュメント|スライド)$/i.test(item.fileName));
+    if (friendly) selected.fileName = friendly.fileName;
+  }
   if (selected && !Number.isInteger(selected.authuser) && Number.isInteger(classroomAuthuser)) {
     selected.authuser = classroomAuthuser;
   }
@@ -239,6 +245,8 @@ async function rememberPreparedPdf(key, submissionKey, result) {
 }
 
 async function startTemporaryDownload(tabId, submissionKey, descriptor) {
+  const previous = await getPending();
+  if (previous?.downloadId) await cleanupDownload(previous.downloadId);
   const url = buildDownloadUrl(descriptor);
   const downloadId = await chrome.downloads.download({
     url,
@@ -255,6 +263,13 @@ async function startTemporaryDownload(tabId, submissionKey, descriptor) {
   });
   queueMicrotask(() => processCompletedDownload(downloadId));
   return { ok: true, fileName: descriptor.fileName || "Office提出物", mode: "temporary-download" };
+}
+
+async function cleanupDownload(downloadId) {
+  if (typeof downloadId !== "number") return;
+  await chrome.downloads.cancel(downloadId).catch(() => undefined);
+  await chrome.downloads.removeFile(downloadId).catch(() => undefined);
+  await chrome.downloads.erase({ id: downloadId }).catch(() => undefined);
 }
 
 async function notifyTab(tabId, message) {
@@ -364,7 +379,8 @@ async function convertInMemory(tabId, submissionKey, descriptor, { reportStatus 
 }
 
 async function convertGoogleToPdf(tabId, submissionKey, descriptor, { reportStatus = true, showPdf = true } = {}) {
-  const displayName = `${descriptor.fileName || (descriptor.googleType === "presentation" ? "Googleスライド" : "Googleドキュメント")}.pdf`;
+  const baseName = descriptor.fileName || (descriptor.googleType === "presentation" ? "Googleスライド" : "Googleドキュメント");
+  const displayName = /\.pdf$/i.test(baseName) ? baseName : `${baseName}.pdf`;
   if (reportStatus) await notifyTab(tabId, {
     type: "cwr-status",
     state: "working",
@@ -372,11 +388,17 @@ async function convertGoogleToPdf(tabId, submissionKey, descriptor, { reportStat
     submissionKey
   });
 
-  const response = await fetch(buildGooglePdfExportUrl(descriptor), {
-    credentials: "include",
-    redirect: "follow",
-    cache: "no-store"
-  });
+  let response;
+  try {
+    response = await fetch(buildGooglePdfExportUrl(descriptor), {
+      credentials: "include",
+      redirect: "follow",
+      cache: "no-store",
+      headers: { Accept: "application/pdf" }
+    });
+  } catch {
+    throw new Error("GoogleからPDFを取得できませんでした。Googleへのログイン状態を確認してください。");
+  }
   const contentType = (response.headers.get("content-type") || "").toLowerCase();
   if (!response.ok || contentType.includes("text/html")) {
     throw new Error("Google形式のPDF書き出しに失敗しました。Google上でファイルを開けるか確認してください。");
@@ -386,14 +408,19 @@ async function convertGoogleToPdf(tabId, submissionKey, descriptor, { reportStat
   const signature = new TextDecoder("latin1").decode(buffer.slice(0, 5));
   if (signature !== "%PDF-") throw new Error("GoogleからPDF形式で取得できませんでした。");
 
-  const storeResponse = await fetch(`${HELPER_BASE}/store-pdf-upload`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/pdf",
-      "X-File-Name": encodeURIComponent(displayName)
-    },
-    body: buffer
-  });
+  let storeResponse;
+  try {
+    storeResponse = await fetch(`${HELPER_BASE}/store-pdf-upload`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/pdf",
+        "X-File-Name": encodeURIComponent(displayName)
+      },
+      body: buffer
+    });
+  } catch {
+    throw new Error("表示用PDFを保存できませんでした。補助アプリが起動しているか確認してください。");
+  }
   const result = await storeResponse.json().catch(() => ({}));
   if (!storeResponse.ok || !result.ok) throw new Error(result.error || "表示用PDFを保存できませんでした。");
   const converted = {
@@ -430,9 +457,9 @@ async function prepareCurrentSubmission(tabId, submissionKey, expectedName, expe
   return { ...result, documentKey: key, mode: "prepared", cached: false };
 }
 
-async function startOfficeWindow(tabId, submissionKey) {
+async function startOfficeWindow(tabId, submissionKey, expectedName = "", expectedFileId = "") {
   await helperHealth();
-  const descriptor = await findCurrentDocument(tabId);
+  const descriptor = await waitForCurrentDocument(tabId, expectedName, expectedFileId);
   if (!descriptor || isGoogleNative(descriptor)) {
     throw new Error("表示中のWord／PowerPointファイルを見つけられませんでした。Classroomを再読み込みしてください。");
   }
@@ -584,8 +611,7 @@ async function processCompletedDownload(downloadId) {
       submissionKey: pending.submissionKey
     });
   } finally {
-    await chrome.downloads.removeFile(downloadId).catch(() => undefined);
-    await chrome.downloads.erase({ id: downloadId }).catch(() => undefined);
+    await cleanupDownload(downloadId);
     processingDownloads.delete(downloadId);
     const latest = await getPending();
     if (latest?.downloadId === downloadId) await setPending(null);
@@ -616,7 +642,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             : message.type === "cwr-prepare-one"
         ? await prepareCurrentSubmission(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "", message.expectedGoogleType || "")
         : message.type === "cwr-open-office"
-        ? await startOfficeWindow(tabId, message.submissionKey || "")
+        ? await startOfficeWindow(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "")
         : message.type === "cwr-close-office"
           ? await closeOfficeWindow()
           : message.type === "cwr-release-pdf"
@@ -656,8 +682,7 @@ chrome.downloads.onChanged.addListener(async (delta) => {
   if (!pending || pending.downloadId !== delta.id) return;
 
   if (delta.state.current === "interrupted") {
-    await chrome.downloads.removeFile(delta.id).catch(() => undefined);
-    await chrome.downloads.erase({ id: delta.id }).catch(() => undefined);
+    await cleanupDownload(delta.id);
     await setPending(null);
     await notifyTab(pending.tabId, {
       type: "cwr-status",
