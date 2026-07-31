@@ -39,11 +39,11 @@ class MockElement {
   }
 }
 
-function runDetection({ nodes = [], frames = [] }) {
+function runDetection({ nodes = [], frames = [], href } = {}) {
   const hooks = {};
   const location = {
     hostname: "classroom.google.com",
-    href: "https://classroom.google.com/u/5/g/tg/course/work#u=student&t=f"
+    href: href || "https://classroom.google.com/u/5/g/tg/course/work#u=student&t=f"
   };
   const window = {};
   window.top = window;
@@ -258,6 +258,24 @@ const singleHooks = runDetection({
 });
 assert.deepEqual(plain(singleHooks.findSubmissionAttachments()), []);
 assert.deepEqual(plain(singleHooks.listSubmissionFiles().map((item) => item.fileName)), [firstFile]);
+
+// 提出者の見分けは、描画待ちで揺れる画面上の名前ではなくURLの #u= を使う。
+// これがずれると、変換したPDFが「別の提出者のもの」と誤判定されて捨てられる。
+const realGradingUrl = "https://classroom.google.com/u/5/g/tg/ODQ3OTQ5MDU1MDA1/ODY4NDQ5MDU0MzMz#u=Nzk3MDYyNjExODcy&t=f";
+assert.equal(runDetection({ href: realGradingUrl }).getStudentIdFromUrl(), "Nzk3MDYyNjExODcy");
+// 提出者がURLに出ていない画面では、空を返して従来の判定に任せる。
+assert.equal(
+  runDetection({ href: "https://classroom.google.com/u/5/g/tg/course/work" }).getStudentIdFromUrl(),
+  ""
+);
+
+// Google形式の名前は拡張子が無く、重複表示を境界で切り分けられない。
+// ちょうど半分の繰り返しのときだけ前半を採用し、それ以外は触らない。
+const labelHooks = runDetection({});
+assert.equal(labelHooks.dedupeDoubledLabel("期末レポート期末レポート"), "期末レポート");
+assert.equal(labelHooks.dedupeDoubledLabel("期末レポート"), "期末レポート");
+// 偶然おなじ長さで前後が違う名前を、誤って半分に切らない。
+assert.equal(labelHooks.dedupeDoubledLabel("前期レポート後期レポート"), "前期レポート後期レポート");
 
 const textHooks = runDetection({ nodes: [] });
 assert.equal(textHooks.formatDuration(45000), "45秒");
