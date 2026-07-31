@@ -1,11 +1,9 @@
 const HELPER_BASE = "http://127.0.0.1:18765";
-const PENDING_KEY = "classroomWordReviewerPending";
 const PREPARED_KEY = "classroomWordReviewerPrepared";
 const PREPARED_SUBMISSIONS_KEY = "classroomWordReviewerPreparedSubmissions";
 const HELPER_SESSION_KEY = "classroomWordReviewerHelperSession";
 const PREPARATION_TAB_KEY = "classroomWordReviewerPreparationTab";
 const PREPARED_MAXIMUM = 600;
-const processingDownloads = new Set();
 const preparedPdfs = new Map();
 const preparedSubmissions = new Map();
 
@@ -25,19 +23,6 @@ async function helperHealth() {
     await chrome.storage.session.set({ [HELPER_SESSION_KEY]: health.sessionId });
   }
   return health;
-}
-
-async function getPending() {
-  const stored = await chrome.storage.local.get(PENDING_KEY);
-  return stored[PENDING_KEY] || null;
-}
-
-async function setPending(value) {
-  if (value) {
-    await chrome.storage.local.set({ [PENDING_KEY]: value });
-  } else {
-    await chrome.storage.local.remove(PENDING_KEY);
-  }
 }
 
 async function sendToFrame(tabId, frameId, message) {
@@ -60,14 +45,20 @@ async function findCurrentDocument(tabId) {
 
   const descriptors = [];
   let classroomAuthuser = null;
+  let submissionView = false;
   for (const frame of ordered) {
     const descriptor = await sendToFrame(tabId, frame.frameId, { type: "cwr-describe-document" });
     if (!descriptor) continue;
     if (frame.frameId === 0 && Number.isInteger(descriptor.authuser)) {
       classroomAuthuser = descriptor.authuser;
     }
+    if (frame.frameId === 0) submissionView = descriptor.submissionView === true;
     descriptors.push(descriptor);
   }
+
+  // A grading overview has many attachment cards, but no individual
+  // submission is open. Never fetch a file from that page.
+  if (!submissionView) return null;
 
   const downloadable = descriptors.filter((item) => item.downloadUrl || item.fileId);
   const selected = downloadable.find((item) => ["document", "presentation"].includes(item.googleType))
@@ -244,46 +235,12 @@ async function rememberPreparedPdf(key, submissionKey, result) {
   }
 }
 
-async function startTemporaryDownload(tabId, submissionKey, descriptor) {
-  const previous = await getPending();
-  if (previous?.downloadId) await cleanupDownload(previous.downloadId);
-  const url = buildDownloadUrl(descriptor);
-  const downloadId = await chrome.downloads.download({
-    url,
-    conflictAction: "uniquify",
-    saveAs: false
-  });
-
-  await setPending({
-    tabId,
-    downloadId,
-    submissionKey,
-    expectedName: descriptor.fileName || "Office提出物",
-    startedAt: Date.now()
-  });
-  queueMicrotask(() => processCompletedDownload(downloadId));
-  return { ok: true, fileName: descriptor.fileName || "Office提出物", mode: "temporary-download" };
-}
-
-async function cleanupDownload(downloadId) {
-  if (typeof downloadId !== "number") return;
-  await chrome.downloads.cancel(downloadId).catch(() => undefined);
-  await chrome.downloads.removeFile(downloadId).catch(() => undefined);
-  await chrome.downloads.erase({ id: downloadId }).catch(() => undefined);
-}
-
 async function notifyTab(tabId, message) {
   try {
     await chrome.tabs.sendMessage(tabId, message, { frameId: 0 });
   } catch {
     // The Classroom tab may have been closed or reloaded.
   }
-}
-
-function temporaryDownloadFallback(message) {
-  const error = new Error(message);
-  error.allowTemporaryDownload = true;
-  return error;
 }
 
 function detectOfficeFormat(buffer, expectedName = "") {
@@ -311,19 +268,19 @@ async function fetchOfficeBuffer(descriptor) {
       cache: "no-store"
     });
   } catch {
-    throw temporaryDownloadFallback("Google Driveから直接取得できませんでした。");
+    throw new Error("Google Driveから提出物をメモリ内で取得できませんでした。Chromeの保存画面は開きません。");
   }
 
   const contentType = (driveResponse.headers.get("content-type") || "").toLowerCase();
   if (!driveResponse.ok || contentType.includes("text/html")) {
-    throw temporaryDownloadFallback("Google Driveが直接取得を許可しませんでした。");
+    throw new Error("Google DriveからOfficeファイルを取得できませんでした。Chromeの保存画面は開きません。");
   }
 
   let buffer;
   try {
     buffer = await driveResponse.arrayBuffer();
   } catch {
-    throw temporaryDownloadFallback("提出物ファイルをメモリに読み込めませんでした。");
+    throw new Error("提出物ファイルをメモリ内で読み込めませんでした。");
   }
   if (buffer.byteLength > 100 * 1024 * 1024) {
     throw new Error("提出物が100MBを超えているため、メモリ内変換を中止しました。");
@@ -331,7 +288,7 @@ async function fetchOfficeBuffer(descriptor) {
 
   const extension = detectOfficeFormat(buffer, expectedName);
   if (!extension) {
-    throw temporaryDownloadFallback("取得結果がWord／PowerPointファイルではありませんでした。");
+    throw new Error("取得結果がWord／PowerPointファイルではありませんでした。");
   }
   const fileName = /\.(?:docx?|pptx?)$/i.test(expectedName) ? expectedName : `${expectedName}${extension}`;
   return { buffer, fileName };
@@ -549,73 +506,7 @@ async function startConversion(tabId, submissionKey, expectedName = "", expected
     return { ...prepared, mode: "prepared" };
   }
 
-  try {
-    return await convertDescriptor(tabId, submissionKey, descriptor);
-  } catch (error) {
-    if (!error.allowTemporaryDownload || isGoogleNative(descriptor)) throw error;
-    await notifyTab(tabId, {
-      type: "cwr-status",
-      state: "working",
-      text: "一時取得に切り替えます。変換後に自動削除します…",
-      submissionKey
-    });
-    return startTemporaryDownload(tabId, submissionKey, descriptor);
-  }
-}
-
-async function convertCompletedDownload(item, pending) {
-  await notifyTab(pending.tabId, {
-    type: "cwr-status",
-    state: "converting",
-    text: "Officeで表示用PDFを作成中…",
-    submissionKey: pending.submissionKey
-  });
-
-  const response = await fetch(`${HELPER_BASE}/convert`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path: item.filename })
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok || !result.ok) {
-    throw new Error(result.error || "OfficeからPDFへの変換に失敗しました。");
-  }
-
-  await notifyTab(pending.tabId, {
-    type: "cwr-show-pdf",
-    pdfUrl: `${HELPER_BASE}${result.pdfUrl}`,
-    fileName: result.sourceName || pending.expectedName,
-    pageCount: result.pageCount || null,
-    submissionKey: pending.submissionKey
-  });
-}
-
-async function processCompletedDownload(downloadId) {
-  if (processingDownloads.has(downloadId)) return;
-  const pending = await getPending();
-  if (!pending || pending.downloadId !== downloadId) return;
-  const [item] = await chrome.downloads.search({ id: downloadId });
-  if (!item || item.state !== "complete") return;
-
-  processingDownloads.add(downloadId);
-  try {
-    if (!/\.(?:docx?|pptx?)$/i.test(item.filename || "")) {
-      throw new Error("ダウンロード結果がWord／PowerPointファイルではありません。Googleへのログイン状態を確認してください。");
-    }
-    await convertCompletedDownload(item, pending);
-  } catch (error) {
-    await notifyTab(pending.tabId, {
-      type: "cwr-status",
-      state: "error",
-      text: error.message || "変換に失敗しました。",
-      submissionKey: pending.submissionKey
-    });
-  } finally {
-    await cleanupDownload(downloadId);
-    processingDownloads.delete(downloadId);
-    const latest = await getPending();
-    if (latest?.downloadId === downloadId) await setPending(null);
-  }
+  return await convertDescriptor(tabId, submissionKey, descriptor);
 }
 
 if (globalThis.__CWR_BACKGROUND_TEST_HOOKS__) {
@@ -674,29 +565,4 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     });
   }
   await setPreparationState(null);
-});
-
-chrome.downloads.onChanged.addListener(async (delta) => {
-  if (!delta.state) return;
-  const pending = await getPending();
-  if (!pending || pending.downloadId !== delta.id) return;
-
-  if (delta.state.current === "interrupted") {
-    await cleanupDownload(delta.id);
-    await setPending(null);
-    await notifyTab(pending.tabId, {
-      type: "cwr-status",
-      state: "error",
-      text: "提出物ファイルのダウンロードが中断されました。",
-      submissionKey: pending.submissionKey
-    });
-    return;
-  }
-  if (delta.state.current !== "complete") return;
-  await processCompletedDownload(delta.id);
-});
-
-chrome.downloads.onErased.addListener(async (downloadId) => {
-  const pending = await getPending();
-  if (pending?.downloadId === downloadId) await setPending(null);
 });

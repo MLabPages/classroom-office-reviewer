@@ -9,6 +9,7 @@
     dedicatedPreparation: false,
     prepareCancelled: false,
     mode: "pdf",
+    submissionView: false,
     currentKey: "",
     convertedKey: "",
     displayedPdfUrl: "",
@@ -156,6 +157,7 @@
       fileId,
       downloadUrl,
       googleType,
+      submissionView: !isClassroomTop || isSubmissionView(),
       authuser: authMatch ? Number(authMatch[1]) : null,
       frameUrl: location.href
     };
@@ -168,7 +170,8 @@
       findGoogleFileInfo,
       findSupportedFileInfo,
       inspectSubmissionFile,
-      describeDocument
+      describeDocument,
+      isSubmissionView
     });
     return;
   }
@@ -244,6 +247,7 @@
   }
 
   function getSubmissionKey() {
+    if (!isSubmissionView()) return "";
     return [location.href, getStudentLabel(), findSupportedFileInfo()?.fileName || ""].join("|");
   }
 
@@ -266,6 +270,13 @@
 
   function findPreviousSubmissionButton() {
     return findSubmissionButton("previous");
+  }
+
+  function isSubmissionView() {
+    // The grading overview contains many submission cards and filenames.  It
+    // is not a safe place to fetch anything: only the individual submission
+    // screen exposes the previous/next student controls.
+    return Boolean(findPreviousSubmissionButton() || findNextSubmissionButton());
   }
 
   function waitForSubmissionChange(previousKey) {
@@ -415,6 +426,10 @@
   }
 
   async function startDedicatedPreparation() {
+    if (!isSubmissionView()) {
+      setStatus("提出物を個別に開いてから一括準備を開始してください。", "error");
+      return;
+    }
     if (state.remotePreparing) return;
     state.remotePreparing = true;
     showPreparationPanel();
@@ -441,6 +456,9 @@
 
   async function prepareAllSubmissions({ dedicated = false } = {}) {
     if (state.preparing) return;
+    if (!isSubmissionView()) {
+      throw new Error("提出物を個別に開いてから一括準備を開始してください。");
+    }
     state.preparing = true;
     state.dedicatedPreparation = dedicated;
     state.prepareCancelled = false;
@@ -546,12 +564,24 @@
   function updateUiLabels() {
     const root = state.ui;
     if (!root) return;
-    const fileInfo = findSupportedFileInfo();
+    const submissionView = isSubmissionView();
+    const fileInfo = submissionView ? findSupportedFileInfo() : null;
     const googleDocument = fileInfo?.kind === "google-document";
     const googlePresentation = fileInfo?.kind === "google-presentation";
-    const powerpoint = isPowerPoint();
+    const powerpoint = submissionView && isPowerPoint(fileInfo?.fileName || "");
     const openButton = root.querySelector("#cwr-open");
     const officeButton = root.querySelector("#cwr-open-window");
+    const prepareButton = root.querySelector("#cwr-prepare");
+    const autoInput = root.querySelector("#cwr-auto");
+    if (!submissionView) {
+      openButton.textContent = "提出物を開くと表示できます";
+      officeButton.textContent = "提出物を開くと操作できます";
+      openButton.disabled = true;
+      officeButton.disabled = true;
+      prepareButton.disabled = true;
+      autoInput.disabled = true;
+      return;
+    }
     openButton.textContent = googleDocument
       ? "Googleドキュメントを表示"
       : googlePresentation
@@ -564,7 +594,10 @@
       : powerpoint
         ? "PowerPointで発表"
         : "Word別窓で表示";
-    officeButton.disabled = googleDocument || googlePresentation;
+    openButton.disabled = !fileInfo;
+    officeButton.disabled = !fileInfo || googleDocument || googlePresentation;
+    prepareButton.disabled = false;
+    autoInput.disabled = false;
   }
 
   function makeUi() {
@@ -652,6 +685,10 @@
 
   async function startConversion(isAutomatic) {
     if (!state.enabled || state.busy) return;
+    if (!isSubmissionView()) {
+      if (!isAutomatic) setStatus("提出物を個別に開いてから操作してください。", "error");
+      return;
+    }
     const fileInfo = findSupportedFileInfo();
     if (!fileInfo) {
       if (!isAutomatic) setStatus("表示中のWord／PowerPoint／Google形式のファイルが見つかりません。", "error");
@@ -681,6 +718,10 @@
 
   async function startOfficeWindow(isAutomatic) {
     if (!state.enabled || state.busy) return;
+    if (!isSubmissionView()) {
+      if (!isAutomatic) setStatus("提出物を個別に開いてから操作してください。", "error");
+      return;
+    }
     const fileInfo = findSupportedFileInfo();
     const fileName = fileInfo?.fileName || "";
     if (!fileInfo || fileInfo.kind !== "office" || !/\.(?:docx?|pptx?)$/i.test(fileName)) {
@@ -856,7 +897,22 @@
     clearTimeout(state.timer);
     state.timer = setTimeout(() => {
       makeUi();
-      updateUiLabels();
+      const submissionView = isSubmissionView();
+      if (!submissionView) {
+        const changedFromSubmission = state.submissionView;
+        state.submissionView = false;
+        state.currentKey = "";
+        state.busy = false;
+        if (changedFromSubmission) {
+          removeOverlay();
+          updateUiLabels();
+          setStatus("提出物を開くと操作できます。", "idle");
+        }
+        return;
+      }
+      const enteredSubmission = !state.submissionView;
+      state.submissionView = true;
+      if (enteredSubmission) updateUiLabels();
       const key = getSubmissionKey();
       if (!key || key === state.currentKey) return;
       const hadPrevious = Boolean(state.currentKey);
@@ -870,7 +926,7 @@
           ? "次の提出物へ切り替えています。表示は切替まで維持します。"
           : "提出者が切り替わりました。", "idle");
       }
-      if (state.enabled && hadPrevious && state.auto && findSupportedFileInfo()) {
+      if (state.enabled && hadPrevious && state.auto && isSubmissionView() && findSupportedFileInfo()) {
         setTimeout(() => {
           if (state.mode === "office" && findSupportedFileInfo()?.kind === "office") startOfficeWindow(true);
           else startConversion(true);
@@ -880,7 +936,8 @@
   }
 
   makeUi();
-  state.currentKey = getSubmissionKey();
+  state.submissionView = isSubmissionView();
+  state.currentKey = state.submissionView ? getSubmissionKey() : "";
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === "local" && changes.cwrEnabled) {
       const enabled = changes.cwrEnabled.newValue !== false;
