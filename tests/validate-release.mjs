@@ -5,11 +5,12 @@ const expectedVersion = "0.7.0";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
-const [manifestText, background, content, viewer, server, start, stop] = await Promise.all([
+const [manifestText, background, content, viewer, viewerHtml, server, start, stop] = await Promise.all([
   read("extension/manifest.json"),
   read("extension/background.js"),
   read("extension/content.js"),
   read("extension/viewer.js"),
+  read("extension/viewer.html"),
   read("native/server.mjs"),
   read("native/Start-Reviewer.ps1"),
   read("native/Stop-Reviewer.ps1")
@@ -21,6 +22,9 @@ assert(manifest.host_permissions.includes(`http://127.0.0.1:${expectedPort}/*`))
 assert(background.includes(`const HELPER_BASE = "http://127.0.0.1:${expectedPort}";`));
 assert(background.includes(`127\\.0\\.0\\.1:${expectedPort}`));
 assert(background.includes("const PREPARED_MAXIMUM = 600;"));
+assert(background.includes("chrome.storage.local"));
+assert(background.includes("preparedPdfsByName.clear()"));
+assert(background.includes("if (primary)"));
 assert(background.includes("chrome.runtime.getManifest().version"));
 assert(background.includes("buildGooglePdfExportUrl"));
 assert(background.includes("/store-pdf-upload"));
@@ -34,6 +38,9 @@ assert(content.includes('"cwr-prepare-one"'));
 // 1人が複数ファイルを出した場合、2件目以降も準備する経路が要る。
 assert(content.includes('"cwr-prepare-attachment"'));
 assert(content.includes("function findSubmissionAttachments"));
+assert(content.includes("function findSubmissionFileMenuItems"));
+assert(content.includes("function selectSubmissionFile"));
+assert(content.includes("state.fileSwitching"));
 assert(content.includes("function listSubmissionFiles"));
 assert(background.includes("async function prepareAttachment"));
 assert(background.includes('"cwr-open-attachment"'));
@@ -59,6 +66,7 @@ assert(content.includes("function startStallWatchdog"));
 assert(content.includes("function becomePreparationTab"));
 assert(content.includes('findFileName("docx?|pptx?|pdf|'));
 assert(viewer.includes(`pdfUrl.startsWith("http://127.0.0.1:${expectedPort}/file/")`));
+assert(viewerHtml.includes("前の提出物"));
 assert(server.includes(`const port = ${expectedPort};`));
 assert(server.includes("version: appVersion"));
 assert(server.includes("const cacheMaximumPdfs = 600;"));

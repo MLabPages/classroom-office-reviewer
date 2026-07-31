@@ -12,6 +12,7 @@
     "https://classroom.google.com/*",
     "https://drive.google.com/*",
     "https://drive.usercontent.google.com/*",
+    "https://*.googleusercontent.com/*",
     "https://docs.google.com/*",
     "http://127.0.0.1:18765/*"
   ],

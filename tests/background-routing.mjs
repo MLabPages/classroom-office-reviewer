@@ -6,11 +6,20 @@ const background = await readFile(new URL("../extension/background.js", import.m
 
 const googleId = "1DU7iOdEq70uDVcuPWp-eD7wiBHbFlquiBeR9tPsZcG8";
 const responses = new Map();
+const storageData = {};
 const event = { addListener() {} };
 const storageArea = {
-  async get() { return {}; },
-  async remove() {},
-  async set() {}
+  async get(keys) {
+    if (!keys) return { ...storageData };
+    const names = typeof keys === "string" ? [keys] : Array.isArray(keys) ? keys : Object.keys(keys);
+    return Object.fromEntries(names.filter((name) => Object.prototype.hasOwnProperty.call(storageData, name))
+      .map((name) => [name, storageData[name]]));
+  },
+  async remove(keys) {
+    const names = typeof keys === "string" ? [keys] : keys;
+    for (const name of names) delete storageData[name];
+  },
+  async set(values) { Object.assign(storageData, values); }
 };
 const hooks = {};
 const chrome = {
@@ -101,5 +110,13 @@ responses.set(0, {
   frameUrl: "https://classroom.google.com/u/5/g/tg/course/work"
 });
 assert.equal(await hooks.findCurrentDocument(1), null);
+
+// 2件目以降を保存しても、学生単位で最初に表示するPDFを上書きしない。
+const primaryPdf = { ok: true, fileName: "first.docx", pdfUrl: "http://127.0.0.1:18765/file/aaaaaaaaaaaaaaaaaaaaaaaa.pdf" };
+const secondaryPdf = { ok: true, fileName: "second.pptx", pdfUrl: "http://127.0.0.1:18765/file/bbbbbbbbbbbbbbbbbbbbbbbb.pdf" };
+await hooks.rememberPreparedPdf("first-id|first.docx", "student-key", primaryPdf, { primary: true });
+await hooks.rememberPreparedPdf("second-id|second.pptx", "student-key", secondaryPdf, { primary: false });
+assert.equal(storageData.classroomWordReviewerPreparedSubmissions["student-key"].fileName, "first.docx");
+assert.equal((await hooks.getPreparedPdf("second-id|second.pptx")).fileName, "second.pptx");
 
 console.log("Background routing only accepts an open submission, then distinguishes native Google documents from Office files.");
