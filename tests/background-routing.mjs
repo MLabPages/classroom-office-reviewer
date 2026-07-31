@@ -14,7 +14,6 @@ const storageArea = {
 };
 const hooks = {};
 const chrome = {
-  downloads: { onChanged: event, onErased: event },
   runtime: { getManifest: () => ({ version: "0.5.12" }), onMessage: event },
   storage: { local: storageArea, session: storageArea },
   tabs: {
@@ -49,6 +48,7 @@ responses.set(0, {
   fileName: "2610170400八木 近大ゼミ2026＿期末レポート.docx",
   fileId: googleId,
   googleType: "document",
+  submissionView: true,
   authuser: 5,
   frameUrl: "https://classroom.google.com/u/5/g/tg/course/work"
 });
@@ -78,6 +78,7 @@ responses.set(0, {
   fileName: "report.docx",
   fileId: "word-file-id-123456789012345",
   googleType: "",
+  submissionView: true,
   authuser: 5,
   frameUrl: "https://classroom.google.com/u/5/g/tg/course/work"
 });
@@ -91,4 +92,14 @@ responses.set(1, {
 const selectedWord = await hooks.findCurrentDocument(1);
 assert.equal(hooks.isGoogleNative(selectedWord), false);
 
-console.log("Background routing distinguishes native Google documents from Office files.");
+responses.set(0, {
+  fileName: "overview-card.docx",
+  fileId: "overview-file-id-1234567890123",
+  googleType: "",
+  submissionView: false,
+  authuser: 5,
+  frameUrl: "https://classroom.google.com/u/5/g/tg/course/work"
+});
+assert.equal(await hooks.findCurrentDocument(1), null);
+
+console.log("Background routing only accepts an open submission, then distinguishes native Google documents from Office files.");

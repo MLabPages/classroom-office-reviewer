@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.5.15";
+const expectedVersion = "0.5.16";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -24,7 +24,8 @@ assert(background.includes("const PREPARED_MAXIMUM = 600;"));
 assert(background.includes("chrome.runtime.getManifest().version"));
 assert(background.includes("buildGooglePdfExportUrl"));
 assert(background.includes("/store-pdf-upload"));
-assert(background.includes("cleanupDownload"));
+assert(!background.includes("chrome.downloads"));
+assert(!manifest.permissions.includes("downloads"));
 assert.equal((background.match(/chrome\.tabs\.create/g) || []).length, 1);
 assert(!background.includes("chrome.tabs.remove("));
 assert(background.includes("const PREPARATION_TAB_KEY"));
@@ -34,6 +35,7 @@ assert(content.includes("expectedGoogleType"));
 assert(content.includes("sequence === 1 && initialFileInfo"));
 assert(content.includes('googleType'));
 assert(content.includes('次の(?:生徒|学生)を選択'));
+assert(content.includes("function isSubmissionView()"));
 assert(content.includes('findFileName("docx?|pptx?|pdf|'));
 assert(viewer.includes(`pdfUrl.startsWith("http://127.0.0.1:${expectedPort}/file/")`));
 assert(server.includes(`const port = ${expectedPort};`));

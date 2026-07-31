@@ -5,11 +5,12 @@ import { readFile } from "node:fs/promises";
 const content = await readFile(new URL("../extension/content.js", import.meta.url), "utf8");
 
 class MockElement {
-  constructor({ text = "", attributes = {}, src = "" } = {}) {
+  constructor({ text = "", attributes = {}, src = "", rect = { width: 600, height: 60, top: 60 } } = {}) {
     this.textContent = text;
     this.attributes = attributes;
     this.src = src;
     this.href = "";
+    this.rect = rect;
   }
 
   getAttribute(name) {
@@ -17,7 +18,7 @@ class MockElement {
   }
 
   getBoundingClientRect() {
-    return { width: 600, height: 60, top: 60 };
+    return this.rect;
   }
 }
 
@@ -51,11 +52,23 @@ function runDetection({ nodes = [], frames = [] }) {
 }
 
 const duplicateWordName = "2610170399近大ゼミ2026＿期末レポート.docx";
+const nextStudentButton = new MockElement({
+  attributes: { "aria-label": "次の学生を選択" },
+  rect: { width: 44, height: 44, top: 100 }
+});
 const wordHooks = runDetection({
-  nodes: [new MockElement({ text: `Microsoft Word: ${duplicateWordName}${duplicateWordName}` })]
+  nodes: [new MockElement({ text: `Microsoft Word: ${duplicateWordName}${duplicateWordName}` }), nextStudentButton]
 });
 assert.equal(wordHooks.findOfficeFileName(), duplicateWordName);
 assert.equal(wordHooks.findSupportedFileInfo().kind, "office");
+assert.equal(wordHooks.isSubmissionView(), true);
+assert.equal(wordHooks.describeDocument().submissionView, true);
+
+const overviewHooks = runDetection({
+  nodes: [new MockElement({ text: `添付済み ${duplicateWordName}` })]
+});
+assert.equal(overviewHooks.isSubmissionView(), false);
+assert.equal(overviewHooks.describeDocument().submissionView, false);
 
 const googleFileId = "1DU7iOdEq70uDVcuPWp-eD7wiBHbFlquiBeR9tPsZcG8";
 const googleTitle = "2610170400八木 近大ゼミ2026＿期末レポート.docx";
