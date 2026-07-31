@@ -198,6 +198,31 @@
   font-weight: 700;
 }
 
+#cwr-preparation-bar {
+  overflow: hidden;
+  height: 6px;
+  margin: 0 0 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+#cwr-preparation-bar[hidden] {
+  display: none;
+}
+
+#cwr-preparation-bar > span {
+  display: block;
+  width: 40%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(138, 180, 248, 0.35), #8ab4f8);
+  animation: cwr-preparation-slide 1.6s ease-in-out infinite;
+}
+
+#cwr-preparation.cwr-preparation-stalled #cwr-preparation-bar > span {
+  background: linear-gradient(90deg, rgba(253, 214, 99, 0.35), #fdd663);
+}
+
 #cwr-preparation-detail {
   min-height: 42px;
   margin: 0 0 8px;
@@ -216,7 +241,14 @@
   font-size: 12px;
 }
 
-#cwr-preparation-cancel {
+#cwr-preparation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#cwr-preparation-cancel,
+#cwr-preparation-focus {
   border: 1px solid #5f6368;
   border-radius: 999px;
   padding: 9px 16px;
@@ -226,9 +258,56 @@
   cursor: pointer;
 }
 
+#cwr-preparation-cancel:hover,
+#cwr-preparation-cancel:focus-visible,
+#cwr-preparation-focus:hover,
+#cwr-preparation-focus:focus-visible {
+  background: #3c4043;
+  outline: 2px solid #8ab4f8;
+  outline-offset: 1px;
+}
+
+#cwr-preparation-focus {
+  border-color: #8ab4f8;
+  color: #d2e3fc;
+}
+
+#cwr-preparation-focus[hidden] {
+  display: none;
+}
+
+#cwr-preparation-focus.cwr-preparation-urgent {
+  border-color: transparent;
+  color: #202124;
+  background: #fdd663;
+  font-weight: 700;
+}
+
+#cwr-preparation-focus.cwr-preparation-urgent:hover,
+#cwr-preparation-focus.cwr-preparation-urgent:focus-visible {
+  background: #f6c944;
+}
+
 #cwr-preparation-cancel:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+#cwr-preparation-spinner[hidden] {
+  display: none;
+}
+
+#cwr-preparation[data-phase="done"] #cwr-preparation-count {
+  color: #81c995;
+}
+
+#cwr-preparation[data-phase="error"] #cwr-preparation-count,
+#cwr-preparation[data-phase="cancelled"] #cwr-preparation-count {
+  color: #fdd663;
+}
+
+#cwr-preparation.cwr-preparation-stalled #cwr-preparation-note {
+  color: #fdd663;
 }
 
 #cwr-preparation.cwr-preparation-compact {
@@ -263,12 +342,23 @@
   display: none;
 }
 
+/* 止まっているときの案内だけは、小さく表示していても隠さない。 */
+#cwr-preparation.cwr-preparation-compact.cwr-preparation-stalled #cwr-preparation-note {
+  display: block;
+  margin-bottom: 10px;
+}
+
 #cwr-preparation.cwr-preparation-compact #cwr-preparation-elapsed {
   margin-bottom: 6px;
   font-size: 12px;
 }
 
-#cwr-preparation.cwr-preparation-compact #cwr-preparation-cancel {
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-bar {
+  margin-bottom: 6px;
+}
+
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-cancel,
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-focus {
   padding: 6px 12px;
   font-size: 12px;
 }
@@ -280,6 +370,23 @@
 
 @keyframes cwr-spin {
   to { transform: rotate(360deg); }
+}
+
+@keyframes cwr-preparation-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #cwr-preparation-spinner,
+  #cwr-preparation-bar > span {
+    animation: none;
+  }
+
+  #cwr-preparation-bar > span {
+    width: 100%;
+    opacity: 0.7;
+  }
 }
 
 @media (max-width: 900px) {

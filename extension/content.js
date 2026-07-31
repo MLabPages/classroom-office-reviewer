@@ -1,5 +1,9 @@
 (() => {
   const isClassroomTop = location.hostname === "classroom.google.com" && window === window.top;
+  // 準備専用タブが背面のとき、Chromeはタイマーを最大1分まで遅らせる。
+  // 進捗が途絶えたと判断するまでの余裕をここで一括管理する。
+  const PROGRESS_TICK_MS = 2000;
+  const STALL_WARNING_MS = 40000;
   const state = {
     enabled: true,
     busy: false,
@@ -7,6 +11,7 @@
     preparing: false,
     remotePreparing: false,
     dedicatedPreparation: false,
+    isPreparationTab: false,
     prepareCancelled: false,
     mode: "pdf",
     submissionView: false,
@@ -16,10 +21,28 @@
     viewerStatus: null,
     timer: null,
     preparationTimer: null,
+    progressTicker: null,
+    watchdogTimer: null,
+    lastRemoteProgressAt: 0,
     preparationCompact: false,
     ui: null,
     overlay: null,
     pendingOverlay: null
+  };
+
+  // 画面に出す準備状況は1か所にまとめ、準備専用タブと採点タブで同じ内容を描く。
+  const progress = {
+    phase: "idle",
+    title: "提出物の一括準備",
+    countText: "準備を開始しています…",
+    detailText: "先頭の提出者を確認中です。",
+    fileName: "",
+    done: 0,
+    skipped: 0,
+    current: 0,
+    startedAt: 0,
+    stalled: false,
+    remote: false
   };
 
   function visible(element) {
@@ -172,7 +195,9 @@
       findSupportedFileInfo,
       inspectSubmissionFile,
       describeDocument,
-      isSubmissionView
+      isSubmissionView,
+      formatDuration,
+      preparationCountText
     });
     return;
   }
@@ -184,15 +209,37 @@
     }
     if (!isClassroomTop) return false;
 
+    if (message?.type === "cwr-preparation-ping") {
+      sendResponse({ ok: true, preparing: state.preparing });
+      return false;
+    }
+
     if (message?.type === "cwr-run-preparation") {
       if (state.preparing) {
         sendResponse({ ok: false });
         return false;
       }
+      becomePreparationTab();
+      // Classroomの読み込み待ちでも、このタブが何をしているのかを必ず示す。
+      setPreparationProgress({
+        phase: "running",
+        remote: false,
+        title: "提出物の一括準備",
+        countText: "Classroomの読み込みを待っています…",
+        detailText: "提出者を切り替えられる採点画面が出るまで待機します。",
+        done: 0,
+        skipped: 0,
+        current: 0,
+        startedAt: Date.now(),
+        stalled: false,
+        cancelRequested: false
+      });
       (async () => {
-        const ready = await waitForSubmissionView();
+        const ready = await waitForSubmissionView(30000);
         if (!ready) {
-          sendResponse({ ok: false, error: "提出者画面を開けませんでした。個別の提出物を開いてから開始してください。" });
+          const error = "準備専用タブでClassroomの提出者画面を開けませんでした。採点画面で提出物を1件開いてから、もう一度お試しください。";
+          finishPreparation("一括準備を開始できませんでした", "準備は始まっていません", error, "error");
+          sendResponse({ ok: false, error });
           return;
         }
         sendResponse({ ok: true });
@@ -203,7 +250,7 @@
 
     if (message?.type === "cwr-cancel-preparation") {
       state.prepareCancelled = true;
-      updatePreparation(null, "現在の1件が終わったら中止します。");
+      setPreparationProgress({ detailText: "現在の1件が終わったら中止します。", cancelRequested: true });
       sendResponse({ ok: true });
       return false;
     }
@@ -296,24 +343,35 @@
     return false;
   }
 
-  function waitForSubmissionChange(previousKey) {
-    return new Promise((resolve) => {
-      let checks = 0;
-      const timer = setInterval(() => {
-        checks += 1;
-        if (getSubmissionKey() !== previousKey) {
-          clearInterval(timer);
-          resolve(true);
-        } else if (checks >= 120) {
-          clearInterval(timer);
-          resolve(false);
-        }
-      }, 150);
-    });
+  async function waitForSubmissionChange(previousKey, timeoutMs = 20000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      if (getSubmissionKey() !== previousKey) return true;
+      await wait(200);
+    }
+    return false;
   }
 
-  function wait(milliseconds) {
+  function localWait(milliseconds) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
+
+  // 背面タブのsetTimeoutはChromeに最大1分まで遅らされる。待ち時間は拡張機能の
+  // バックグラウンド側でも計り、先に返ってきた方を採用する。これで採点タブへ
+  // 戻しても準備が止まらない。バックグラウンドが応答しない場合は手元のタイマー
+  // だけで進むため、処理が二重に走ることはない。
+  function wait(milliseconds) {
+    if (!milliseconds) return Promise.resolve();
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      localWait(milliseconds).then(finish);
+      chrome.runtime.sendMessage({ type: "cwr-sleep", ms: milliseconds }).then(finish, () => undefined);
+    });
   }
 
   function submissionButtonDisabled(button) {
@@ -340,11 +398,36 @@
     return null;
   }
 
-  function showPreparationPanel() {
-    document.getElementById("cwr-preparation")?.remove();
-    const noteText = state.remotePreparing
-      ? "準備専用タブで処理しています。この採点タブは通常どおり使用できます。"
-      : "この準備専用タブは自動で切り替わります。完了まで操作しないでください。";
+  function formatDuration(milliseconds) {
+    const total = Math.max(0, Math.floor(milliseconds / 1000));
+    const minutes = Math.floor(total / 60);
+    const seconds = total % 60;
+    return minutes ? `${minutes}分${seconds}秒` : `${seconds}秒`;
+  }
+
+  function isPreparationFinished() {
+    return ["done", "cancelled", "error"].includes(progress.phase);
+  }
+
+  function preparationNote() {
+    if (isPreparationFinished()) {
+      return state.isPreparationTab
+        ? "このタブは閉じても構いません。準備した表示用PDFは採点タブでそのまま使えます。"
+        : "学生を切り替えると、準備済みのPDFがすぐ表示されます。";
+    }
+    if (progress.stalled) {
+      return state.isPreparationTab
+        ? "このタブを前面に表示すると、止まっているところから自動で再開します。"
+        : "準備が進んでいません。Chromeが背面のタブを止めている可能性があります。「準備タブを開く」を押すと、続きから自動で再開します。";
+    }
+    return state.isPreparationTab
+      ? "このタブは自動で操作します。完了まで触らずにお待ちください。終わると採点タブへ自動で戻ります。"
+      : "準備専用タブで処理中です。この採点タブはそのまま採点に使えます。";
+  }
+
+  function ensurePreparationPanel() {
+    const existing = document.getElementById("cwr-preparation");
+    if (existing) return existing;
     const panel = document.createElement("section");
     panel.id = "cwr-preparation";
     panel.setAttribute("role", "status");
@@ -357,100 +440,226 @@
           <button id="cwr-preparation-compact" type="button" aria-pressed="false">小さく表示</button>
         </div>
         <p id="cwr-preparation-count">準備を開始しています…</p>
+        <div id="cwr-preparation-bar" aria-hidden="true"><span></span></div>
         <p id="cwr-preparation-detail">先頭の提出者を確認中です。</p>
         <p id="cwr-preparation-elapsed">経過 0秒</p>
-        <p id="cwr-preparation-note">${noteText}</p>
-        <button id="cwr-preparation-cancel" type="button">現在の処理後に中止</button>
+        <p id="cwr-preparation-note"></p>
+        <div id="cwr-preparation-actions">
+          <button id="cwr-preparation-cancel" type="button">現在の処理後に中止</button>
+          <button id="cwr-preparation-focus" type="button">準備タブを開く</button>
+        </div>
       </div>
     `;
+    panel.querySelector("#cwr-preparation-cancel").addEventListener("click", handlePreparationCancelClick);
+    panel.querySelector("#cwr-preparation-focus").addEventListener("click", handlePreparationFocusClick);
+    panel.querySelector("#cwr-preparation-compact").addEventListener("click", () => {
+      state.preparationCompact = !state.preparationCompact;
+      chrome.storage.local.set({ cwrPreparationCompact: state.preparationCompact });
+      renderPreparation();
+    });
+    document.body.appendChild(panel);
+    return panel;
+  }
+
+  function closePreparationPanel() {
+    clearInterval(state.preparationTimer);
+    state.preparationTimer = null;
+    document.getElementById("cwr-preparation")?.remove();
+  }
+
+  function handlePreparationCancelClick() {
+    if (isPreparationFinished()) {
+      closePreparationPanel();
+      return;
+    }
+    if (state.isPreparationTab && state.preparing) {
+      state.prepareCancelled = true;
+      setPreparationProgress({ detailText: "現在の1件が終わったら中止します。", cancelRequested: true });
+      return;
+    }
+    setPreparationProgress({ detailText: "準備専用タブへ中止を伝えています。", cancelRequested: true });
+    chrome.runtime.sendMessage({ type: "cwr-cancel-bulk-preparation" }).then((response) => {
+      if (response?.ok) return;
+      endRemoteTracking();
+      setPreparationProgress({
+        phase: "error",
+        title: "一括準備の状態を確認できません",
+        detailText: response?.error || "準備専用タブが見つかりませんでした。もう一度「全員分を一括準備」を押してください。",
+        cancelRequested: false
+      });
+    }, () => undefined);
+  }
+
+  function handlePreparationFocusClick() {
+    const type = state.isPreparationTab ? "cwr-focus-source-tab" : "cwr-focus-preparation-tab";
+    chrome.runtime.sendMessage({ type }).then((response) => {
+      if (response?.ok || state.isPreparationTab) return;
+      endRemoteTracking();
+      setPreparationProgress({
+        phase: "error",
+        title: "準備専用タブが見つかりません",
+        detailText: "もう一度「全員分を一括準備」を押すと、新しい準備専用タブで最初からやり直します。"
+      });
+    }, () => undefined);
+  }
+
+  function renderPreparation() {
+    const panel = document.getElementById("cwr-preparation");
+    if (!panel) return;
+    const finished = isPreparationFinished();
+    const running = !finished;
+    panel.dataset.phase = progress.phase;
     panel.classList.toggle("cwr-preparation-compact", state.preparationCompact);
+    panel.classList.toggle("cwr-preparation-stalled", Boolean(progress.stalled));
+    panel.querySelector("#cwr-preparation-spinner").hidden = finished;
+    panel.querySelector("#cwr-preparation-title").textContent = progress.title;
+    panel.querySelector("#cwr-preparation-count").textContent = progress.countText;
+    panel.querySelector("#cwr-preparation-detail").textContent = progress.detailText;
+    panel.querySelector("#cwr-preparation-bar").hidden = finished;
+
+    const elapsedElement = panel.querySelector("#cwr-preparation-elapsed");
+    const elapsed = progress.startedAt ? Date.now() - progress.startedAt : 0;
+    const average = progress.done ? elapsed / progress.done : 0;
+    elapsedElement.textContent = average
+      ? `経過 ${formatDuration(elapsed)}・1件あたり約${Math.max(1, Math.round(average / 1000))}秒`
+      : `経過 ${formatDuration(elapsed)}`;
+    panel.querySelector("#cwr-preparation-note").textContent = preparationNote();
+
+    const cancelButton = panel.querySelector("#cwr-preparation-cancel");
+    cancelButton.textContent = finished ? "閉じる" : "現在の処理後に中止";
+    cancelButton.disabled = running && progress.cancelRequested === true;
+
+    const focusButton = panel.querySelector("#cwr-preparation-focus");
+    focusButton.hidden = finished || !(progress.remote || state.isPreparationTab);
+    focusButton.textContent = state.isPreparationTab ? "採点タブに戻る" : "準備タブを開く";
+    focusButton.classList.toggle("cwr-preparation-urgent", Boolean(progress.stalled));
+
     const compactButton = panel.querySelector("#cwr-preparation-compact");
     compactButton.textContent = state.preparationCompact ? "大きく表示" : "小さく表示";
     compactButton.setAttribute("aria-pressed", String(state.preparationCompact));
-    panel.querySelector("#cwr-preparation-cancel").addEventListener("click", () => {
-      if (state.remotePreparing) {
-        chrome.runtime.sendMessage({ type: "cwr-cancel-bulk-preparation" }).catch(() => undefined);
-        panel.querySelector("#cwr-preparation-cancel").disabled = true;
-        panel.querySelector("#cwr-preparation-detail").textContent = "準備専用タブへ中止を伝えています。";
-        return;
-      }
-      if (!state.preparing) {
-        panel.remove();
-        return;
-      }
-      state.prepareCancelled = true;
-      panel.querySelector("#cwr-preparation-cancel").disabled = true;
-      panel.querySelector("#cwr-preparation-detail").textContent = "現在の1件が終わったら中止します。";
-    });
-    panel.querySelector("#cwr-preparation-compact").addEventListener("click", () => {
-      state.preparationCompact = !state.preparationCompact;
-      panel.classList.toggle("cwr-preparation-compact", state.preparationCompact);
-      const button = panel.querySelector("#cwr-preparation-compact");
-      button.textContent = state.preparationCompact ? "大きく表示" : "小さく表示";
-      button.setAttribute("aria-pressed", String(state.preparationCompact));
-    });
-    document.body.appendChild(panel);
-    const startedAt = Date.now();
-    clearInterval(state.preparationTimer);
-    state.preparationTimer = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-      const minutes = Math.floor(elapsed / 60);
-      const seconds = elapsed % 60;
-      const elapsedElement = document.getElementById("cwr-preparation-elapsed");
-      if (elapsedElement) elapsedElement.textContent = minutes ? `経過 ${minutes}分${seconds}秒` : `経過 ${seconds}秒`;
-    }, 1000);
+
+    // 経過時間は動いている間だけ数える。
+    if (finished) {
+      clearInterval(state.preparationTimer);
+      state.preparationTimer = null;
+    } else if (!state.preparationTimer) {
+      state.preparationTimer = setInterval(renderPreparation, 1000);
+    }
+  }
+
+  function endRemoteTracking() {
+    state.remotePreparing = false;
+    stopStallWatchdog();
+    updateUiLabels();
+  }
+
+  function setPreparationProgress(patch = {}) {
+    Object.assign(progress, patch);
+    if (!progress.startedAt) progress.startedAt = Date.now();
+    ensurePreparationPanel();
+    renderPreparation();
+    if (state.dedicatedPreparation) reportPreparationProgress();
   }
 
   function updatePreparation(countText, detailText) {
-    const count = document.getElementById("cwr-preparation-count");
-    const detail = document.getElementById("cwr-preparation-detail");
-    if (count && countText) count.textContent = countText;
-    if (detail && detailText) detail.textContent = detailText;
-    if (state.dedicatedPreparation) reportPreparationProgress("running");
+    setPreparationProgress({
+      ...(countText ? { countText } : {}),
+      ...(detailText ? { detailText } : {})
+    });
   }
 
-  function reportPreparationProgress(status, override = {}) {
+  function reportPreparationProgress() {
     if (!state.dedicatedPreparation) return;
     chrome.runtime.sendMessage({
       type: "cwr-prepare-progress",
       progress: {
-        status,
-        title: override.title || document.getElementById("cwr-preparation-title")?.textContent || "提出物の一括準備",
-        countText: override.countText || document.getElementById("cwr-preparation-count")?.textContent || "",
-        detailText: override.detailText || document.getElementById("cwr-preparation-detail")?.textContent || ""
+        status: isPreparationFinished() ? progress.phase : "running",
+        phase: progress.phase,
+        title: progress.title,
+        countText: progress.countText,
+        detailText: progress.detailText,
+        done: progress.done,
+        skipped: progress.skipped,
+        current: progress.current,
+        startedAt: progress.startedAt,
+        stalled: progress.stalled === true,
+        cancelRequested: progress.cancelRequested === true
       }
     }).catch(() => undefined);
   }
 
   function finishPreparation(title, countText, detailText, status = "done") {
-    const panel = document.getElementById("cwr-preparation");
-    if (!panel) return;
-    clearInterval(state.preparationTimer);
-    state.preparationTimer = null;
-    panel.querySelector("#cwr-preparation-spinner")?.remove();
-    panel.querySelector("#cwr-preparation-title").textContent = title;
-    updatePreparation(countText, detailText);
-    const button = panel.querySelector("#cwr-preparation-cancel");
-    button.disabled = false;
-    button.textContent = "閉じる";
-    reportPreparationProgress(status, { title, countText, detailText });
+    stopProgressTicker();
+    setPreparationProgress({
+      phase: status,
+      title,
+      countText,
+      detailText,
+      stalled: false,
+      cancelRequested: false
+    });
+  }
+
+  function startProgressTicker() {
+    stopProgressTicker();
+    // 数値が変わらない待ち時間でも定期的に生存を伝え、採点タブ側が
+    // 「止まっている」と誤解しないようにする。
+    state.progressTicker = setInterval(() => {
+      if (!state.preparing) return;
+      reportPreparationProgress();
+    }, PROGRESS_TICK_MS);
+  }
+
+  function stopProgressTicker() {
+    clearInterval(state.progressTicker);
+    state.progressTicker = null;
+  }
+
+  // 準備専用タブから連絡が途絶えたら、黙って待たせずに操作できる案内へ切り替える。
+  // 解除は進捗が届いたときに行う（handleRemotePreparationProgress）。
+  function startStallWatchdog() {
+    if (state.watchdogTimer) return;
+    state.lastRemoteProgressAt = Date.now();
+    state.watchdogTimer = setInterval(() => {
+      if (!state.remotePreparing || progress.stalled) return;
+      if (Date.now() - state.lastRemoteProgressAt <= STALL_WARNING_MS) return;
+      progress.stalled = true;
+      renderPreparation();
+    }, 5000);
+  }
+
+  function stopStallWatchdog() {
+    clearInterval(state.watchdogTimer);
+    state.watchdogTimer = null;
   }
 
   function handleRemotePreparationProgress(message) {
+    if (state.preparing) return;
     const running = !message.status || message.status === "running";
     state.remotePreparing = running;
-    if (!document.getElementById("cwr-preparation")) showPreparationPanel();
-    const title = document.getElementById("cwr-preparation-title");
-    if (title && message.title) title.textContent = message.title;
+    state.lastRemoteProgressAt = Date.now();
+    updateUiLabels();
+    setPreparationProgress({
+      remote: true,
+      stalled: running && message.stalled === true,
+      phase: running ? "running" : message.status,
+      title: message.title || progress.title,
+      countText: message.countText || progress.countText,
+      detailText: message.detailText || progress.detailText,
+      done: message.done ?? progress.done,
+      skipped: message.skipped ?? progress.skipped,
+      current: message.current ?? progress.current,
+      startedAt: message.startedAt || progress.startedAt,
+      cancelRequested: message.cancelRequested === true
+    });
     if (running) {
-      updatePreparation(message.countText, message.detailText);
+      startStallWatchdog();
       return;
     }
-    finishPreparation(
-      message.title || "一括準備が完了しました",
-      message.countText || "",
-      message.detailText || "",
-      message.status
+    endRemoteTracking();
+    setStatus(
+      message.status === "done" ? progress.countText : progress.title,
+      message.status === "done" ? "ready" : "error"
     );
   }
 
@@ -459,28 +668,102 @@
       setStatus("提出物を個別に開いてから一括準備を開始してください。", "error");
       return;
     }
-    if (state.remotePreparing) return;
+    if (state.remotePreparing || state.preparing) {
+      setPreparationProgress({ remote: true });
+      return;
+    }
     state.remotePreparing = true;
-    showPreparationPanel();
-    updatePreparation("準備専用タブを起動中…", "この採点タブはそのまま使用できます。");
+    updateUiLabels();
+    setPreparationProgress({
+      remote: true,
+      phase: "running",
+      title: "提出物の一括準備",
+      countText: "準備専用タブを起動中…",
+      detailText: "Classroomをもう1枚開き、先頭の提出者から順に準備します。",
+      done: 0,
+      skipped: 0,
+      current: 0,
+      startedAt: Date.now(),
+      cancelRequested: false
+    });
+    startStallWatchdog();
     try {
       const response = await chrome.runtime.sendMessage({ type: "cwr-start-bulk-preparation" });
       if (!response?.ok) throw new Error(response?.error || "準備専用タブを開始できませんでした。");
-      updatePreparation("準備専用タブで処理中", "採点を続けながらお待ちください。");
+      updatePreparation(
+        response.alreadyRunning ? "準備専用タブで処理中" : "準備専用タブを起動しました",
+        response.alreadyRunning
+          ? "すでに実行中の一括準備を続けています。"
+          : "準備専用タブが前面になります。採点タブに戻っても準備は続きます。"
+      );
     } catch (error) {
-      state.remotePreparing = false;
-      finishPreparation("一括準備を開始できませんでした", "準備は開始されていません", error.message || "エラーが発生しました。", "error");
+      endRemoteTracking();
+      finishPreparation(
+        "一括準備を開始できませんでした",
+        "準備は始まっていません",
+        error.message || "エラーが発生しました。もう一度お試しください。",
+        "error"
+      );
     }
   }
 
+  function becomePreparationTab() {
+    if (state.isPreparationTab) return;
+    state.isPreparationTab = true;
+    state.auto = false;
+    removeOverlay();
+    state.ui?.remove();
+    state.ui = null;
+  }
+
+  // "moved"（次の提出者へ進んだ）、"end"（もう先がない）、
+  // "stuck"（押したのに画面が変わらない）を区別する。
+  // 区別しないと、背面タブで画面が止まっただけなのに「全員分の準備が完了」と
+  // 誤って報告してしまう。
   async function moveSubmission(direction) {
     const button = await waitForSubmissionButton(direction);
-    if (submissionButtonDisabled(button)) return false;
+    if (submissionButtonDisabled(button)) return "end";
     const before = getSubmissionKey();
     button.click();
-    const changed = await waitForSubmissionChange(before);
-    if (changed) await wait(direction === "next" ? 650 : 180);
-    return changed;
+    if (!await waitForSubmissionChange(before)) return "stuck";
+    await wait(direction === "next" ? 650 : 180);
+    return "moved";
+  }
+
+  // Chromeは背面のタブの描画を止めるため、Classroomの画面が更新されなくなる
+  // ことがある。中断せずに前面へ戻るのを待ち、続きから自動で再開する。
+  async function waitForVisibleTab(timeoutMs = 600000) {
+    if (!document.hidden) return true;
+    setPreparationProgress({
+      stalled: true,
+      detailText: "Chromeが背面のタブを止めています。準備タブを前面に表示すると、続きから自動で再開します。"
+    });
+    const startedAt = Date.now();
+    while (document.hidden && Date.now() - startedAt < timeoutMs) {
+      await wait(1000);
+    }
+    const visible = !document.hidden;
+    setPreparationProgress({
+      stalled: false,
+      detailText: visible ? "画面の更新を確認しました。準備を再開します。" : "画面が更新されないまま10分が過ぎました。"
+    });
+    return visible;
+  }
+
+  async function moveWithRecovery(direction) {
+    const result = await moveSubmission(direction);
+    if (result !== "stuck") return result;
+    if (!await waitForVisibleTab()) return "stuck";
+    await wait(1200);
+    return await moveSubmission(direction);
+  }
+
+  // 実行中は内訳を分けず「未準備」でまとめ、終了時の要約で対象外と失敗を分ける。
+  function preparationCountText(done, notReady, current) {
+    const base = done ? `${done}件を準備しました` : "準備中…";
+    const currentPart = current ? `（${current}人目を処理中）` : "";
+    const notReadyPart = notReady ? `・未準備 ${notReady}件` : "";
+    return `${base}${notReadyPart}${currentPart}`;
   }
 
   async function prepareAllSubmissions({ dedicated = false } = {}) {
@@ -493,19 +776,35 @@
     state.prepareCancelled = false;
     state.busy = false;
     removeOverlay();
-    showPreparationPanel();
+    setPreparationProgress({
+      phase: "running",
+      remote: false,
+      title: "提出物の一括準備",
+      countText: "準備を開始しています…",
+      detailText: "先頭の提出者を確認中です。",
+      done: 0,
+      skipped: 0,
+      current: 0,
+      startedAt: Date.now(),
+      stalled: false,
+      cancelRequested: false
+    });
+    startProgressTicker();
 
     let preparedCount = 0;
     let cachedCount = 0;
     let skippedCount = 0;
+    let failedCount = 0;
     let forwardMoves = 0;
+    const failedNames = [];
     const seen = new Set();
     const preparedDocumentKeys = new Set();
 
     try {
-      updatePreparation("先頭へ移動中…", "提出者の最初まで戻っています。");
+      updatePreparation("先頭の提出者へ移動中…", "提出者リストの最初まで戻っています。");
       for (let attempts = 0; attempts < 1000 && !state.prepareCancelled; attempts += 1) {
-        if (!await moveSubmission("previous")) break;
+        if (await moveWithRecovery("previous") !== "moved") break;
+        updatePreparation("先頭の提出者へ移動中…", `${attempts + 1}人分戻りました。`);
       }
 
       updatePreparation("最初の提出物を確認中…", "Classroomのファイルプレビューを待っています。");
@@ -516,17 +815,31 @@
       }
 
       while (!state.prepareCancelled) {
+        const sequence = seen.size + 1;
+        setPreparationProgress({
+          current: sequence,
+          countText: preparationCountText(preparedCount + cachedCount, skippedCount + failedCount, sequence),
+          detailText: `${sequence}人目の提出物を読み取っています。`
+        });
+        // 提出物の名前が出そろってから鍵を作る。先に作ると読み込み途中の
+        // 名前で保存され、採点時に準備済みPDFを見つけられなくなる。
+        let fileInfo = sequence === 1 && initialFileInfo
+          ? initialFileInfo
+          : await waitForSubmissionFile(15000);
+        if (!fileInfo && document.hidden && await waitForVisibleTab()) {
+          fileInfo = await waitForSubmissionFile(15000);
+        }
         const submissionKey = getSubmissionKey();
         if (!submissionKey || seen.has(submissionKey)) break;
         seen.add(submissionKey);
-        const sequence = seen.size;
-        const fileInfo = sequence === 1 && initialFileInfo
-          ? initialFileInfo
-          : await waitForSubmissionFile(15000);
 
         if (fileInfo && !fileInfo.unsupported) {
           const fileName = fileInfo.fileName;
-          updatePreparation(`${sequence}件目を準備中`, `${fileName} を取得・PDF化しています。`);
+          setPreparationProgress({
+            countText: preparationCountText(preparedCount + cachedCount, skippedCount + failedCount, sequence),
+            detailText: `${fileName} を取得してPDFに変換しています。`,
+            fileName
+          });
           let response = null;
           for (let attempt = 0; attempt < 3; attempt += 1) {
             response = await chrome.runtime.sendMessage({
@@ -549,40 +862,71 @@
             if (/補助アプリ|Start-Reviewer|古い版|起動していません/.test(response?.error || "")) {
               throw new Error(response.error);
             }
-            skippedCount += 1;
+            failedCount += 1;
+            failedNames.push(fileName);
           }
         } else {
           skippedCount += 1;
         }
 
-        updatePreparation(
-          `${preparedCount + cachedCount}件準備済み${skippedCount ? `・${skippedCount}件未準備` : ""}`,
-          "次の提出者へ移動しています。"
-        );
-        if (state.prepareCancelled || !await moveSubmission("next")) break;
+        setPreparationProgress({
+          done: preparedCount + cachedCount,
+          skipped: skippedCount + failedCount,
+          countText: preparationCountText(preparedCount + cachedCount, skippedCount + failedCount, sequence),
+          detailText: "次の提出者へ移動しています。"
+        });
+        if (state.prepareCancelled) break;
+        const moved = await moveWithRecovery("next");
+        if (moved === "stuck") {
+          throw new Error("Classroomの画面が更新されなくなったため、途中で停止しました。準備専用タブを前面にしてから、もう一度「全員分を一括準備」を押すと続きから準備します。");
+        }
+        if (moved === "end") break;
         forwardMoves += 1;
       }
 
-      updatePreparation("先頭へ戻しています…", "準備したPDFはこのPC内に保持されています。");
-      for (let index = 0; index < forwardMoves; index += 1) {
-        if (!await moveSubmission("previous")) break;
+      if (!dedicated) {
+        // 採点タブで直接実行した場合だけ、見ていた提出者の位置へ戻す。
+        updatePreparation("先頭へ戻しています…", "準備したPDFはこのPC内に保持されています。");
+        for (let index = 0; index < forwardMoves; index += 1) {
+          if (await moveWithRecovery("previous") !== "moved") break;
+        }
       }
 
       const total = preparedCount + cachedCount;
+      const notReady = skippedCount + failedCount;
+      const summary = [
+        `${total}件を準備しました`,
+        skippedCount ? `対象外 ${skippedCount}件` : "",
+        failedCount ? `準備できず ${failedCount}件` : ""
+      ].filter(Boolean).join("・");
+      const failedNote = failedCount
+        ? `準備できなかった提出物：${failedNames.slice(0, 3).join("、")}${failedCount > 3 ? " ほか" : ""}。採点画面で個別に「表示」を押すと再試行します。`
+        : "";
       finishPreparation(
         state.prepareCancelled ? "一括準備を中止しました" : "提出物の準備が完了しました",
-        `${total}件準備済み${skippedCount ? `・${skippedCount}件未準備` : ""}`,
-        total ? "学生を切り替えると、準備済みPDFを直接表示します。" : "準備できるWord／PowerPoint／Google形式の提出物が見つかりませんでした。",
+        summary,
+        total
+          ? failedNote || "変換した表示用PDFは、このPC内に24時間保持します。"
+          : notReady
+            ? `準備できるWord／PowerPoint／Google形式の提出物がありませんでした。${failedNote}`
+            : "提出者を読み取れませんでした。Classroomの採点画面で提出物を1件開いてから、もう一度お試しください。",
         state.prepareCancelled ? "cancelled" : "done"
       );
       setStatus(`${total}件の提出物を準備済み`, total ? "ready" : "idle");
     } catch (error) {
-      finishPreparation("一括準備を中断しました", `${preparedCount + cachedCount}件準備済み`, error.message || "処理中にエラーが発生しました。", "error");
+      finishPreparation(
+        "一括準備を中断しました",
+        `${preparedCount + cachedCount}件まで準備できました`,
+        error.message || "処理中にエラーが発生しました。",
+        "error"
+      );
       setStatus(error.message || "一括準備に失敗しました。", "error");
     } finally {
+      stopProgressTicker();
       state.preparing = false;
       state.prepareCancelled = false;
       state.dedicatedPreparation = false;
+      updateUiLabels();
     }
   }
 
@@ -625,11 +969,15 @@
         : "Word別窓で表示";
     openButton.disabled = !fileInfo;
     officeButton.disabled = !fileInfo || googleDocument || googlePresentation;
-    prepareButton.disabled = false;
+    const busyPreparing = state.remotePreparing || state.preparing;
+    prepareButton.textContent = busyPreparing ? "一括準備を実行中…" : "全員分を一括準備";
+    prepareButton.disabled = busyPreparing;
     autoInput.disabled = false;
   }
 
   function makeUi() {
+    // 準備専用タブでは自動操作の邪魔になるため、採点用の操作パネルは出さない。
+    if (state.isPreparationTab && !isPreparationFinished()) return;
     if (document.getElementById("cwr-controls")) return;
     const root = document.createElement("section");
     root.id = "cwr-controls";
@@ -669,7 +1017,7 @@
     root.querySelector("#cwr-toggle").addEventListener("click", () => setEnabled(!state.enabled));
     updateUiLabels();
     chrome.storage.local.get(["cwrAuto", "cwrMode", "cwrEnabled"]).then(({ cwrAuto, cwrMode, cwrEnabled }) => {
-      state.auto = Boolean(cwrAuto);
+      state.auto = state.isPreparationTab ? false : Boolean(cwrAuto);
       state.mode = ["word", "office"].includes(cwrMode) ? "office" : "pdf";
       state.enabled = cwrEnabled !== false;
       root.querySelector("#cwr-auto").checked = state.auto;
@@ -704,11 +1052,7 @@
       status.textContent = text;
       status.dataset.kind = kind;
     }
-    if (state.preparing && document.getElementById("cwr-preparation-spinner")) {
-      const detail = document.getElementById("cwr-preparation-detail");
-      if (detail) detail.textContent = text;
-      reportPreparationProgress("running");
-    }
+    if (state.preparing && !isPreparationFinished()) setPreparationProgress({ detailText: text });
     state.overlay?.querySelector("iframe")?.contentWindow?.postMessage({ type: "cwr-viewer-status", text, kind }, "*");
   }
 
@@ -925,6 +1269,8 @@
   function handlePossibleSubmissionChange() {
     clearTimeout(state.timer);
     state.timer = setTimeout(() => {
+      // 準備専用タブは自動操作中なので、採点用の表示処理は動かさない。
+      if (state.isPreparationTab && state.preparing) return;
       makeUi();
       const submissionView = isSubmissionView();
       if (!submissionView) {
@@ -963,6 +1309,16 @@
       }
     }, 200);
   }
+
+  // 拡張機能を再読み込みしても、このタブが準備専用タブかどうかを取り戻す。
+  chrome.runtime.sendMessage({ type: "cwr-preparation-role" }).then((response) => {
+    if (response?.role === "preparation" && !response.interrupted) becomePreparationTab();
+    if (response?.role === "source" && response.progress) handleRemotePreparationProgress(response.progress);
+  }, () => undefined);
+  chrome.storage.local.get("cwrPreparationCompact").then(({ cwrPreparationCompact }) => {
+    state.preparationCompact = Boolean(cwrPreparationCompact);
+    renderPreparation();
+  }, () => undefined);
 
   makeUi();
   state.submissionView = isSubmissionView();

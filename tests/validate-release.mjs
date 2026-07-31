@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.5.17";
+const expectedVersion = "0.6.0";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -38,6 +38,17 @@ assert(content.includes('次の(?:生徒|学生)を選択'));
 assert(content.includes("function isSubmissionView()"));
 assert(content.includes("function waitForSubmissionView"));
 assert(content.includes('id="cwr-preparation-compact"'));
+assert(content.includes('id="cwr-preparation-focus"'));
+// 準備専用タブが背面でも進み続けるための仕組みが外れていないか確かめる。
+assert(background.includes('"cwr-sleep"'));
+assert(content.includes('type: "cwr-sleep"'));
+assert(background.includes("async function inspectPreparationTab"));
+assert(background.includes("async function fetchWithTimeout"));
+// 通信はすべて fetchWithTimeout 経由（素の fetch は helper 内の1か所だけ）。
+assert.equal((background.match(/await fetch\(/g) || []).length, 1);
+assert(background.includes("url: sourceTab.url,\n      active: true,"));
+assert(content.includes("function startStallWatchdog"));
+assert(content.includes("function becomePreparationTab"));
 assert(content.includes('findFileName("docx?|pptx?|pdf|'));
 assert(viewer.includes(`pdfUrl.startsWith("http://127.0.0.1:${expectedPort}/file/")`));
 assert(server.includes(`const port = ${expectedPort};`));
