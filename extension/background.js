@@ -683,6 +683,23 @@ async function startConversion(tabId, submissionKey, expectedName = "", expected
     });
     return { ...preparedSubmission, mode: "prepared" };
   }
+
+  if (expectedFileId || expectedName) {
+    const directKey = descriptorKey({ fileId: expectedFileId, fileName: expectedName });
+    const preparedByFile = await getPreparedPdf(directKey);
+    if (preparedByFile) {
+      await rememberPreparedPdf(directKey, submissionKey, preparedByFile);
+      await notifyTab(tabId, {
+        type: "cwr-show-pdf",
+        pdfUrl: preparedByFile.pdfUrl,
+        fileName: preparedByFile.fileName,
+        pageCount: preparedByFile.pageCount,
+        submissionKey
+      });
+      return { ...preparedByFile, mode: "prepared" };
+    }
+  }
+
   const descriptor = await waitForCurrentDocument(tabId, expectedName, expectedFileId, expectedGoogleType);
   if (!descriptor) {
     throw new Error("表示中のWord／PowerPoint／Google形式のファイルを見つけられませんでした。Classroomを再読み込みしてください。");
