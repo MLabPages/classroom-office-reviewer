@@ -125,7 +125,8 @@ const multiHooks = runDetection({
     new MockElement({ text: secondFile, href: "https://drive.google.com/file/d/1BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB/view" }),
     new MockElement({ text: "提出済みの記録.pdf", href: "https://drive.google.com/file/d/1CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC/view" }),
     new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
-  ]
+  ],
+  frames: [new MockElement({ src: "https://docs.google.com/file/d/1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/view" })]
 });
 const attachments = multiHooks.findSubmissionAttachments();
 assert.deepEqual(plain(attachments.map((item) => item.fileName)), [firstFile, secondFile]);
@@ -134,6 +135,16 @@ assert.equal(attachments[1].kind, "office");
 // 表示中の1件は先頭のまま、重複させずに続きを並べる。
 const files = multiHooks.listSubmissionFiles();
 assert.deepEqual(plain(files.map((item) => item.fileName)), [firstFile, secondFile]);
+
+// Classroomがリンクを出さず、role=menuitemだけでファイルを並べる場合も拾う。
+const menuOnlyHooks = runDetection({
+  nodes: [
+    new MockElement({ text: `Microsoft Word: ${firstFile}`, attributes: { role: "menuitem" } }),
+    new MockElement({ text: `Microsoft PowerPoint: ${secondFile}`, attributes: { role: "menuitem" } }),
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ]
+});
+assert.deepEqual(plain(menuOnlyHooks.listSubmissionFiles().map((item) => item.fileName)), [firstFile, secondFile]);
 
 // 添付リンクを1件も拾えなくても、従来どおり表示中の1件は準備できる。
 const singleHooks = runDetection({

@@ -1,6 +1,7 @@
 const HELPER_BASE = "http://127.0.0.1:18765";
 const PREPARED_KEY = "classroomWordReviewerPrepared";
 const PREPARED_SUBMISSIONS_KEY = "classroomWordReviewerPreparedSubmissions";
+const PREPARED_NAMES_KEY = "classroomWordReviewerPreparedNames";
 const HELPER_SESSION_KEY = "classroomWordReviewerHelperSession";
 const PREPARATION_TAB_KEY = "classroomWordReviewerPreparationTab";
 const PREPARED_MAXIMUM = 600;
@@ -35,12 +36,13 @@ async function helperHealth() {
   if (health.version !== expectedVersion) {
     throw new Error(`補助アプリが古い版（v${health.version || "不明"}）です。最新版のStart-Reviewer.cmdを起動してください。`);
   }
-  const stored = await chrome.storage.session.get(HELPER_SESSION_KEY);
+  const stored = await chrome.storage.local.get(HELPER_SESSION_KEY);
   if (health.sessionId && stored[HELPER_SESSION_KEY] !== health.sessionId) {
     preparedPdfs.clear();
     preparedSubmissions.clear();
-    await chrome.storage.session.remove([PREPARED_KEY, PREPARED_SUBMISSIONS_KEY]);
-    await chrome.storage.session.set({ [HELPER_SESSION_KEY]: health.sessionId });
+    preparedPdfsByName.clear();
+    await chrome.storage.local.remove([PREPARED_KEY, PREPARED_SUBMISSIONS_KEY, PREPARED_NAMES_KEY]);
+    await chrome.storage.local.set({ [HELPER_SESSION_KEY]: health.sessionId });
   }
   return health;
 }
@@ -335,12 +337,11 @@ function sleep(milliseconds) {
 }
 
 const preparedPdfsByName = new Map();
-const PREPARED_NAMES_KEY = "classroomWordReviewerPreparedNames";
 
 async function getPreparedPdf(key) {
   const inMemory = preparedPdfs.get(key);
   if (inMemory) return inMemory;
-  const stored = await chrome.storage.session.get(PREPARED_KEY);
+  const stored = await chrome.storage.local.get(PREPARED_KEY);
   return stored[PREPARED_KEY]?.[key] || null;
 }
 
@@ -364,7 +365,7 @@ async function getPreparedPdfByName(fileName) {
   const inMemory = preparedPdfsByName.get(normalized);
   if (inMemory) return inMemory;
 
-  const stored = await chrome.storage.session.get(PREPARED_NAMES_KEY);
+  const stored = await chrome.storage.local.get(PREPARED_NAMES_KEY);
   const nameMap = stored[PREPARED_NAMES_KEY] || {};
   if (nameMap[normalized]) return nameMap[normalized];
 
@@ -395,7 +396,7 @@ async function getPreparedPdfByName(fileName) {
 async function getPreparedSubmission(submissionKey) {
   const inMemory = preparedSubmissions.get(submissionKey);
   if (inMemory) return inMemory;
-  const stored = await chrome.storage.session.get(PREPARED_SUBMISSIONS_KEY);
+  const stored = await chrome.storage.local.get(PREPARED_SUBMISSIONS_KEY);
   return stored[PREPARED_SUBMISSIONS_KEY]?.[submissionKey] || null;
 }
 
@@ -408,21 +409,23 @@ async function rememberPreparedPdf(key, submissionKey, result, { primary = true 
     preparedPdfsByName.set(result.fileName.trim().toLowerCase(), result);
   }
 
-  const stored = await chrome.storage.session.get(PREPARED_KEY);
+  const stored = await chrome.storage.local.get(PREPARED_KEY);
   const entries = { ...(stored[PREPARED_KEY] || {}), [key]: result };
   const keep = Object.entries(entries).slice(-PREPARED_MAXIMUM);
-  await chrome.storage.session.set({ [PREPARED_KEY]: Object.fromEntries(keep) });
+  await chrome.storage.local.set({ [PREPARED_KEY]: Object.fromEntries(keep) });
 
-  const submissionStored = await chrome.storage.session.get(PREPARED_SUBMISSIONS_KEY);
-  const submissionEntries = { ...(submissionStored[PREPARED_SUBMISSIONS_KEY] || {}), [submissionKey]: result };
-  const submissionKeep = Object.entries(submissionEntries).slice(-PREPARED_MAXIMUM);
-  await chrome.storage.session.set({ [PREPARED_SUBMISSIONS_KEY]: Object.fromEntries(submissionKeep) });
+  if (primary) {
+    const submissionStored = await chrome.storage.local.get(PREPARED_SUBMISSIONS_KEY);
+    const submissionEntries = { ...(submissionStored[PREPARED_SUBMISSIONS_KEY] || {}), [submissionKey]: result };
+    const submissionKeep = Object.entries(submissionEntries).slice(-PREPARED_MAXIMUM);
+    await chrome.storage.local.set({ [PREPARED_SUBMISSIONS_KEY]: Object.fromEntries(submissionKeep) });
+  }
 
   if (result?.fileName) {
-    const nameStored = await chrome.storage.session.get(PREPARED_NAMES_KEY);
+    const nameStored = await chrome.storage.local.get(PREPARED_NAMES_KEY);
     const nameEntries = { ...(nameStored[PREPARED_NAMES_KEY] || {}), [result.fileName.trim().toLowerCase()]: result };
     const nameKeep = Object.entries(nameEntries).slice(-PREPARED_MAXIMUM);
-    await chrome.storage.session.set({ [PREPARED_NAMES_KEY]: Object.fromEntries(nameKeep) });
+    await chrome.storage.local.set({ [PREPARED_NAMES_KEY]: Object.fromEntries(nameKeep) });
   }
 
   while (preparedPdfs.size > PREPARED_MAXIMUM) {
@@ -530,6 +533,12 @@ async function convertInMemory(tabId, submissionKey, descriptor, { reportStatus 
   if (!response.ok || !result.ok) {
     throw new Error(result.error || "OfficeからPDFへの変換に失敗しました。");
   }
+  if (reportStatus && result.cached) await notifyTab(tabId, {
+    type: "cwr-status",
+    state: "ready",
+    text: "準備済みPDFを再利用しています。",
+    submissionKey
+  });
 
   const converted = {
     ok: true,
@@ -537,6 +546,7 @@ async function convertInMemory(tabId, submissionKey, descriptor, { reportStatus 
     pdfUrl: `${HELPER_BASE}${result.pdfUrl}`,
     pageCount: result.pageCount || null,
     mode: "memory",
+    cached: result.cached === true,
     completed: true
   };
   if (showPdf) await notifyTab(tabId, { type: "cwr-show-pdf", submissionKey, ...converted });
@@ -594,12 +604,19 @@ async function convertGoogleToPdf(tabId, submissionKey, descriptor, { reportStat
   }
   const result = await storeResponse.json().catch(() => ({}));
   if (!storeResponse.ok || !result.ok) throw new Error(result.error || "表示用PDFを保存できませんでした。");
+  if (reportStatus && result.cached) await notifyTab(tabId, {
+    type: "cwr-status",
+    state: "ready",
+    text: "準備済みPDFを再利用しています。",
+    submissionKey
+  });
   const converted = {
     ok: true,
     fileName: result.sourceName || displayName,
     pdfUrl: `${HELPER_BASE}${result.pdfUrl}`,
     pageCount: result.pageCount || null,
     mode: "google-pdf",
+    cached: result.cached === true,
     completed: true
   };
   if (showPdf) await notifyTab(tabId, { type: "cwr-show-pdf", submissionKey, ...converted });
@@ -722,7 +739,7 @@ async function releasePdf(pdfUrl) {
   if (typeof pdfUrl !== "string" || !/^http:\/\/127\.0\.0\.1:18765\/file\/[a-f0-9]{24}\.pdf$/.test(pdfUrl)) {
     throw new Error("削除対象の表示用PDFが正しくありません。");
   }
-  const stored = await chrome.storage.session.get(PREPARED_KEY);
+  const stored = await chrome.storage.local.get(PREPARED_KEY);
   if (Object.values(stored[PREPARED_KEY] || {}).some((item) => item.pdfUrl === pdfUrl)) {
     return { ok: true, retained: true };
   }
@@ -795,7 +812,11 @@ if (globalThis.__CWR_BACKGROUND_TEST_HOOKS__) {
   Object.assign(globalThis.__CWR_BACKGROUND_TEST_HOOKS__, {
     buildGooglePdfExportUrl,
     findCurrentDocument,
-    isGoogleNative
+    isGoogleNative,
+    getPreparedPdf,
+    getPreparedPdfByName,
+    getPreparedSubmission,
+    rememberPreparedPdf
   });
 }
 

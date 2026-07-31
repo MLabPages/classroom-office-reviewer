@@ -31,6 +31,7 @@
     wide: false,
     overlayBounds: null,
     activeFile: null,
+    fileSwitching: false,
     ui: null,
     overlay: null,
     pendingOverlay: null
@@ -170,29 +171,78 @@
     return label || (googleType === "document" ? "Googleドキュメント" : "Googleスライド");
   }
 
-  // 1人が複数ファイルを提出することがある。1件目だけ準備して残りを取り
-  // こぼさないよう、提出者画面にある添付リンクをすべて拾う。
+  function googleTypeOfLabel(value) {
+    if (/Google\s*(?:ドキュメント|Docs?)/i.test(value || "")) return "document";
+    if (/Google\s*(?:スライド|Slides?)/i.test(value || "")) return "presentation";
+    return "";
+  }
+
+  function fileUrlOf(node) {
+    return node?.href
+      || node?.getAttribute("href")
+      || node?.getAttribute("data-href")
+      || node?.getAttribute("data-url")
+      || node?.getAttribute("data-file-url")
+      || node?.getAttribute("data-file-id")
+      || "";
+  }
+
+  // Classroomのファイル選択欄は、通常のリンクではなく role=menuitem の
+  // span として描画されることがある。2件目以降も同じ欄から拾う。
+  function findSubmissionFileMenuItems() {
+    return [...document.querySelectorAll("[role='menuitem']")].filter((node) => {
+      if (!visible(node)) return false;
+      if (node.getAttribute?.("role") !== "menuitem") return false;
+      const text = textOf(node);
+      if (!text || /新しいウィンドウ|new window/i.test(text)) return false;
+      const menu = node.closest?.("[role='menu']");
+      const menuLabel = menu?.getAttribute("aria-label") || "";
+      return !menu || /ファイル|file|submission/i.test(menuLabel) || Boolean(attachmentNameOf(node, googleTypeOfLabel(text)));
+    });
+  }
+
+  function attachmentInfoOf(node) {
+    const url = fileUrlOf(node);
+    const label = [node.getAttribute("aria-label"), node.getAttribute("title"), node.getAttribute("data-tooltip"), textOf(node)]
+      .filter(Boolean)
+      .join(" ");
+    const googleType = googleTypeOfUrl(url) || googleTypeOfLabel(label);
+    const fileName = attachmentNameOf(node, googleType);
+    const fileId = parseDriveId(url);
+    if (!fileName || (!googleType && !/\.(?:docx?|pptx?)$/i.test(fileName))) return null;
+    return {
+      kind: googleType ? (googleType === "document" ? "google-document" : "google-presentation") : "office",
+      fileName,
+      expectedName: googleType ? "" : fileName,
+      expectedFileId: fileId,
+      expectedGoogleType: googleType
+    };
+  }
+
+  // 1人が複数ファイルを提出することがある。リンクだけでなく、
+  // Classroomのファイル選択欄も拾い、2件目以降を落とさない。
   function findSubmissionAttachments() {
     const attachments = [];
     const seen = new Set();
-    for (const node of document.querySelectorAll("a[href]")) {
-      const url = node.href || "";
-      if (!/(?:drive|docs)\.google\.com/i.test(url)) continue;
+    const linkNodes = [...document.querySelectorAll("a[href]")].filter((node) =>
+      typeof node.matches === "function" ? node.matches("a[href]") : Boolean(node.href));
+    const nodes = [...linkNodes, ...findSubmissionFileMenuItems()];
+    for (const node of nodes) {
       if (!visible(node)) continue;
-      const fileId = parseDriveId(url);
-      if (!fileId || seen.has(fileId)) continue;
-      const googleType = googleTypeOfUrl(url);
-      const fileName = attachmentNameOf(node, googleType);
-      if (!fileName) continue;
-      if (!googleType && !/\.(?:docx?|pptx?)$/i.test(fileName)) continue;
-      seen.add(fileId);
-      attachments.push({
-        kind: googleType ? (googleType === "document" ? "google-document" : "google-presentation") : "office",
-        fileName,
-        expectedName: googleType ? "" : fileName,
-        expectedFileId: fileId,
-        expectedGoogleType: googleType
-      });
+      const url = fileUrlOf(node);
+      if (!/(?:drive|docs)\.google\.com/i.test(url) && node.getAttribute?.("role") !== "menuitem") continue;
+      const attachment = attachmentInfoOf(node);
+      if (!attachment) continue;
+      const identity = attachment.expectedFileId
+        ? `id:${attachment.expectedFileId}`
+        : `name:${attachment.fileName.trim().toLowerCase()}`;
+      const duplicate = seen.has(identity) || attachments.some((item) =>
+        (attachment.expectedFileId && item.expectedFileId === attachment.expectedFileId)
+        || (normalizedFileName(item.fileName) === normalizedFileName(attachment.fileName)
+          && (!attachment.expectedFileId || !item.expectedFileId)));
+      if (duplicate) continue;
+      seen.add(identity);
+      attachments.push(attachment);
     }
     return attachments;
   }
@@ -200,10 +250,16 @@
   // 表示中の1件（従来の検出）を先頭に、見つかった添付を続ける。
   // 添付の検出に失敗しても、これまでどおり1件目は必ず準備できる。
   function listSubmissionFiles(primary = findSupportedFileInfo()) {
-    const files = primary && !primary.unsupported && !primary.waiting ? [primary] : [];
+    let current = primary && !primary.unsupported && !primary.waiting ? { ...primary } : null;
+    if (current && !current.expectedFileId && !state.activeFile?.name) {
+      current.expectedFileId = findDisplayedFileId();
+    }
+    const files = current ? [current] : [];
     for (const attachment of findSubmissionAttachments()) {
-      const duplicate = files.some((item) => (item.expectedFileId && item.expectedFileId === attachment.expectedFileId)
-        || (!item.expectedFileId && item.fileName === attachment.fileName));
+      const duplicate = files.some((item) =>
+        (item.expectedFileId && attachment.expectedFileId && item.expectedFileId === attachment.expectedFileId)
+        || (normalizedFileName(item.fileName) === normalizedFileName(attachment.fileName)
+          && (!item.expectedFileId || !attachment.expectedFileId)));
       if (!duplicate) files.push(attachment);
     }
     return files;
@@ -229,6 +285,54 @@
       if (match) return match[1];
     }
     return "";
+  }
+
+  function findDisplayedFileId() {
+    const frames = [...document.querySelectorAll("iframe[src]")]
+      .filter((frame) => visible(frame) && /(?:drive|docs)\.google\.com/i.test(frame.src || ""));
+    for (const frame of frames) {
+      const fileId = parseDriveId(frame.src || "");
+      if (fileId) return fileId;
+    }
+    return "";
+  }
+
+  function normalizedFileName(name) {
+    return (name || "").replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  function findSubmissionFileMenuItem(fileName) {
+    const target = normalizedFileName(fileName);
+    return findSubmissionFileMenuItems().find((node) => {
+      const attachment = attachmentInfoOf(node);
+      return attachment && normalizedFileName(attachment.fileName) === target;
+    }) || null;
+  }
+
+  async function waitForDisplayedFileChange(previousId, expectedId = "", timeoutMs = 15000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const currentId = findDisplayedFileId();
+      if (expectedId && currentId === expectedId) return currentId;
+      if (!expectedId && currentId && currentId !== previousId) return currentId;
+      await wait(150);
+    }
+    return "";
+  }
+
+  async function selectSubmissionFile(file) {
+    const previousId = findDisplayedFileId();
+    const targetName = normalizedFileName(file?.fileName);
+    const activeName = normalizedFileName(state.activeFile?.name);
+    if ((file?.expectedFileId && file.expectedFileId === previousId) || (targetName && targetName === activeName)) {
+      return { ...file, expectedFileId: file.expectedFileId || state.activeFile?.id || previousId };
+    }
+    const menuItem = findSubmissionFileMenuItem(file?.fileName);
+    if (!menuItem) return null;
+    menuItem.click();
+    const selectedId = await waitForDisplayedFileChange(previousId, file?.expectedFileId || "");
+    if (!selectedId && file?.expectedFileId !== previousId) return null;
+    return { ...file, expectedFileId: file.expectedFileId || selectedId || previousId };
   }
 
   function describeDocument() {
@@ -378,9 +482,18 @@
     return "";
   }
 
-  function getSubmissionKey() {
+  function getStudentKey() {
     if (!isSubmissionView()) return "";
-    return [location.href, getStudentLabel(), findSupportedFileInfo()?.fileName || ""].join("|");
+    return [location.href, getStudentLabel()].join("|");
+  }
+
+  function getSubmissionKey(fileInfo = null) {
+    const studentKey = getStudentKey();
+    if (!studentKey) return "";
+    const currentFile = fileInfo || (state.activeFile?.name
+      ? { fileName: state.activeFile.name }
+      : findSupportedFileInfo());
+    return [studentKey, currentFile?.fileName || ""].join("|");
   }
 
   function findSubmissionButton(direction) {
@@ -423,7 +536,7 @@
   async function waitForSubmissionChange(previousKey, timeoutMs = 20000) {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      const currentKey = getSubmissionKey();
+      const currentKey = getStudentKey();
       if (currentKey && currentKey !== previousKey && (findSupportedFileInfo() || inspectSubmissionFile()?.unsupported)) return true;
       await wait(150);
     }
@@ -448,7 +561,11 @@
         resolve();
       };
       localWait(milliseconds).then(finish);
-      chrome.runtime.sendMessage({ type: "cwr-sleep", ms: milliseconds }).then(finish, () => undefined);
+      try {
+        chrome.runtime.sendMessage({ type: "cwr-sleep", ms: milliseconds }).then(finish, () => undefined);
+      } catch (error) {
+        // Ignore extension context invalidated error
+      }
     });
   }
 
@@ -648,22 +765,28 @@
 
   function reportPreparationProgress() {
     if (!state.dedicatedPreparation) return;
-    chrome.runtime.sendMessage({
-      type: "cwr-prepare-progress",
-      progress: {
-        status: isPreparationFinished() ? progress.phase : "running",
-        phase: progress.phase,
-        title: progress.title,
-        countText: progress.countText,
-        detailText: progress.detailText,
-        done: progress.done,
-        skipped: progress.skipped,
-        current: progress.current,
-        startedAt: progress.startedAt,
-        stalled: progress.stalled === true,
-        cancelRequested: progress.cancelRequested === true
+    try {
+      chrome.runtime.sendMessage({
+        type: "cwr-prepare-progress",
+        progress: {
+          status: isPreparationFinished() ? progress.phase : "running",
+          phase: progress.phase,
+          title: progress.title,
+          countText: progress.countText,
+          detailText: progress.detailText,
+          done: progress.done,
+          skipped: progress.skipped,
+          current: progress.current,
+          startedAt: progress.startedAt,
+          stalled: progress.stalled === true,
+          cancelRequested: progress.cancelRequested === true
+        }
+      }).catch(() => undefined);
+    } catch (error) {
+      if (error.message && error.message.includes("Extension context invalidated")) {
+        stopProgressTicker();
       }
-    }).catch(() => undefined);
+    }
   }
 
   function finishPreparation(title, countText, detailText, status = "done") {
@@ -804,7 +927,7 @@
     // 背面で止まっているか描き直し中の可能性があるので端と決めつけない。
     if (!button) return document.hidden ? "stuck" : "missing";
     if (submissionButtonDisabled(button)) return "end";
-    const before = getSubmissionKey();
+    const before = getStudentKey();
     button.click();
     if (!await waitForSubmissionChange(before)) return "stuck";
     await wait(direction === "next" ? 650 : 180);
@@ -921,20 +1044,27 @@
         if (!fileInfo && document.hidden && await waitForVisibleTab()) {
           fileInfo = await waitForSubmissionFile(15000);
         }
-        const submissionKey = getSubmissionKey();
-        if (!submissionKey || seen.has(submissionKey)) break;
-        seen.add(submissionKey);
+        const studentKey = getStudentKey();
+        if (!studentKey || seen.has(studentKey)) break;
+        seen.add(studentKey);
 
         // 1人が複数ファイルを出していることがあるので、全部まとめて準備する。
         const files = fileInfo && !fileInfo.unsupported ? listSubmissionFiles(fileInfo) : [];
         if (files.length) {
           for (const [fileIndex, file] of files.entries()) {
             if (state.prepareCancelled) break;
-            const fileName = file.fileName;
+            const preparedFile = fileIndex === 0 ? file : await selectSubmissionFile(file);
+            if (!preparedFile) {
+              failedCount += 1;
+              failedNames.push(file.fileName);
+              continue;
+            }
+            const fileName = preparedFile.fileName;
+            const submissionKey = getSubmissionKey(preparedFile);
             const ofFiles = files.length > 1 ? `（${fileIndex + 1}/${files.length}件目）` : "";
             setPreparationProgress({
               countText: preparationCountText(preparedCount + cachedCount, skippedCount + failedCount, sequence),
-              detailText: `${fileName}${ofFiles} を取得してPDFに変換しています。`,
+              detailText: `${fileName}${ofFiles} の準備済みPDFを確認しています。`,
               fileName
             });
             let response = null;
@@ -942,13 +1072,13 @@
               response = await chrome.runtime.sendMessage({
                 // 1件目は表示中のファイルなので、画面と突き合わせる確実な経路を使う。
                 // 2件目以降は画面に出ていないため、ファイル番号を直接指定して取得する。
-                type: fileIndex === 0 ? "cwr-prepare-one" : "cwr-prepare-attachment",
+                type: fileIndex === 0 || !preparedFile.expectedFileId ? "cwr-prepare-one" : "cwr-prepare-attachment",
                 submissionKey,
                 primary: fileIndex === 0,
                 fileName,
-                expectedName: file.expectedName || "",
-                expectedFileId: file.expectedFileId || "",
-                expectedGoogleType: file.expectedGoogleType || ""
+                expectedName: preparedFile.expectedName || "",
+                expectedFileId: preparedFile.expectedFileId || "",
+                expectedGoogleType: preparedFile.expectedGoogleType || ""
               });
               // 画面と突き合わせる1件目だけ、前の提出者と同じ結果なら画面更新待ちとみなす。
               const repeatedDocument = fileIndex === 0 && response?.ok && preparedDocumentKeys.has(response.documentKey);
@@ -960,6 +1090,12 @@
               preparedDocumentKeys.add(response.documentKey);
               if (response.cached) cachedCount += 1;
               else preparedCount += 1;
+              setPreparationProgress({
+                detailText: response.cached
+                  ? `${fileName}${ofFiles} は準備済みPDFを再利用しています。`
+                  : `${fileName}${ofFiles} のPDF準備が完了しました。`,
+                fileName
+              });
             } else {
               if (/補助アプリ|Start-Reviewer|古い版|起動していません/.test(response?.error || "")) {
                 throw new Error(response.error);
@@ -968,6 +1104,7 @@
               failedNames.push(fileName);
             }
           }
+          if (files.length > 1 && !state.prepareCancelled) await selectSubmissionFile(files[0]);
         } else {
           skippedCount += 1;
         }
@@ -1159,21 +1296,29 @@
     state.overlay?.querySelector("iframe")?.contentWindow?.postMessage({ type: "cwr-viewer-status", text, kind }, "*");
   }
 
-  async function startConversion(isAutomatic) {
+  async function startConversion(isAutomatic, requestedFile = null) {
     if (!state.enabled || state.busy) return;
     if (!isSubmissionView()) {
       if (!isAutomatic) setStatus("提出物を個別に開いてから操作してください。", "error");
       return;
     }
-    const fileInfo = findSupportedFileInfo();
+    const detectedFileInfo = findSupportedFileInfo();
+    const fileInfo = requestedFile || (state.activeFile?.name
+      ? {
+        ...(detectedFileInfo || { kind: "office" }),
+        fileName: state.activeFile.name,
+        expectedName: state.activeFile.name,
+        expectedFileId: state.activeFile.id || findDisplayedFileId()
+      }
+      : detectedFileInfo);
     if (!fileInfo) {
       if (!isAutomatic) setStatus("表示中のWord／PowerPoint／Google形式のファイルが見つかりません。", "error");
       return;
     }
 
     state.busy = true;
-    const key = getSubmissionKey();
     setActiveFile(fileInfo);
+    const key = getSubmissionKey(fileInfo);
     setStatus("提出物を取得中…", "working");
     try {
       const response = await chrome.runtime.sendMessage({
@@ -1315,8 +1460,10 @@
 
   function activeFileIndex(files) {
     if (!state.activeFile) return 0;
-    return files.findIndex((file) => (state.activeFile.id && file.expectedFileId === state.activeFile.id)
-      || (!state.activeFile.id && file.fileName === state.activeFile.name));
+    return files.findIndex((file) => (state.activeFile.id && (
+      file.expectedFileId === state.activeFile.id
+      || (!file.expectedFileId && normalizedFileName(file.fileName) === normalizedFileName(state.activeFile.name))
+    )) || (!state.activeFile.id && normalizedFileName(file.fileName) === normalizedFileName(state.activeFile.name)));
   }
 
   function sendViewerControls() {
@@ -1335,8 +1482,8 @@
     }, "*");
   }
 
-  // 同じ提出者の2件目以降を表示する。画面に出ていないファイルは
-  // Drive上のファイル番号から直接取得する。
+  // 同じ提出者のファイルを表示する。ファイル番号が見える場合は直接取得し、
+  // Classroomが番号をDOMに出さない場合はファイル選択欄を押してから取得する。
   async function showSubmissionFile(index) {
     if (!state.enabled || state.busy) return;
     const files = listSubmissionFiles();
@@ -1345,39 +1492,41 @@
       setStatus("選んだファイルが見つかりませんでした。Classroomを再読み込みしてください。", "error");
       return;
     }
-    if (index === 0) {
-      startConversion(false);
-      return;
-    }
-    state.busy = true;
-    setActiveFile(file);
-    setStatus(`${file.fileName} を取得中…`, "working");
-    sendViewerControls();
+    state.fileSwitching = true;
     try {
-      const response = await chrome.runtime.sendMessage({
-        type: "cwr-open-attachment",
-        submissionKey: getSubmissionKey(),
-        primary: false,
-        fileName: file.fileName,
-        expectedName: file.expectedName || "",
-        expectedFileId: file.expectedFileId || "",
-        expectedGoogleType: file.expectedGoogleType || ""
-      });
-      if (!response?.ok) throw new Error(response?.error || "このファイルを表示できませんでした。");
+      setStatus(`${file.fileName} を選択しています…`, "working");
+      const selected = await selectSubmissionFile(file);
+      if (!selected) throw new Error("Classroomのファイル選択欄から対象ファイルを確認できませんでした。");
+      setActiveFile(selected);
+      state.currentKey = getSubmissionKey(selected);
+      sendViewerControls();
+      await startConversion(false, selected);
     } catch (error) {
       state.busy = false;
       setStatus(error.message || "このファイルを表示できませんでした。", "error");
+    } finally {
+      state.fileSwitching = false;
     }
   }
 
   async function moveToAdjacentSubmission(direction) {
     if (!state.enabled) return;
+    const files = listSubmissionFiles();
+    const currentIndex = activeFileIndex(files);
+    if (direction === "next" && currentIndex >= 0 && currentIndex < files.length - 1) {
+      await showSubmissionFile(currentIndex + 1);
+      return;
+    }
+    if (direction === "previous" && currentIndex > 0) {
+      await showSubmissionFile(currentIndex - 1);
+      return;
+    }
     const button = findSubmissionButton(direction);
     if (!button || submissionButtonDisabled(button)) {
       setStatus(direction === "next" ? "最後の提出者です。" : "最初の提出者です。", "idle");
       return;
     }
-    const before = getSubmissionKey();
+    const before = getStudentKey();
     setStatus(direction === "next" ? "次の提出者へ移動しています…" : "前の提出者へ移動しています…", "working");
     button.click();
     if (!await waitForSubmissionChange(before, 8000)) {
@@ -1385,8 +1534,13 @@
       return;
     }
     await waitForSubmissionFile(5000);
-    sendViewerControls();
-    startConversion(false);
+    const nextFiles = listSubmissionFiles();
+    const targetIndex = direction === "previous" ? nextFiles.length - 1 : 0;
+    if (nextFiles[targetIndex]) await showSubmissionFile(targetIndex);
+    else {
+      sendViewerControls();
+      await startConversion(false);
+    }
   }
 
   function detectPreviewBounds() {
@@ -1574,6 +1728,8 @@
     state.timer = setTimeout(() => {
       // 準備専用タブは自動操作中なので、採点用の表示処理は動かさない。
       if (state.isPreparationTab && state.preparing) return;
+      // 同じ提出者の別ファイルを選択中は、学生切替として扱わない。
+      if (state.fileSwitching) return;
       makeUi();
       const submissionView = isSubmissionView();
       if (!submissionView) {
