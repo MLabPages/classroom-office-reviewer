@@ -4,6 +4,9 @@
   // 進捗が途絶えたと判断するまでの余裕をここで一括管理する。
   const PROGRESS_TICK_MS = 2000;
   const STALL_WARNING_MS = 40000;
+  // 提出者の切替ボタンは、採点画面が出ていれば数百ミリ秒で見つかる。
+  // 見つからない時間を長く待つと、先頭と末尾の判定でそのぶん待たされる。
+  const SUBMISSION_BUTTON_WAIT_MS = 5000;
   const state = {
     enabled: true,
     busy: false,
@@ -375,10 +378,10 @@
   }
 
   function submissionButtonDisabled(button) {
-    return !button || button.disabled || button.getAttribute("aria-disabled") === "true";
+    return button.disabled || button.getAttribute("aria-disabled") === "true";
   }
 
-  async function waitForSubmissionButton(direction, timeoutMs = 15000) {
+  async function waitForSubmissionButton(direction, timeoutMs = SUBMISSION_BUTTON_WAIT_MS) {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
       const button = findSubmissionButton(direction);
@@ -716,12 +719,15 @@
     state.ui = null;
   }
 
-  // "moved"（次の提出者へ進んだ）、"end"（もう先がない）、
-  // "stuck"（押したのに画面が変わらない）を区別する。
+  // "moved"（次の提出者へ進んだ）、"end"（もう先がない）、"missing"（ボタンが
+  // 見つからない）、"stuck"（押したのに画面が変わらない）を区別する。
   // 区別しないと、背面タブで画面が止まっただけなのに「全員分の準備が完了」と
   // 誤って報告してしまう。
   async function moveSubmission(direction) {
     const button = await waitForSubmissionButton(direction);
+    // 「押せない状態で見つかった」なら本当に端。「見つからない」だけのときは、
+    // 背面で止まっているか描き直し中の可能性があるので端と決めつけない。
+    if (!button) return document.hidden ? "stuck" : "missing";
     if (submissionButtonDisabled(button)) return "end";
     const before = getSubmissionKey();
     button.click();
@@ -750,12 +756,23 @@
     return visible;
   }
 
+  // 呼び出し側へは "moved" / "end" / "stuck" だけを返す。
   async function moveWithRecovery(direction) {
     const result = await moveSubmission(direction);
-    if (result !== "stuck") return result;
-    if (!await waitForVisibleTab()) return "stuck";
-    await wait(1200);
-    return await moveSubmission(direction);
+    if (result === "moved" || result === "end") return result;
+
+    if (result === "missing") {
+      // 反対向きのボタンがあれば画面は生きている＝先頭または末尾。
+      // どちらも無いときだけ描き直し中とみなし、もう一度だけ長めに待つ。
+      if (findSubmissionButton(direction === "next" ? "previous" : "next")) return "end";
+      if (!await waitForSubmissionButton(direction, 10000)) return "end";
+    } else {
+      if (!await waitForVisibleTab()) return "stuck";
+      await wait(1200);
+    }
+
+    const retried = await moveSubmission(direction);
+    return retried === "moved" ? "moved" : retried === "stuck" ? "stuck" : "end";
   }
 
   // 実行中は内訳を分けず「未準備」でまとめ、終了時の要約で対象外と失敗を分ける。
