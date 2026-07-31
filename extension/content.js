@@ -28,6 +28,7 @@
     watchdogTimer: null,
     lastRemoteProgressAt: 0,
     preparationCompact: false,
+    preparationLedgerExpanded: false,
     wide: false,
     overlayBounds: null,
     activeFile: null,
@@ -49,7 +50,8 @@
     current: 0,
     startedAt: 0,
     stalled: false,
-    remote: false
+    remote: false,
+    ledger: []
   };
 
   function visible(element) {
@@ -144,7 +146,17 @@
     const googleFileInfo = findGoogleFileInfo();
     if (googleFileInfo) return googleFileInfo;
     const officeFileName = findOfficeFileName();
-    if (officeFileName) return { kind: "office", fileName: officeFileName, expectedName: officeFileName };
+    if (officeFileName) {
+      // Drive上のファイル番号を早い段階で確定させておく。ここを空のままにすると、
+      // 背景側が名前だけでの代替検索に頼り、同じ名前で出す別の学生の
+      // 準備済みPDFを取り違えることがある。
+      return {
+        kind: "office",
+        fileName: officeFileName,
+        expectedName: officeFileName,
+        expectedFileId: findDisplayedFileId()
+      };
+    }
     return null;
   }
 
@@ -460,7 +472,8 @@
       findSubmissionAttachments,
       listSubmissionFiles,
       findSubmissionFileMenuItems,
-      normalizedFileName
+      normalizedFileName,
+      studentDisplayName
     });
     return;
   }
@@ -531,12 +544,12 @@
     if (message?.type === "cwr-show-pdf") {
       if (!state.enabled) {
         state.busy = false;
-        chrome.runtime.sendMessage({ type: "cwr-release-pdf", pdfUrl: message.pdfUrl }).catch(() => undefined);
+        safeSendMessage({ type: "cwr-release-pdf", pdfUrl: message.pdfUrl }).catch(() => undefined);
         return false;
       }
       if (message.submissionKey && message.submissionKey !== getSubmissionKey()) {
         state.busy = false;
-        chrome.runtime.sendMessage({ type: "cwr-release-pdf", pdfUrl: message.pdfUrl }).catch(() => undefined);
+        safeSendMessage({ type: "cwr-release-pdf", pdfUrl: message.pdfUrl }).catch(() => undefined);
         setStatus("提出者が切り替わったため、古い表示を破棄しました。", "idle");
         return false;
       }
@@ -562,6 +575,11 @@
       if (label) return label.slice(0, 220);
     }
     return "";
+  }
+
+  // 一覧表示用に、提出状況の文言を除いた読みやすい名前へ整える。
+  function studentDisplayName(label) {
+    return (label || "").replace(/提出済み|返却済み|Turned in|Returned/gi, "").trim() || label || "";
   }
 
   function getStudentKey() {
@@ -627,6 +645,17 @@
 
   function localWait(milliseconds) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
+
+  // 拡張機能が裏で再読み込み・更新されたタブでは、chrome.runtime.sendMessageが
+  // Promiseを返さず同期的に例外を投げる。呼び出し側ごとにtry/catchを書き忘れると
+  // そこで処理全体が止まって画面が固まって見えるため、ここでまとめて吸収する。
+  function safeSendMessage(message) {
+    try {
+      return chrome.runtime.sendMessage(message);
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
   // 背面タブのsetTimeoutはChromeに最大1分まで遅らされる。待ち時間は拡張機能の
@@ -721,6 +750,10 @@
         <p id="cwr-preparation-detail">先頭の提出者を確認中です。</p>
         <p id="cwr-preparation-elapsed">経過 0秒</p>
         <p id="cwr-preparation-note"></p>
+        <div id="cwr-preparation-ledger-wrap">
+          <button id="cwr-preparation-ledger-toggle" type="button" aria-expanded="false">準備した提出物の一覧</button>
+          <div id="cwr-preparation-ledger-list" hidden></div>
+        </div>
         <div id="cwr-preparation-actions">
           <button id="cwr-preparation-cancel" type="button">現在の処理後に中止</button>
           <button id="cwr-preparation-focus" type="button">準備タブを開く</button>
@@ -729,6 +762,10 @@
     `;
     panel.querySelector("#cwr-preparation-cancel").addEventListener("click", handlePreparationCancelClick);
     panel.querySelector("#cwr-preparation-focus").addEventListener("click", handlePreparationFocusClick);
+    panel.querySelector("#cwr-preparation-ledger-toggle").addEventListener("click", () => {
+      state.preparationLedgerExpanded = !state.preparationLedgerExpanded;
+      renderPreparation();
+    });
     panel.querySelector("#cwr-preparation-compact").addEventListener("click", () => {
       state.preparationCompact = !state.preparationCompact;
       chrome.storage.local.set({ cwrPreparationCompact: state.preparationCompact });
@@ -755,7 +792,7 @@
       return;
     }
     setPreparationProgress({ detailText: "準備専用タブへ中止を伝えています。", cancelRequested: true });
-    chrome.runtime.sendMessage({ type: "cwr-cancel-bulk-preparation" }).then((response) => {
+    safeSendMessage({ type: "cwr-cancel-bulk-preparation" }).then((response) => {
       if (response?.ok) return;
       endRemoteTracking();
       setPreparationProgress({
@@ -769,7 +806,7 @@
 
   function handlePreparationFocusClick() {
     const type = state.isPreparationTab ? "cwr-focus-source-tab" : "cwr-focus-preparation-tab";
-    chrome.runtime.sendMessage({ type }).then((response) => {
+    safeSendMessage({ type }).then((response) => {
       if (response?.ok || state.isPreparationTab) return;
       endRemoteTracking();
       setPreparationProgress({
@@ -815,12 +852,67 @@
     compactButton.textContent = state.preparationCompact ? "大きく表示" : "小さく表示";
     compactButton.setAttribute("aria-pressed", String(state.preparationCompact));
 
+    renderLedger(panel);
+
     // 経過時間は動いている間だけ数える。
     if (finished) {
       clearInterval(state.preparationTimer);
       state.preparationTimer = null;
     } else if (!state.preparationTimer) {
       state.preparationTimer = setInterval(renderPreparation, 1000);
+    }
+  }
+
+  // 同じファイル名の学生がいても取り違えていないか確認できるよう、
+  // 提出者・ファイルごとの通し番号つきで一覧を残す。
+  function renderLedger(panel) {
+    const entries = progress.ledger || [];
+    const toggle = panel.querySelector("#cwr-preparation-ledger-toggle");
+    const list = panel.querySelector("#cwr-preparation-ledger-list");
+    toggle.hidden = entries.length === 0;
+    toggle.textContent = `準備した提出物の一覧（${entries.length}件）`;
+    toggle.setAttribute("aria-expanded", String(state.preparationLedgerExpanded));
+    list.hidden = !state.preparationLedgerExpanded || entries.length === 0;
+
+    // 新しい一括準備が始まって件数が減っていたら、前回分の行を作り直す。
+    if (entries.length < list.childElementCount) list.replaceChildren();
+    for (let index = list.childElementCount; index < entries.length; index += 1) {
+      const entry = entries[index];
+      const row = document.createElement("div");
+      row.className = "cwr-preparation-ledger-row";
+      row.dataset.status = entry.status === "ok" ? "ok" : "failed";
+
+      const seq = document.createElement("span");
+      seq.className = "cwr-preparation-ledger-seq";
+      seq.textContent = `No.${entry.seq}`;
+
+      const student = document.createElement("span");
+      student.className = "cwr-preparation-ledger-student";
+      student.textContent = `${entry.studentSeq}人目 ${entry.studentLabel || "(名前を取得できず)"}`;
+
+      const file = document.createElement("span");
+      file.className = "cwr-preparation-ledger-file";
+      file.textContent = entry.fileCount > 1
+        ? `ファイル${entry.fileSeq}/${entry.fileCount}：${entry.fileName}`
+        : entry.fileName;
+
+      row.append(seq, student, file);
+
+      if (entry.status === "ok" && entry.pdfUrl) {
+        const link = document.createElement("a");
+        link.href = entry.pdfUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.className = "cwr-preparation-ledger-link";
+        link.textContent = entry.cached ? "PDFを開く（再利用）" : "PDFを開く";
+        row.append(link);
+      } else {
+        const failed = document.createElement("span");
+        failed.className = "cwr-preparation-ledger-failed";
+        failed.textContent = "準備できず";
+        row.append(failed);
+      }
+      list.appendChild(row);
     }
   }
 
@@ -861,7 +953,8 @@
           current: progress.current,
           startedAt: progress.startedAt,
           stalled: progress.stalled === true,
-          cancelRequested: progress.cancelRequested === true
+          cancelRequested: progress.cancelRequested === true,
+          ledger: progress.ledger
         }
       }).catch(() => undefined);
     } catch (error) {
@@ -933,7 +1026,8 @@
       skipped: message.skipped ?? progress.skipped,
       current: message.current ?? progress.current,
       startedAt: message.startedAt || progress.startedAt,
-      cancelRequested: message.cancelRequested === true
+      cancelRequested: message.cancelRequested === true,
+      ledger: message.ledger || progress.ledger
     });
     if (running) {
       startStallWatchdog();
@@ -1084,7 +1178,8 @@
       current: 0,
       startedAt: Date.now(),
       stalled: false,
-      cancelRequested: false
+      cancelRequested: false,
+      ledger: []
     });
     startProgressTicker();
 
@@ -1134,6 +1229,25 @@
         const files = fileInfo && !fileInfo.unsupported ? listSubmissionFiles(fileInfo) : [];
         if (files.length) {
           const displayedIndex = Math.max(0, activeFileIndex(files));
+          // 学生名だけで見分けがつかないことがあるため、提出者ごと・ファイルごとの
+          // 通し番号を持つ一覧を作り、あとで画面から確認できるようにする。
+          const studentLabelForLedger = studentDisplayName(getStudentLabel());
+          const addLedgerEntry = (fileIndex, file, extra) => {
+            setPreparationProgress({
+              ledger: [...progress.ledger, {
+                seq: progress.ledger.length + 1,
+                studentSeq: sequence,
+                studentLabel: studentLabelForLedger,
+                fileSeq: fileIndex + 1,
+                fileCount: files.length,
+                fileName: file.fileName,
+                status: "failed",
+                cached: false,
+                pdfUrl: "",
+                ...extra
+              }]
+            });
+          };
           for (const [fileIndex, file] of files.entries()) {
             if (state.prepareCancelled) break;
             // 画面に出ている1件はそのまま使い、それ以外は番号があれば
@@ -1145,6 +1259,7 @@
             if (!preparedFile) {
               failedCount += 1;
               failedNames.push(file.fileName);
+              addLedgerEntry(fileIndex, file);
               continue;
             }
             const fileName = preparedFile.fileName;
@@ -1184,12 +1299,19 @@
                   : `${fileName}${ofFiles} のPDF準備が完了しました。`,
                 fileName
               });
+              addLedgerEntry(fileIndex, { fileName }, {
+                status: "ok",
+                cached: response.cached === true,
+                pdfUrl: response.pdfUrl || ""
+              });
             } else {
               if (/補助アプリ|Start-Reviewer|古い版|起動していません/.test(response?.error || "")) {
+                addLedgerEntry(fileIndex, { fileName });
                 throw new Error(response.error);
               }
               failedCount += 1;
               failedNames.push(fileName);
+              addLedgerEntry(fileIndex, { fileName });
             }
           }
           // 画面を動かした場合だけ、元の表示へ戻す。
@@ -1330,7 +1452,7 @@
     root.querySelector("#cwr-open").addEventListener("click", () => {
       state.mode = "pdf";
       chrome.storage.local.set({ cwrMode: state.mode });
-      chrome.runtime.sendMessage({ type: "cwr-close-office" }).catch(() => undefined);
+      safeSendMessage({ type: "cwr-close-office" }).catch(() => undefined);
       startConversion(false);
     });
     root.querySelector("#cwr-open-window").addEventListener("click", () => {
@@ -1370,7 +1492,7 @@
     if (!state.enabled) {
       state.busy = false;
       removeOverlay();
-      chrome.runtime.sendMessage({ type: "cwr-close-office" }).catch(() => undefined);
+      safeSendMessage({ type: "cwr-close-office" }).catch(() => undefined);
     }
     applyEnabledUi();
     setStatus(state.enabled ? "機能をオンにしました。" : "機能停止中", "idle");
@@ -1760,7 +1882,7 @@
       state.overlay.style.right = `${bounds.right}px`;
       sendViewerControls();
       if (previousPdfUrl && previousPdfUrl !== pdfUrl) {
-        chrome.runtime.sendMessage({ type: "cwr-release-pdf", pdfUrl: previousPdfUrl }).catch(() => undefined);
+        safeSendMessage({ type: "cwr-release-pdf", pdfUrl: previousPdfUrl }).catch(() => undefined);
       }
       return;
     }
@@ -1816,7 +1938,7 @@
         state.overlay = overlay;
         state.displayedPdfUrl = pdfUrl;
         if (previousPdfUrl && previousPdfUrl !== pdfUrl) {
-          chrome.runtime.sendMessage({ type: "cwr-release-pdf", pdfUrl: previousPdfUrl }).catch(() => undefined);
+          safeSendMessage({ type: "cwr-release-pdf", pdfUrl: previousPdfUrl }).catch(() => undefined);
         }
       };
       window.addEventListener("message", activate);
@@ -1885,7 +2007,7 @@
   }
 
   // 拡張機能を再読み込みしても、このタブが準備専用タブかどうかを取り戻す。
-  chrome.runtime.sendMessage({ type: "cwr-preparation-role" }).then((response) => {
+  safeSendMessage({ type: "cwr-preparation-role" }).then((response) => {
     if (response?.role === "preparation" && !response.interrupted) becomePreparationTab();
     if (response?.role === "source" && response.progress) handleRemotePreparationProgress(response.progress);
   }, () => undefined);
@@ -1916,7 +2038,7 @@
   });
   window.addEventListener("unload", () => {
     if (state.mode === "office") {
-      chrome.runtime.sendMessage({ type: "cwr-close-office" }).catch(() => undefined);
+      safeSendMessage({ type: "cwr-close-office" }).catch(() => undefined);
     }
   });
 })();
