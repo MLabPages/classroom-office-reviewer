@@ -584,13 +584,13 @@
   if (!isClassroomTop) return;
 
   function getStudentLabel() {
-    const markers = ["提出済み", "Turned in", "返却済み", "Returned"];
-    const elements = document.querySelectorAll("button, [role='button'], [aria-label]");
+    const markers = ["提出済み", "Turned in", "返却済み", "Returned", "割り当て済み", "Assigned", "遅れて提出", "Done late", "不足", "Missing"];
+    const elements = document.querySelectorAll("button, [role='button'], [role='combobox'], [role='listbox'], [aria-haspopup], [aria-label]");
     for (const element of elements) {
       if (!visible(element)) continue;
       const value = textOf(element);
       if (value.length > 220 || !markers.some((marker) => value.includes(marker))) continue;
-      const parent = element.closest("button, [role='button']") || element.parentElement || element;
+      const parent = element.closest("button, [role='button'], [role='combobox']") || element.parentElement || element;
       const label = textOf(parent);
       if (label) return label.slice(0, 220);
     }
@@ -599,7 +599,7 @@
 
   // 一覧表示用に、提出状況の文言を除いた読みやすい名前へ整える。
   function studentDisplayName(label) {
-    return (label || "").replace(/提出済み|返却済み|Turned in|Returned/gi, "").trim() || label || "";
+    return (label || "").replace(/提出済み|返却済み|割り当て済み|遅れて提出|不足|Turned in|Returned|Assigned|Done late|Missing/gi, "").trim() || label || "";
   }
 
   // Classroomは表示中の提出者をURLの #u=... で表す。画面から名前を読み取るより
@@ -629,9 +629,9 @@
 
   function findSubmissionButton(direction) {
     const labelPattern = direction === "next"
-      ? /^(?:次の(?:生徒|学生)を選択|Select next student|Next student)(?:[:：]|$)/i
-      : /^(?:前の(?:生徒|学生)を選択|Select previous student|Previous student)(?:[:：]|$)/i;
-    return [...document.querySelectorAll("button, [role='button']")].find((element) => {
+      ? /^(?:次|次の(?:生徒|学生|ユーザー|提出者)(?:を選択)?|Select next student|Next student|Next)(?:[:：\s]|$)/i
+      : /^(?:前|前の(?:生徒|学生|ユーザー|提出者)(?:を選択)?|Select previous student|Previous student|Previous)(?:[:：\s]|$)/i;
+    return [...document.querySelectorAll("button, [role='button'], [role='link'], [aria-label], [title], [data-tooltip]")].find((element) => {
       if (!visible(element)) return false;
       const rect = element.getBoundingClientRect();
       if (rect.top < 0 || rect.top > 180 || rect.width > 90 || rect.height > 90) return false;
