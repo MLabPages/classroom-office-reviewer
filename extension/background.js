@@ -103,8 +103,13 @@ async function findCurrentDocument(tabId) {
 async function waitForCurrentDocument(tabId, expectedName = "", expectedFileId = "", expectedGoogleType = "") {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const candidate = await findCurrentDocument(tabId);
-    const nameMatches = !expectedName || candidate?.fileName === expectedName;
     const idMatches = !expectedFileId || candidate?.fileId === expectedFileId;
+    // ファイル番号が一致していれば、それが同じファイルである決定的な証拠。
+    // 画面に出る名前は省略・重複・記号付きなど表示のたびに揺れるため、
+    // ここで名前の完全一致まで求めると、正しいファイルを取り逃して
+    // 待ち時間切れになり「準備できず」と表示されてしまう。
+    const confirmedById = Boolean(expectedFileId) && idMatches;
+    const nameMatches = confirmedById || !expectedName || candidate?.fileName === expectedName;
     const typeMatches = !expectedGoogleType || candidate?.googleType === expectedGoogleType;
     if (candidate && nameMatches && idMatches && typeMatches) return candidate;
     await wait(300);

@@ -7,6 +7,9 @@
   // 提出者の切替ボタンは、採点画面が出ていれば数百ミリ秒で見つかる。
   // 見つからない時間を長く待つと、先頭と末尾の判定でそのぶん待たされる。
   const SUBMISSION_BUTTON_WAIT_MS = 5000;
+  // 表示要求の返事が返らないまま放置されると、次へ・前への操作が黙って
+  // 効かなくなる。変換は長くても数十秒なので、これを過ぎたら操作を戻す。
+  const DISPLAY_REQUEST_TIMEOUT_MS = 45000;
   const state = {
     enabled: true,
     busy: false,
@@ -27,6 +30,7 @@
     progressTicker: null,
     watchdogTimer: null,
     lastRemoteProgressAt: 0,
+    busyWatchdog: null,
     preparationCompact: false,
     preparationLedgerExpanded: false,
     wide: false,
@@ -487,7 +491,9 @@
       listSubmissionFiles,
       findSubmissionFileMenuItems,
       normalizedFileName,
-      studentDisplayName
+      studentDisplayName,
+      getStudentIdFromUrl,
+      dedupeDoubledLabel
     });
     return;
   }
@@ -553,21 +559,21 @@
     if (message?.type === "cwr-status") {
       if (message.submissionKey && message.submissionKey !== getSubmissionKey()) return false;
       setStatus(message.text, message.state);
-      if (message.state === "error") state.busy = false;
+      if (message.state === "error") endDisplayRequest();
     }
     if (message?.type === "cwr-show-pdf") {
       if (!state.enabled) {
-        state.busy = false;
+        endDisplayRequest();
         safeSendMessage({ type: "cwr-release-pdf", pdfUrl: message.pdfUrl }).catch(() => undefined);
         return false;
       }
       if (message.submissionKey && message.submissionKey !== getSubmissionKey()) {
-        state.busy = false;
+        endDisplayRequest();
         safeSendMessage({ type: "cwr-release-pdf", pdfUrl: message.pdfUrl }).catch(() => undefined);
         setStatus("提出者が切り替わったため、古い表示を破棄しました。", "idle");
         return false;
       }
-      state.busy = false;
+      endDisplayRequest();
       state.convertedKey = getSubmissionKey();
       renderPdf(message.pdfUrl, message.fileName, message.pageCount);
       setStatus("提出物を表示中", "ready");
@@ -596,8 +602,19 @@
     return (label || "").replace(/提出済み|返却済み|Turned in|Returned/gi, "").trim() || label || "";
   }
 
+  // Classroomは表示中の提出者をURLの #u=... で表す。画面から名前を読み取るより
+  // 確実で、描画が間に合っていなくても取得できる。
+  function getStudentIdFromUrl() {
+    return location.href.match(/[#&?]u=([^&]+)/)?.[1] || "";
+  }
+
   function getStudentKey() {
     if (!isSubmissionView()) return "";
+    // URLで提出者が分かるときは、それだけを鍵にする。画面から読んだ名前を
+    // 混ぜると、描画の途中で鍵が変わり、変換結果が「別の提出者のもの」と
+    // 誤判定されて捨てられてしまう。
+    const studentId = getStudentIdFromUrl();
+    if (studentId) return `u:${studentId}`;
     return [location.href, getStudentLabel()].join("|");
   }
 
@@ -1179,7 +1196,7 @@
     state.preparing = true;
     state.dedicatedPreparation = dedicated;
     state.prepareCancelled = false;
-    state.busy = false;
+    endDisplayRequest();
     removeOverlay();
     setPreparationProgress({
       phase: "running",
@@ -1509,7 +1526,7 @@
     state.enabled = Boolean(value);
     if (persist) chrome.storage.local.set({ cwrEnabled: state.enabled });
     if (!state.enabled) {
-      state.busy = false;
+      endDisplayRequest();
       removeOverlay();
       safeSendMessage({ type: "cwr-close-office" }).catch(() => undefined);
     }
@@ -1528,8 +1545,32 @@
     state.overlay?.querySelector("iframe")?.contentWindow?.postMessage({ type: "cwr-viewer-status", text, kind }, "*");
   }
 
+  // 表示要求の開始と終了は必ずこの2つを通す。busyを直接書き換えると、
+  // 返事が来ない経路が1つでもあるとフラグが立ちっぱなしになり、以降の
+  // 「次へ」「前へ」がエラーも出さずに無反応になる。
+  function beginDisplayRequest() {
+    state.busy = true;
+    clearTimeout(state.busyWatchdog);
+    state.busyWatchdog = setTimeout(() => {
+      if (!state.busy) return;
+      state.busy = false;
+      state.busyWatchdog = null;
+      setStatus("表示の準備が終わりませんでした。もう一度「次へ」または「表示」を押してください。", "error");
+      sendViewerControls();
+    }, DISPLAY_REQUEST_TIMEOUT_MS);
+  }
+
+  function endDisplayRequest() {
+    state.busy = false;
+    clearTimeout(state.busyWatchdog);
+    state.busyWatchdog = null;
+  }
+
   async function startConversion(isAutomatic, requestedFile = null) {
-    if (!state.enabled || state.busy) return;
+    if (!state.enabled) return;
+    // 自動表示のときだけ、進行中の要求を尊重して二重に走らせない。
+    // 手動操作は必ず受け付け、前の要求を捨てて新しい表示を優先する。
+    if (isAutomatic && state.busy) return;
     if (!isSubmissionView()) {
       if (!isAutomatic) setStatus("提出物を個別に開いてから操作してください。", "error");
       return;
@@ -1548,7 +1589,7 @@
       return;
     }
 
-    state.busy = true;
+    beginDisplayRequest();
     setActiveFile(fileInfo);
     const key = getSubmissionKey(fileInfo);
     setStatus("提出物を取得中…", "working");
@@ -1565,13 +1606,15 @@
         setStatus(`${response.fileName} を一時取得中…`, "working");
       }
     } catch (error) {
-      state.busy = false;
+      endDisplayRequest();
       setStatus(error.message || "処理を開始できませんでした。", "error");
     }
   }
 
   async function startOfficeWindow(isAutomatic) {
-    if (!state.enabled || state.busy) return;
+    if (!state.enabled) return;
+    // 手動操作は必ず受け付ける（startConversionと同じ考え方）。
+    if (isAutomatic && state.busy) return;
     if (!isSubmissionView()) {
       if (!isAutomatic) setStatus("提出物を個別に開いてから操作してください。", "error");
       return;
@@ -1583,7 +1626,7 @@
       return;
     }
 
-    state.busy = true;
+    beginDisplayRequest();
     const key = getSubmissionKey();
     setStatus(isPowerPoint(fileName) ? "PowerPoint発表画面を準備中…" : "Word別ウィンドウを準備中…", "working");
     try {
@@ -1594,10 +1637,10 @@
         expectedFileId: fileInfo.expectedFileId || ""
       });
       if (!response?.ok) throw new Error(response?.error || "別ウィンドウを開けませんでした。");
-      state.busy = false;
+      endDisplayRequest();
       setStatus(isPowerPoint(response.fileName) ? `${response.fileName} を発表中` : `${response.fileName} をWord別窓で表示中`, "ready");
     } catch (error) {
-      state.busy = false;
+      endDisplayRequest();
       setStatus(error.message || "別ウィンドウを開けませんでした。", "error");
     }
   }
@@ -1720,10 +1763,15 @@
     const activeIndex = activeFileIndex(files);
     const hasEarlierFile = activeIndex > 0;
     const hasLaterFile = activeIndex >= 0 && activeIndex < files.length - 1;
+    // Classroomのボタンが一瞬見つからないだけで矢印を無効化すると、押しても
+    // 何も起きない状態になる。「端であることが確実に分かる」ときだけ無効にし、
+    // 見つからないときは押せるままにして、押した時点で判定・案内する。
+    const atFirst = Boolean(previousButton) && submissionButtonDisabled(previousButton);
+    const atLast = Boolean(nextButton) && submissionButtonDisabled(nextButton);
     frame.contentWindow?.postMessage({
       type: "cwr-viewer-controls",
-      previous: hasEarlierFile || (Boolean(previousButton) && !submissionButtonDisabled(previousButton)),
-      next: hasLaterFile || (Boolean(nextButton) && !submissionButtonDisabled(nextButton)),
+      previous: hasEarlierFile || !atFirst,
+      next: hasLaterFile || !atLast,
       wide: state.wide,
       files: files.map((file) => ({ name: file.fileName })),
       activeIndex
@@ -1733,7 +1781,9 @@
   // 同じ提出者のファイルを表示する。ファイル番号が見える場合は直接取得し、
   // Classroomが番号をDOMに出さない場合はファイル選択欄を押してから取得する。
   async function showSubmissionFile(index) {
-    if (!state.enabled || state.busy) return;
+    // ここで busy を理由に黙って戻ると、ボタンが完全に無反応に見える。
+    // 手動操作は常に受け付け、進行中の表示要求は捨てて上書きする。
+    if (!state.enabled) return;
     const files = listSubmissionFiles();
     const file = files[index];
     if (!file) {
@@ -1750,7 +1800,7 @@
       sendViewerControls();
       await startConversion(false, selected);
     } catch (error) {
-      state.busy = false;
+      endDisplayRequest();
       setStatus(error.message || "このファイルを表示できませんでした。", "error");
     } finally {
       // Classroom側のDOM更新が落ち着くまで、学生切替とみなさない。
@@ -1990,7 +2040,7 @@
         const changedFromSubmission = state.submissionView;
         state.submissionView = false;
         state.currentKey = "";
-        state.busy = false;
+        endDisplayRequest();
         if (changedFromSubmission) {
           removeOverlay();
           updateUiLabels();
@@ -2005,7 +2055,7 @@
       if (!key || key === state.currentKey) return;
       const hadPrevious = Boolean(state.currentKey);
       state.currentKey = key;
-      state.busy = false;
+      endDisplayRequest();
       state.activeFile = null;
       if (state.preparing) return;
       sendViewerControls();
