@@ -628,13 +628,17 @@
   }
 
   function findSubmissionButton(direction) {
+    // Classroomの新しいUIでは data-focus-id="next" / "previous" が付与されている
+    const explicitButton = document.querySelector(`[data-focus-id="${direction}"]`);
+    if (explicitButton && visible(explicitButton)) return explicitButton;
+
     const labelPattern = direction === "next"
       ? /^(?:次|次の(?:生徒|学生|ユーザー|提出者)(?:を選択)?|Select next student|Next student|Next)(?:[:：\s]|$)/i
       : /^(?:前|前の(?:生徒|学生|ユーザー|提出者)(?:を選択)?|Select previous student|Previous student|Previous)(?:[:：\s]|$)/i;
     return [...document.querySelectorAll("button, [role='button'], [role='link'], [aria-label], [title], [data-tooltip]")].find((element) => {
       if (!visible(element)) return false;
       const rect = element.getBoundingClientRect();
-      if (rect.top < 0 || rect.top > 180 || rect.width > 90 || rect.height > 90) return false;
+      if (rect.top < 0 || rect.top > 250 || rect.width > 120 || rect.height > 120) return false;
       const labels = [textOf(element), element.getAttribute("aria-label"), element.getAttribute("title"), element.getAttribute("data-tooltip")];
       return labels.some((label) => labelPattern.test(label || ""));
     }) || null;
