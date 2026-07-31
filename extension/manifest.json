@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Classroom Office Reviewer",
   "description": "Google Classroom の Word／PowerPoint／Google形式の提出物をPDF表示し、全画面発表にも対応します。",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "permissions": [
     "storage",
     "tabs",
