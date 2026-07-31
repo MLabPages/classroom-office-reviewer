@@ -16,6 +16,7 @@
     viewerStatus: null,
     timer: null,
     preparationTimer: null,
+    preparationCompact: false,
     ui: null,
     overlay: null,
     pendingOverlay: null
@@ -188,9 +189,16 @@
         sendResponse({ ok: false });
         return false;
       }
-      sendResponse({ ok: true });
-      setTimeout(() => prepareAllSubmissions({ dedicated: true }), 0);
-      return false;
+      (async () => {
+        const ready = await waitForSubmissionView();
+        if (!ready) {
+          sendResponse({ ok: false, error: "提出者画面を開けませんでした。個別の提出物を開いてから開始してください。" });
+          return;
+        }
+        sendResponse({ ok: true });
+        prepareAllSubmissions({ dedicated: true });
+      })();
+      return true;
     }
 
     if (message?.type === "cwr-cancel-preparation") {
@@ -279,6 +287,15 @@
     return Boolean(findPreviousSubmissionButton() || findNextSubmissionButton());
   }
 
+  async function waitForSubmissionView(timeoutMs = 15000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      if (isSubmissionView()) return true;
+      await wait(250);
+    }
+    return false;
+  }
+
   function waitForSubmissionChange(previousKey) {
     return new Promise((resolve) => {
       let checks = 0;
@@ -337,6 +354,7 @@
         <div id="cwr-preparation-header">
           <div id="cwr-preparation-spinner" aria-hidden="true"></div>
           <h2 id="cwr-preparation-title">提出物の一括準備</h2>
+          <button id="cwr-preparation-compact" type="button" aria-pressed="false">小さく表示</button>
         </div>
         <p id="cwr-preparation-count">準備を開始しています…</p>
         <p id="cwr-preparation-detail">先頭の提出者を確認中です。</p>
@@ -345,6 +363,10 @@
         <button id="cwr-preparation-cancel" type="button">現在の処理後に中止</button>
       </div>
     `;
+    panel.classList.toggle("cwr-preparation-compact", state.preparationCompact);
+    const compactButton = panel.querySelector("#cwr-preparation-compact");
+    compactButton.textContent = state.preparationCompact ? "大きく表示" : "小さく表示";
+    compactButton.setAttribute("aria-pressed", String(state.preparationCompact));
     panel.querySelector("#cwr-preparation-cancel").addEventListener("click", () => {
       if (state.remotePreparing) {
         chrome.runtime.sendMessage({ type: "cwr-cancel-bulk-preparation" }).catch(() => undefined);
@@ -359,6 +381,13 @@
       state.prepareCancelled = true;
       panel.querySelector("#cwr-preparation-cancel").disabled = true;
       panel.querySelector("#cwr-preparation-detail").textContent = "現在の1件が終わったら中止します。";
+    });
+    panel.querySelector("#cwr-preparation-compact").addEventListener("click", () => {
+      state.preparationCompact = !state.preparationCompact;
+      panel.classList.toggle("cwr-preparation-compact", state.preparationCompact);
+      const button = panel.querySelector("#cwr-preparation-compact");
+      button.textContent = state.preparationCompact ? "大きく表示" : "小さく表示";
+      button.setAttribute("aria-pressed", String(state.preparationCompact));
     });
     document.body.appendChild(panel);
     const startedAt = Date.now();
@@ -456,7 +485,7 @@
 
   async function prepareAllSubmissions({ dedicated = false } = {}) {
     if (state.preparing) return;
-    if (!isSubmissionView()) {
+    if (!await waitForSubmissionView()) {
       throw new Error("提出物を個別に開いてから一括準備を開始してください。");
     }
     state.preparing = true;

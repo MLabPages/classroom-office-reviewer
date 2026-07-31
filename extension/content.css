@@ -164,6 +164,18 @@
   margin-bottom: 10px;
 }
 
+#cwr-preparation-compact {
+  margin-left: auto;
+  border: 1px solid #5f6368;
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: #d2e3fc;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
 #cwr-preparation-spinner {
   flex: 0 0 auto;
   width: 22px;
@@ -217,6 +229,48 @@
 #cwr-preparation-cancel:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+#cwr-preparation.cwr-preparation-compact {
+  width: min(270px, calc(100vw - 36px));
+}
+
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-card {
+  padding: 12px;
+  border-radius: 14px;
+}
+
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-header {
+  margin-bottom: 5px;
+}
+
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-spinner {
+  width: 16px;
+  height: 16px;
+}
+
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-title {
+  font-size: 14px;
+}
+
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-count {
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-detail,
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-note {
+  display: none;
+}
+
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-elapsed {
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-cancel {
+  padding: 6px 12px;
+  font-size: 12px;
 }
 
 #cwr-open-window:disabled {
