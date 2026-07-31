@@ -62,10 +62,16 @@ responses.set(1, {
 
 const selectedGoogle = await hooks.findCurrentDocument(1);
 assert.equal(selectedGoogle.googleType, "document");
+assert.equal(selectedGoogle.fileName, "2610170400八木 近大ゼミ2026＿期末レポート.docx");
 assert.equal(hooks.isGoogleNative(selectedGoogle), true);
 assert.equal(
   hooks.buildGooglePdfExportUrl(selectedGoogle),
   `https://docs.google.com/document/d/${googleId}/export?format=pdf&authuser=5`
+);
+
+assert.equal(
+  hooks.buildGooglePdfExportUrl({ fileId: googleId, googleType: "presentation", authuser: 5 }),
+  `https://docs.google.com/presentation/d/${googleId}/export/pdf?authuser=5`
 );
 
 responses.set(0, {

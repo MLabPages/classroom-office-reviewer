@@ -90,4 +90,12 @@ assert.equal(pdfHooks.findSupportedFileInfo(), null);
 assert.equal(pdfHooks.findAnyAttachmentFileName(), "submitted-report.pdf");
 assert.deepEqual(JSON.parse(JSON.stringify(pdfHooks.inspectSubmissionFile())), { unsupported: true });
 
+const slidesHooks = runDetection({
+  nodes: [new MockElement({ attributes: { "aria-label": "Google スライド: presentation.pptx" } })],
+  frames: [new MockElement({ src: `https://docs.google.com/presentation/u/5/d/${googleFileId}/edit` })]
+});
+assert.equal(slidesHooks.findSupportedFileInfo().kind, "google-presentation");
+assert.equal(slidesHooks.findSupportedFileInfo().expectedGoogleType, "presentation");
+assert.equal(slidesHooks.findSupportedFileInfo().expectedFileId, googleFileId);
+
 console.log("Content detection handles Word duplicates, native Google documents, and PDF submissions.");

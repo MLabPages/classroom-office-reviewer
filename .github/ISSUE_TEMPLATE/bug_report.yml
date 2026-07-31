@@ -21,6 +21,8 @@ body:
       options:
         - Word (.docx / .doc)
         - PowerPoint (.pptx / .ppt)
+        - Googleドキュメント／スライド
+        - PDF
         - その他
     validations:
       required: true

@@ -32,7 +32,7 @@
   }
 
   function findFileName(extensionPattern) {
-    const nodes = document.querySelectorAll("a, button, [role='button'], [aria-label], [title], [data-tooltip], span");
+    const nodes = document.querySelectorAll("a, button, [role='button'], [role='menuitem'], [aria-label], [title], [data-tooltip]");
     for (const node of nodes) {
       if (!visible(node)) continue;
       const sources = [
@@ -64,7 +64,7 @@
     const slidesFrame = frames.find((frame) => visible(frame) && /docs\.google\.com\/presentation\/(?:u\/\d+\/)?d\//i.test(frame.src));
     let labeledKind = "";
     let labeledFileName = "";
-    const nodes = document.querySelectorAll("a, button, [aria-label], [title], [data-tooltip], span");
+    const nodes = document.querySelectorAll("a, button, [role='button'], [role='menuitem'], [aria-label], [title], [data-tooltip]");
     for (const node of nodes) {
       if (!visible(node)) continue;
       const sources = [node.getAttribute("aria-label"), node.getAttribute("title"), node.getAttribute("data-tooltip"), textOf(node)];
@@ -219,7 +219,7 @@
 
   function getStudentLabel() {
     const markers = ["提出済み", "Turned in", "返却済み", "Returned"];
-    const elements = document.querySelectorAll("button, [role='button'], [aria-label], div");
+    const elements = document.querySelectorAll("button, [role='button'], [aria-label]");
     for (const element of elements) {
       if (!visible(element)) continue;
       const value = textOf(element);
@@ -461,7 +461,9 @@
         if (!submissionKey || seen.has(submissionKey)) break;
         seen.add(submissionKey);
         const sequence = seen.size;
-        const fileInfo = sequence === 1 ? initialFileInfo : await waitForSubmissionFile(15000);
+        const fileInfo = sequence === 1 && initialFileInfo
+          ? initialFileInfo
+          : await waitForSubmissionFile(15000);
 
         if (fileInfo && !fileInfo.unsupported) {
           const fileName = fileInfo.fileName;
@@ -485,6 +487,9 @@
             if (response.cached) cachedCount += 1;
             else preparedCount += 1;
           } else {
+            if (/補助アプリ|Start-Reviewer|古い版|起動していません/.test(response?.error || "")) {
+              throw new Error(response.error);
+            }
             skippedCount += 1;
           }
         } else {
@@ -664,8 +669,9 @@
 
   async function startOfficeWindow(isAutomatic) {
     if (!state.enabled || state.busy) return;
-    const fileName = findOfficeFileName();
-    if (!/\.(?:docx?|pptx?)$/i.test(fileName)) {
+    const fileInfo = findSupportedFileInfo();
+    const fileName = fileInfo?.fileName || "";
+    if (!fileInfo || fileInfo.kind !== "office" || !/\.(?:docx?|pptx?)$/i.test(fileName)) {
       if (!isAutomatic) setStatus("表示中のWord／PowerPointファイルが見つかりません。", "error");
       return;
     }
@@ -674,7 +680,12 @@
     const key = getSubmissionKey();
     setStatus(isPowerPoint(fileName) ? "PowerPoint発表画面を準備中…" : "Word別ウィンドウを準備中…", "working");
     try {
-      const response = await chrome.runtime.sendMessage({ type: "cwr-open-office", submissionKey: key });
+      const response = await chrome.runtime.sendMessage({
+        type: "cwr-open-office",
+        submissionKey: key,
+        expectedName: fileInfo.expectedName || "",
+        expectedFileId: fileInfo.expectedFileId || ""
+      });
       if (!response?.ok) throw new Error(response?.error || "別ウィンドウを開けませんでした。");
       state.busy = false;
       setStatus(isPowerPoint(response.fileName) ? `${response.fileName} を発表中` : `${response.fileName} をWord別窓で表示中`, "ready");
