@@ -118,16 +118,11 @@ document.addEventListener("keydown", (event) => {
   closeMoreMenu();
   closeFilesMenu();
 });
-wideButton.addEventListener("click", () => {
-  closeMoreMenu();
-  send({ type: "cwr-toggle-wide" });
-});
-document.getElementById("reset-size").addEventListener("click", () => {
-  closeMoreMenu();
-  send({ type: "cwr-reset-size" });
-});
-
 window.addEventListener("message", (event) => {
+  if (event.data?.type === "cwr-load-pdf") {
+    loadPdf(event.data.pdfUrl, event.data.fileName, event.data.pageCount).catch(showError);
+    return;
+  }
   if (event.data?.type === "cwr-viewer-controls") {
     previousButton.disabled = event.data.previous === false;
     nextButton.disabled = event.data.next === false;
@@ -291,11 +286,15 @@ window.addEventListener("resize", () => {
 });
 updateHeaderDensity();
 
-(async () => {
+async function loadPdf(pdfUrl, targetFileName, targetPageCount) {
   try {
     if (!pdfUrl.startsWith("http://127.0.0.1:18765/file/")) {
       throw new Error("表示先が正しくありません。");
     }
+    nameElement.textContent = targetFileName || "Office提出物";
+    metaElement.textContent = targetPageCount ? `${targetPageCount}ページ・読み込み中…` : "読み込み中…";
+    pagesElement.replaceChildren();
+
     const response = await fetch(pdfUrl, { cache: "no-store" });
     if (!response.ok) throw new Error("表示用PDFを読み込めませんでした。");
     const data = new Uint8Array(await response.arrayBuffer());
