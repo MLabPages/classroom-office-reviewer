@@ -334,11 +334,23 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(() => resolve({ ok: true }), safe));
 }
 
+const preparedPdfsByName = new Map();
+const PREPARED_NAMES_KEY = "classroomWordReviewerPreparedNames";
+
 async function getPreparedPdf(key) {
   const inMemory = preparedPdfs.get(key);
   if (inMemory) return inMemory;
   const stored = await chrome.storage.session.get(PREPARED_KEY);
   return stored[PREPARED_KEY]?.[key] || null;
+}
+
+async function getPreparedPdfByName(fileName) {
+  if (!fileName) return null;
+  const normalized = fileName.trim().toLowerCase();
+  const inMemory = preparedPdfsByName.get(normalized);
+  if (inMemory) return inMemory;
+  const stored = await chrome.storage.session.get(PREPARED_NAMES_KEY);
+  return stored[PREPARED_NAMES_KEY]?.[normalized] || null;
 }
 
 async function getPreparedSubmission(submissionKey) {
@@ -353,19 +365,35 @@ async function getPreparedSubmission(submissionKey) {
 async function rememberPreparedPdf(key, submissionKey, result, { primary = true } = {}) {
   preparedPdfs.set(key, result);
   if (primary) preparedSubmissions.set(submissionKey, result);
+  if (result?.fileName) {
+    preparedPdfsByName.set(result.fileName.trim().toLowerCase(), result);
+  }
+
   const stored = await chrome.storage.session.get(PREPARED_KEY);
   const entries = { ...(stored[PREPARED_KEY] || {}), [key]: result };
   const keep = Object.entries(entries).slice(-PREPARED_MAXIMUM);
   await chrome.storage.session.set({ [PREPARED_KEY]: Object.fromEntries(keep) });
+
   const submissionStored = await chrome.storage.session.get(PREPARED_SUBMISSIONS_KEY);
   const submissionEntries = { ...(submissionStored[PREPARED_SUBMISSIONS_KEY] || {}), [submissionKey]: result };
   const submissionKeep = Object.entries(submissionEntries).slice(-PREPARED_MAXIMUM);
   await chrome.storage.session.set({ [PREPARED_SUBMISSIONS_KEY]: Object.fromEntries(submissionKeep) });
+
+  if (result?.fileName) {
+    const nameStored = await chrome.storage.session.get(PREPARED_NAMES_KEY);
+    const nameEntries = { ...(nameStored[PREPARED_NAMES_KEY] || {}), [result.fileName.trim().toLowerCase()]: result };
+    const nameKeep = Object.entries(nameEntries).slice(-PREPARED_MAXIMUM);
+    await chrome.storage.session.set({ [PREPARED_NAMES_KEY]: Object.fromEntries(nameKeep) });
+  }
+
   while (preparedPdfs.size > PREPARED_MAXIMUM) {
     preparedPdfs.delete(preparedPdfs.keys().next().value);
   }
   while (preparedSubmissions.size > PREPARED_MAXIMUM) {
     preparedSubmissions.delete(preparedSubmissions.keys().next().value);
+  }
+  while (preparedPdfsByName.size > PREPARED_MAXIMUM) {
+    preparedPdfsByName.delete(preparedPdfsByName.keys().next().value);
   }
 }
 
@@ -686,7 +714,10 @@ async function startConversion(tabId, submissionKey, expectedName = "", expected
 
   if (expectedFileId || expectedName) {
     const directKey = descriptorKey({ fileId: expectedFileId, fileName: expectedName });
-    const preparedByFile = await getPreparedPdf(directKey);
+    let preparedByFile = await getPreparedPdf(directKey);
+    if (!preparedByFile && expectedName) {
+      preparedByFile = await getPreparedPdfByName(expectedName);
+    }
     if (preparedByFile) {
       await rememberPreparedPdf(directKey, submissionKey, preparedByFile);
       await notifyTab(tabId, {
