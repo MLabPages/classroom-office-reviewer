@@ -52,7 +52,7 @@ function runDetection({ nodes = [], frames = [] }) {
 
 const duplicateWordName = "2610170399近大ゼミ2026＿期末レポート.docx";
 const wordHooks = runDetection({
-  nodes: [new MockElement({ text: `${duplicateWordName} ${duplicateWordName}` })]
+  nodes: [new MockElement({ text: `Microsoft Word: ${duplicateWordName}${duplicateWordName}` })]
 });
 assert.equal(wordHooks.findOfficeFileName(), duplicateWordName);
 assert.equal(wordHooks.findSupportedFileInfo().kind, "office");

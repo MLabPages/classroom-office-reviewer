@@ -43,8 +43,20 @@
       ];
       for (const source of sources) {
         if (!source || source.length > 220) continue;
-        const match = source?.match(new RegExp(`([^\\\\/:*?\"<>|\\r\\n]{1,160}?\\.(?:${extensionPattern}))(?=\\s|$)`, "i"));
-        if (match) return match[1].trim();
+        // Classroom sometimes concatenates the visible label twice without a
+        // separator (for example, `name.docxname.docx`).  Requiring whitespace
+        // after the extension misses the first, valid filename in that case.
+        // A filename cannot contain a colon, so use the last label prefix as a
+        // boundary and stop at the first supported extension.
+        const colonIndex = source.lastIndexOf(":");
+        const candidateSource = (colonIndex >= 0 ? source.slice(colonIndex + 1) : source).trim();
+        const match = candidateSource.match(new RegExp(`([^\\\\/:*?\"<>|\\r\\n]{1,160}?\\.(?:${extensionPattern}))`, "i"));
+        if (match) {
+          return match[1]
+            .trim()
+            .replace(/^[「『〈《【（([{]+/u, "")
+            .replace(/[」』〉》】）)\]}]+$/u, "");
+        }
       }
     }
     return "";
