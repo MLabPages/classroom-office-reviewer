@@ -8,15 +8,34 @@
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
     body { color: #e8eaed; background: #202124; font: 14px/1.4 Arial, "Noto Sans JP", sans-serif; }
-    header { position: relative; z-index: 2; height: 50px; display: flex; align-items: center; gap: 8px; padding: 0 16px; background: #292a2d; box-shadow: 0 1px 3px rgba(0,0,0,.45); }
-    #name { min-width: 0; flex: 1; overflow: hidden; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-    #meta { color: #bdc1c6; white-space: nowrap; }
-    #progress { display: none; max-width: min(34vw, 340px); overflow: hidden; padding: 4px 9px; border: 1px solid #5f6368; border-radius: 999px; color: #bdc1c6; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    header { position: relative; z-index: 2; height: 50px; display: flex; align-items: center; gap: 6px; padding: 0 10px; background: #292a2d; box-shadow: 0 1px 3px rgba(0,0,0,.45); }
+    #name { min-width: 32px; flex: 1 1 auto; overflow: hidden; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    #meta { flex: 0 1 auto; overflow: hidden; color: #bdc1c6; text-overflow: ellipsis; white-space: nowrap; }
+    #progress { display: none; flex: 0 1 auto; max-width: min(34vw, 340px); overflow: hidden; padding: 4px 9px; border: 1px solid #5f6368; border-radius: 999px; color: #bdc1c6; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
     #progress[data-kind="working"], #progress[data-kind="converting"] { display: block; color: #fdd663; border-color: #8a6d1f; }
     #progress[data-kind="ready"] { display: block; color: #81c995; border-color: #3c7a58; }
-    button { border: 1px solid #5f6368; border-radius: 999px; min-width: 34px; padding: 7px 11px; color: #e8eaed; background: transparent; cursor: pointer; }
-    button:hover, button:focus-visible { background: #3c4043; outline: 2px solid #8ab4f8; }
-    button:disabled { opacity: .4; cursor: default; }
+    /* ボタンは縮ませない。縮むと文字が折り返して読めなくなる。 */
+    header button { flex: 0 0 auto; border: 1px solid #5f6368; border-radius: 999px; min-width: 34px; padding: 7px 11px; color: #e8eaed; background: transparent; font: inherit; line-height: 1; white-space: nowrap; cursor: pointer; }
+    header button:hover, header button:focus-visible { background: #3c4043; outline: 2px solid #8ab4f8; }
+    header button:disabled { opacity: .4; cursor: default; }
+    .nav { min-width: 32px; padding: 6px 10px; font-size: 17px; }
+    #close { padding: 7px 12px; font-size: 15px; }
+    /* 幅が足りないときは、文字ラベルを記号だけに切り替える。 */
+    .icon { display: none; font-size: 15px; }
+    header.compact #meta { display: none; }
+    header.compact .label { display: none; }
+    header.compact .icon { display: inline; }
+    #more-wrap, #files-wrap { position: relative; flex: 0 0 auto; }
+    #files { padding: 5px 10px; border-color: #8ab4f8; color: #d2e3fc; font-size: 12px; }
+    #files[hidden] { display: none; }
+    #more-menu, #files-menu { position: absolute; top: calc(100% + 6px); z-index: 3; display: grid; min-width: 210px; max-width: min(80vw, 420px); padding: 6px; border: 1px solid #5f6368; border-radius: 12px; background: #292a2d; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+    #more-menu { right: 0; }
+    #files-menu { left: 0; }
+    #more-menu[hidden], #files-menu[hidden] { display: none; }
+    #more-menu button, #files-menu button { overflow: hidden; border: 0; border-radius: 8px; padding: 10px 12px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+    #more-menu button:hover, #more-menu button:focus-visible,
+    #files-menu button:hover, #files-menu button:focus-visible { background: #3c4043; }
+    #files-menu button[data-active="true"] { color: #8ab4f8; font-weight: 700; }
     main { position: absolute; inset: 50px 0 0; overflow: auto; background: #202124; }
     main.presentation-mode { scroll-snap-type: y mandatory; }
     #pages { display: grid; justify-items: center; gap: 16px; min-width: 100%; width: max-content; min-height: 100%; padding: 10px 16px 28px; }
@@ -32,15 +51,30 @@
 </head>
 <body>
   <header>
+    <button id="prev" class="nav" type="button" title="前の生徒" aria-label="前の生徒">‹</button>
+    <button id="next" class="nav" type="button" title="次の生徒" aria-label="次の生徒">›</button>
     <span id="name">Office提出物</span>
+    <span id="files-wrap">
+      <button id="files" type="button" title="この提出者のファイル" aria-haspopup="true" aria-expanded="false" hidden>1/1</button>
+      <span id="files-menu" role="menu" hidden></span>
+    </span>
     <span id="meta">読み込み中…</span>
     <span id="progress" role="status"></span>
-    <button id="zoom-out" type="button" aria-label="縮小">−</button>
-    <button id="zoom-in" type="button" aria-label="拡大">＋</button>
-    <button id="prepare" type="button">一括準備</button>
-    <button id="fullscreen" type="button">全画面</button>
-    <button id="disable" type="button">機能OFF</button>
-    <button id="close" type="button">閉じる</button>
+    <button id="zoom-out" type="button" title="縮小" aria-label="縮小">−</button>
+    <button id="zoom-in" type="button" title="拡大" aria-label="拡大">＋</button>
+    <button id="fullscreen" type="button" title="全画面">
+      <span class="label">全画面</span><span class="icon" aria-hidden="true">⛶</span>
+    </button>
+    <span id="more-wrap">
+      <button id="more" type="button" title="その他" aria-label="その他" aria-haspopup="true" aria-expanded="false">⋯</button>
+      <span id="more-menu" role="menu" hidden>
+        <button id="wide" type="button" role="menuitem">幅いっぱいに広げる</button>
+        <button id="reset-size" type="button" role="menuitem">大きさを自動に戻す</button>
+        <button id="prepare" type="button" role="menuitem">全員分を一括準備</button>
+        <button id="disable" type="button" role="menuitem">機能OFF</button>
+      </span>
+    </span>
+    <button id="close" type="button" title="閉じる" aria-label="閉じる">✕</button>
   </header>
   <main id="main"><div id="pages"><div id="message">表示用PDFを読み込んでいます…</div></div></main>
   <script type="module" src="viewer.js"></script>

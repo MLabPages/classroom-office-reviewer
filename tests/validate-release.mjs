@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.6.0";
+const expectedVersion = "0.7.0";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -30,7 +30,13 @@ assert.equal((background.match(/chrome\.tabs\.create/g) || []).length, 1);
 assert(!background.includes("chrome.tabs.remove("));
 assert(background.includes("const PREPARATION_TAB_KEY"));
 assert(content.includes('id="cwr-prepare"'));
-assert(content.includes('type: "cwr-prepare-one"'));
+assert(content.includes('"cwr-prepare-one"'));
+// 1人が複数ファイルを出した場合、2件目以降も準備する経路が要る。
+assert(content.includes('"cwr-prepare-attachment"'));
+assert(content.includes("function findSubmissionAttachments"));
+assert(content.includes("function listSubmissionFiles"));
+assert(background.includes("async function prepareAttachment"));
+assert(background.includes('"cwr-open-attachment"'));
 assert(content.includes("expectedGoogleType"));
 assert(content.includes("sequence === 1 && initialFileInfo"));
 assert(content.includes('googleType'));
