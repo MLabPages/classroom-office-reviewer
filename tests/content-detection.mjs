@@ -146,6 +146,42 @@ const menuOnlyHooks = runDetection({
 });
 assert.deepEqual(plain(menuOnlyHooks.listSubmissionFiles().map((item) => item.fileName)), [firstFile, secondFile]);
 
+// 選択欄が閉じていて項目が隠れていても、2件目を見落とさない。
+const hiddenMenuHooks = runDetection({
+  nodes: [
+    new MockElement({ text: `Microsoft Word: ${firstFile}` }),
+    new MockElement({
+      text: `Microsoft Word: ${firstFile}`,
+      attributes: { role: "menuitem" },
+      rect: { width: 0, height: 0, top: 0 }
+    }),
+    new MockElement({
+      text: `Microsoft PowerPoint: ${secondFile}`,
+      attributes: { role: "menuitem" },
+      rect: { width: 0, height: 0, top: 0 }
+    }),
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ]
+});
+assert.deepEqual(
+  plain(hiddenMenuHooks.listSubmissionFiles().map((item) => item.fileName)),
+  [firstFile, secondFile]
+);
+
+// 2件目を表示中でも、Classroomの選択欄と同じ並び順を保つ。
+const secondActiveHooks = runDetection({
+  nodes: [
+    new MockElement({ text: `Microsoft PowerPoint: ${secondFile}` }),
+    new MockElement({ text: `Microsoft Word: ${firstFile}`, attributes: { role: "menuitem" } }),
+    new MockElement({ text: `Microsoft PowerPoint: ${secondFile}`, attributes: { role: "menuitem" } }),
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ]
+});
+assert.deepEqual(
+  plain(secondActiveHooks.listSubmissionFiles().map((item) => item.fileName)),
+  [firstFile, secondFile]
+);
+
 // 添付リンクを1件も拾えなくても、従来どおり表示中の1件は準備できる。
 const singleHooks = runDetection({
   nodes: [

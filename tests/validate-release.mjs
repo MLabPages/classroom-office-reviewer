@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.7.0";
+const expectedVersion = "0.7.1";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -42,6 +42,12 @@ assert(content.includes("function findSubmissionFileMenuItems"));
 assert(content.includes("function selectSubmissionFile"));
 assert(content.includes("state.fileSwitching"));
 assert(content.includes("function listSubmissionFiles"));
+// 準備済みPDFはファイル番号でも引けるようにして、二重変換を防ぐ。
+assert(background.includes("async function getPreparedPdfById"));
+assert(background.includes("const PREPARED_IDS_KEY"));
+// Classroomの表示を正として番号を合わせる。
+assert(content.includes("function findDisplayedFileId"));
+assert(content.includes("async function openFileMenu"));
 assert(background.includes("async function prepareAttachment"));
 assert(background.includes('"cwr-open-attachment"'));
 assert(content.includes("expectedGoogleType"));

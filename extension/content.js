@@ -189,9 +189,10 @@
 
   // Classroomのファイル選択欄は、通常のリンクではなく role=menuitem の
   // span として描画されることがある。2件目以降も同じ欄から拾う。
+  // 選択欄が閉じているあいだ項目は隠れているだけでDOMには残るため、
+  // 見えているかどうかで絞り込まない。絞り込むと2件目を見落とす。
   function findSubmissionFileMenuItems() {
-    return [...document.querySelectorAll("[role='menuitem']")].filter((node) => {
-      if (!visible(node)) return false;
+    const items = [...document.querySelectorAll("[role='menuitem']")].filter((node) => {
       if (node.getAttribute?.("role") !== "menuitem") return false;
       const text = textOf(node);
       if (!text || /新しいウィンドウ|new window/i.test(text)) return false;
@@ -199,6 +200,26 @@
       const menuLabel = menu?.getAttribute("aria-label") || "";
       return !menu || /ファイル|file|submission/i.test(menuLabel) || Boolean(attachmentNameOf(node, googleTypeOfLabel(text)));
     });
+    if (items.length < 2) return items;
+    // 画面には別の提出者のメニューが残っていることがある。表示中のファイルが
+    // 含まれるメニューが見つかったら、その1つだけを使う。
+    const displayedName = normalizedFileName(state.activeFile?.name || findOfficeFileName());
+    if (!displayedName) return items;
+    const groups = new Map();
+    for (const node of items) {
+      const menu = node.closest?.("[role='menu']") || null;
+      if (!groups.has(menu)) groups.set(menu, []);
+      groups.get(menu).push(node);
+    }
+    if (groups.size < 2) return items;
+    for (const group of groups.values()) {
+      const matched = group.some((node) => {
+        const attachment = attachmentInfoOf(node);
+        return attachment && normalizedFileName(attachment.fileName) === displayedName;
+      });
+      if (matched) return group;
+    }
+    return items;
   }
 
   function attachmentInfoOf(node) {
@@ -228,9 +249,11 @@
       typeof node.matches === "function" ? node.matches("a[href]") : Boolean(node.href));
     const nodes = [...linkNodes, ...findSubmissionFileMenuItems()];
     for (const node of nodes) {
-      if (!visible(node)) continue;
       const url = fileUrlOf(node);
-      if (!/(?:drive|docs)\.google\.com/i.test(url) && node.getAttribute?.("role") !== "menuitem") continue;
+      const isMenuItem = node.getAttribute?.("role") === "menuitem";
+      // 選択欄の項目は閉じていると見えないので、リンクだけ表示中か確かめる。
+      if (!isMenuItem && !visible(node)) continue;
+      if (!/(?:drive|docs)\.google\.com/i.test(url) && !isMenuItem) continue;
       const attachment = attachmentInfoOf(node);
       if (!attachment) continue;
       const identity = attachment.expectedFileId
@@ -247,20 +270,31 @@
     return attachments;
   }
 
-  // 表示中の1件（従来の検出）を先頭に、見つかった添付を続ける。
-  // 添付の検出に失敗しても、これまでどおり1件目は必ず準備できる。
+  function sameFile(left, right) {
+    if (!left || !right) return false;
+    if (left.expectedFileId && right.expectedFileId) return left.expectedFileId === right.expectedFileId;
+    return normalizedFileName(left.fileName) === normalizedFileName(right.fileName);
+  }
+
+  // Classroomのファイル選択欄に並ぶ順番を、そのまま拡張の順番として使う。
+  // 表示中の1件を必ず先頭へ置くと、2件目を見ているときに順番が入れ替わり、
+  // Classroomの表示と左右ボタンの進み方がずれてしまう。
   function listSubmissionFiles(primary = findSupportedFileInfo()) {
-    let current = primary && !primary.unsupported && !primary.waiting ? { ...primary } : null;
-    if (current && !current.expectedFileId && !state.activeFile?.name) {
+    const current = primary && !primary.unsupported && !primary.waiting ? { ...primary } : null;
+    if (current && !current.expectedFileId) {
       current.expectedFileId = findDisplayedFileId();
     }
-    const files = current ? [current] : [];
+    const files = [];
     for (const attachment of findSubmissionAttachments()) {
-      const duplicate = files.some((item) =>
-        (item.expectedFileId && attachment.expectedFileId && item.expectedFileId === attachment.expectedFileId)
-        || (normalizedFileName(item.fileName) === normalizedFileName(attachment.fileName)
-          && (!item.expectedFileId || !attachment.expectedFileId)));
-      if (!duplicate) files.push(attachment);
+      if (files.some((item) => sameFile(item, attachment))) continue;
+      files.push({ ...attachment });
+    }
+    if (!current) return files;
+    const matched = files.find((item) => sameFile(item, current));
+    if (!matched) return [current, ...files];
+    // 選択欄からは番号が取れないことがあるので、表示中の番号で補う。
+    if (!matched.expectedFileId && current.expectedFileId) {
+      matched.expectedFileId = current.expectedFileId;
     }
     return files;
   }
@@ -301,12 +335,42 @@
     return (name || "").replace(/\s+/g, " ").trim().toLowerCase();
   }
 
-  function findSubmissionFileMenuItem(fileName) {
-    const target = normalizedFileName(fileName);
-    return findSubmissionFileMenuItems().find((node) => {
-      const attachment = attachmentInfoOf(node);
-      return attachment && normalizedFileName(attachment.fileName) === target;
-    }) || null;
+  function findSubmissionFileMenuItem(file) {
+    const target = normalizedFileName(typeof file === "string" ? file : file?.fileName);
+    const targetId = typeof file === "string" ? "" : (file?.expectedFileId || "");
+    const items = findSubmissionFileMenuItems().map((node) => ({ node, attachment: attachmentInfoOf(node) }));
+    if (targetId) {
+      const byId = items.find((item) => item.attachment?.expectedFileId === targetId);
+      if (byId) return byId.node;
+    }
+    return items.find((item) => item.attachment && normalizedFileName(item.attachment.fileName) === target)?.node || null;
+  }
+
+  // 選択欄が閉じていると項目を押しても効かない。開くボタンを押してから
+  // 項目が実際に見えるまで待つ。
+  function findFileMenuOpener() {
+    return [...document.querySelectorAll("[aria-haspopup='true'], [aria-haspopup='menu'], button, [role='button']")]
+      .find((node) => {
+        if (!visible(node)) return false;
+        if (node.getAttribute("aria-haspopup") !== "true" && node.getAttribute("aria-haspopup") !== "menu") return false;
+        const label = [node.getAttribute("aria-label"), node.getAttribute("title"), textOf(node)].join(" ");
+        return /\.(?:docx?|pptx?|pdf)|ファイル|file|Google\s*(?:ドキュメント|Docs?|スライド|Slides?)/i.test(label);
+      }) || null;
+  }
+
+  async function openFileMenu(file, timeoutMs = 4000) {
+    let item = findSubmissionFileMenuItem(file);
+    if (item && visible(item)) return item;
+    const opener = findFileMenuOpener();
+    if (!opener) return item;
+    opener.click();
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      item = findSubmissionFileMenuItem(file);
+      if (item && visible(item)) return item;
+      await wait(120);
+    }
+    return item;
   }
 
   async function waitForDisplayedFileChange(previousId, expectedId = "", timeoutMs = 15000) {
@@ -324,14 +388,17 @@
     const previousId = findDisplayedFileId();
     const targetName = normalizedFileName(file?.fileName);
     const activeName = normalizedFileName(state.activeFile?.name);
-    if ((file?.expectedFileId && file.expectedFileId === previousId) || (targetName && targetName === activeName)) {
+    const alreadyShown = file?.expectedFileId
+      ? file.expectedFileId === previousId
+      : Boolean(targetName) && targetName === activeName;
+    if (alreadyShown) {
       return { ...file, expectedFileId: file.expectedFileId || state.activeFile?.id || previousId };
     }
-    const menuItem = findSubmissionFileMenuItem(file?.fileName);
+    const menuItem = await openFileMenu(file);
     if (!menuItem) return null;
     menuItem.click();
     const selectedId = await waitForDisplayedFileChange(previousId, file?.expectedFileId || "");
-    if (!selectedId && file?.expectedFileId !== previousId) return null;
+    if (!selectedId) return null;
     return { ...file, expectedFileId: file.expectedFileId || selectedId || previousId };
   }
 
@@ -378,7 +445,9 @@
       formatDuration,
       preparationCountText,
       findSubmissionAttachments,
-      listSubmissionFiles
+      listSubmissionFiles,
+      findSubmissionFileMenuItems,
+      normalizedFileName
     });
     return;
   }
@@ -1051,9 +1120,15 @@
         // 1人が複数ファイルを出していることがあるので、全部まとめて準備する。
         const files = fileInfo && !fileInfo.unsupported ? listSubmissionFiles(fileInfo) : [];
         if (files.length) {
+          const displayedIndex = Math.max(0, activeFileIndex(files));
           for (const [fileIndex, file] of files.entries()) {
             if (state.prepareCancelled) break;
-            const preparedFile = fileIndex === 0 ? file : await selectSubmissionFile(file);
+            // 画面に出ている1件はそのまま使い、それ以外は番号があれば
+            // 画面を切り替えずに取得する。番号が無いときだけ選択欄を操作する。
+            const onScreen = fileIndex === displayedIndex;
+            const preparedFile = onScreen || file.expectedFileId
+              ? file
+              : await selectSubmissionFile(file);
             if (!preparedFile) {
               failedCount += 1;
               failedNames.push(file.fileName);
@@ -1072,16 +1147,16 @@
               response = await chrome.runtime.sendMessage({
                 // 1件目は表示中のファイルなので、画面と突き合わせる確実な経路を使う。
                 // 2件目以降は画面に出ていないため、ファイル番号を直接指定して取得する。
-                type: fileIndex === 0 || !preparedFile.expectedFileId ? "cwr-prepare-one" : "cwr-prepare-attachment",
+                type: preparedFile.expectedFileId && !onScreen ? "cwr-prepare-attachment" : "cwr-prepare-one",
                 submissionKey,
-                primary: fileIndex === 0,
+                primary: onScreen,
                 fileName,
                 expectedName: preparedFile.expectedName || "",
                 expectedFileId: preparedFile.expectedFileId || "",
                 expectedGoogleType: preparedFile.expectedGoogleType || ""
               });
               // 画面と突き合わせる1件目だけ、前の提出者と同じ結果なら画面更新待ちとみなす。
-              const repeatedDocument = fileIndex === 0 && response?.ok && preparedDocumentKeys.has(response.documentKey);
+              const repeatedDocument = onScreen && response?.ok && preparedDocumentKeys.has(response.documentKey);
               if ((response?.ok && !repeatedDocument) || attempt === 2) break;
               response = repeatedDocument ? { ok: false, error: "画面更新を待っています。" } : response;
               await wait(900);
@@ -1104,7 +1179,10 @@
               failedNames.push(fileName);
             }
           }
-          if (files.length > 1 && !state.prepareCancelled) await selectSubmissionFile(files[0]);
+          // 画面を動かした場合だけ、元の表示へ戻す。
+          if (files.length > 1 && !state.prepareCancelled && files.some((file) => !file.expectedFileId)) {
+            await selectSubmissionFile(files[displayedIndex]);
+          }
         } else {
           skippedCount += 1;
         }
@@ -1458,12 +1536,25 @@
     state.activeFile = file ? { id: file.expectedFileId || "", name: file.fileName || "" } : null;
   }
 
+  // Classroomが実際に表示しているファイルを最優先で正とする。拡張が独自に
+  // 覚えた位置を優先すると、Classroom側の表示と番号がずれる。
   function activeFileIndex(files) {
-    if (!state.activeFile) return 0;
-    return files.findIndex((file) => (state.activeFile.id && (
-      file.expectedFileId === state.activeFile.id
-      || (!file.expectedFileId && normalizedFileName(file.fileName) === normalizedFileName(state.activeFile.name))
-    )) || (!state.activeFile.id && normalizedFileName(file.fileName) === normalizedFileName(state.activeFile.name)));
+    if (!files.length) return -1;
+    const displayedId = findDisplayedFileId();
+    if (displayedId) {
+      const byDisplayed = files.findIndex((file) => file.expectedFileId === displayedId);
+      if (byDisplayed >= 0) return byDisplayed;
+    }
+    if (state.activeFile?.id) {
+      const byId = files.findIndex((file) => file.expectedFileId === state.activeFile.id);
+      if (byId >= 0) return byId;
+    }
+    if (state.activeFile?.name) {
+      const byName = files.findIndex((file) =>
+        normalizedFileName(file.fileName) === normalizedFileName(state.activeFile.name));
+      if (byName >= 0) return byName;
+    }
+    return 0;
   }
 
   function sendViewerControls() {
@@ -1472,13 +1563,16 @@
     const previousButton = findSubmissionButton("previous");
     const nextButton = findSubmissionButton("next");
     const files = isSubmissionView() ? listSubmissionFiles() : [];
+    const activeIndex = activeFileIndex(files);
+    const hasEarlierFile = activeIndex > 0;
+    const hasLaterFile = activeIndex >= 0 && activeIndex < files.length - 1;
     frame.contentWindow?.postMessage({
       type: "cwr-viewer-controls",
-      previous: Boolean(previousButton) && !submissionButtonDisabled(previousButton),
-      next: Boolean(nextButton) && !submissionButtonDisabled(nextButton),
+      previous: hasEarlierFile || (Boolean(previousButton) && !submissionButtonDisabled(previousButton)),
+      next: hasLaterFile || (Boolean(nextButton) && !submissionButtonDisabled(nextButton)),
       wide: state.wide,
       files: files.map((file) => ({ name: file.fileName })),
-      activeIndex: activeFileIndex(files)
+      activeIndex
     }, "*");
   }
 
@@ -1505,7 +1599,10 @@
       state.busy = false;
       setStatus(error.message || "このファイルを表示できませんでした。", "error");
     } finally {
-      state.fileSwitching = false;
+      // Classroom側のDOM更新が落ち着くまで、学生切替とみなさない。
+      setTimeout(() => {
+        state.fileSwitching = false;
+      }, 600);
     }
   }
 
@@ -1528,14 +1625,17 @@
     }
     const before = getStudentKey();
     setStatus(direction === "next" ? "次の提出者へ移動しています…" : "前の提出者へ移動しています…", "working");
+    state.fileSwitching = false;
     button.click();
     if (!await waitForSubmissionChange(before, 8000)) {
       setStatus("提出者を切り替えられませんでした。Classroomを再読み込みしてください。", "error");
       return;
     }
     await waitForSubmissionFile(5000);
+    state.activeFile = null;
     const nextFiles = listSubmissionFiles();
-    const targetIndex = direction === "previous" ? nextFiles.length - 1 : 0;
+    // 前へ戻るときは、その提出者の最後のファイルから見るほうが自然につながる。
+    const targetIndex = direction === "previous" ? Math.max(0, nextFiles.length - 1) : 0;
     if (nextFiles[targetIndex]) await showSubmissionFile(targetIndex);
     else {
       sendViewerControls();

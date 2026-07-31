@@ -2,11 +2,13 @@ const HELPER_BASE = "http://127.0.0.1:18765";
 const PREPARED_KEY = "classroomWordReviewerPrepared";
 const PREPARED_SUBMISSIONS_KEY = "classroomWordReviewerPreparedSubmissions";
 const PREPARED_NAMES_KEY = "classroomWordReviewerPreparedNames";
+const PREPARED_IDS_KEY = "classroomWordReviewerPreparedIds";
 const HELPER_SESSION_KEY = "classroomWordReviewerHelperSession";
 const PREPARATION_TAB_KEY = "classroomWordReviewerPreparationTab";
 const PREPARED_MAXIMUM = 600;
 const preparedPdfs = new Map();
 const preparedSubmissions = new Map();
+const preparedPdfsById = new Map();
 
 // Office が壊れたファイルで固まっても、一括準備の行列ごと止まらないように
 // すべての通信に上限時間を設ける。
@@ -41,7 +43,8 @@ async function helperHealth() {
     preparedPdfs.clear();
     preparedSubmissions.clear();
     preparedPdfsByName.clear();
-    await chrome.storage.local.remove([PREPARED_KEY, PREPARED_SUBMISSIONS_KEY, PREPARED_NAMES_KEY]);
+    preparedPdfsById.clear();
+    await chrome.storage.local.remove([PREPARED_KEY, PREPARED_SUBMISSIONS_KEY, PREPARED_NAMES_KEY, PREPARED_IDS_KEY]);
     await chrome.storage.local.set({ [HELPER_SESSION_KEY]: health.sessionId });
   }
   return health;
@@ -377,19 +380,26 @@ async function getPreparedPdfByName(fileName) {
     ...Object.entries(nameMap)
   ];
 
+  // 名前が省略表示されたときの救済策。ただし1人が複数ファイルを出していると
+  // 同じ学籍番号の候補が複数並ぶ。取り違えると別のファイルを表示してしまうため、
+  // 候補が1つに絞れるときだけ採用する。
+  const prefixMatches = new Map();
+  const partialMatches = new Map();
   for (const [name, item] of allEntries) {
     if (!item) continue;
     const itemClean = cleanFileNameForMatching(name);
     const itemPrefix = extractStudentPrefixForMatching(name);
-
-    if (targetPrefix && itemPrefix && targetPrefix === itemPrefix) {
-      return item;
+    if (targetClean.length >= 4 && itemClean.length >= 4
+      && (itemClean.includes(targetClean) || targetClean.includes(itemClean))) {
+      partialMatches.set(item.pdfUrl || name, item);
+      continue;
     }
-    if (targetClean.length >= 4 && itemClean.length >= 4 && (itemClean.includes(targetClean) || targetClean.includes(itemClean))) {
-      return item;
+    if (targetPrefix && itemPrefix && targetPrefix === itemPrefix) {
+      prefixMatches.set(item.pdfUrl || name, item);
     }
   }
-
+  if (partialMatches.size === 1) return [...partialMatches.values()][0];
+  if (partialMatches.size === 0 && prefixMatches.size === 1) return [...prefixMatches.values()][0];
   return null;
 }
 
@@ -400,14 +410,26 @@ async function getPreparedSubmission(submissionKey) {
   return stored[PREPARED_SUBMISSIONS_KEY]?.[submissionKey] || null;
 }
 
+// Drive上のファイル番号は、画面に出る名前が省略されても変わらない。
+// 準備済みPDFはまずこの番号で引き当て、二重変換を防ぐ。
+async function getPreparedPdfById(fileId) {
+  if (!fileId) return null;
+  const inMemory = preparedPdfsById.get(fileId);
+  if (inMemory) return inMemory;
+  const stored = await chrome.storage.local.get(PREPARED_IDS_KEY);
+  return stored[PREPARED_IDS_KEY]?.[fileId] || null;
+}
+
 // primary=false は「その提出者の2件目以降」。提出者から引く索引は1件目のまま
 // 残し、2件目以降はファイル単位の索引（key）からだけ取り出せるようにする。
-async function rememberPreparedPdf(key, submissionKey, result, { primary = true } = {}) {
+async function rememberPreparedPdf(key, submissionKey, result, { primary = true, fileId = "" } = {}) {
   preparedPdfs.set(key, result);
   if (primary) preparedSubmissions.set(submissionKey, result);
   if (result?.fileName) {
     preparedPdfsByName.set(result.fileName.trim().toLowerCase(), result);
   }
+  const documentId = fileId || String(key).split("|")[0] || "";
+  if (documentId) preparedPdfsById.set(documentId, result);
 
   const stored = await chrome.storage.local.get(PREPARED_KEY);
   const entries = { ...(stored[PREPARED_KEY] || {}), [key]: result };
@@ -428,6 +450,13 @@ async function rememberPreparedPdf(key, submissionKey, result, { primary = true 
     await chrome.storage.local.set({ [PREPARED_NAMES_KEY]: Object.fromEntries(nameKeep) });
   }
 
+  if (documentId) {
+    const idStored = await chrome.storage.local.get(PREPARED_IDS_KEY);
+    const idEntries = { ...(idStored[PREPARED_IDS_KEY] || {}), [documentId]: result };
+    const idKeep = Object.entries(idEntries).slice(-PREPARED_MAXIMUM);
+    await chrome.storage.local.set({ [PREPARED_IDS_KEY]: Object.fromEntries(idKeep) });
+  }
+
   while (preparedPdfs.size > PREPARED_MAXIMUM) {
     preparedPdfs.delete(preparedPdfs.keys().next().value);
   }
@@ -436,6 +465,9 @@ async function rememberPreparedPdf(key, submissionKey, result, { primary = true 
   }
   while (preparedPdfsByName.size > PREPARED_MAXIMUM) {
     preparedPdfsByName.delete(preparedPdfsByName.keys().next().value);
+  }
+  while (preparedPdfsById.size > PREPARED_MAXIMUM) {
+    preparedPdfsById.delete(preparedPdfsById.keys().next().value);
   }
 }
 
@@ -634,14 +666,14 @@ async function prepareCurrentSubmission(tabId, submissionKey, expectedName, expe
   const descriptor = await waitForCurrentDocument(tabId, expectedName, expectedFileId, expectedGoogleType);
   if (!descriptor) throw new Error("この提出者のWord／PowerPoint／Google形式のファイルを見つけられませんでした。");
   const key = descriptorKey(descriptor);
-  const prepared = await getPreparedPdf(key);
+  const prepared = await getPreparedPdf(key) || await getPreparedPdfById(descriptor.fileId);
   if (prepared) {
-    await rememberPreparedPdf(key, submissionKey, prepared);
+    await rememberPreparedPdf(key, submissionKey, prepared, { fileId: descriptor.fileId });
     return { ...prepared, documentKey: key, mode: "prepared", cached: true };
   }
 
   const result = await convertDescriptor(tabId, submissionKey, descriptor, { reportStatus: true, showPdf: false });
-  await rememberPreparedPdf(key, submissionKey, result);
+  await rememberPreparedPdf(key, submissionKey, result, { fileId: descriptor.fileId });
   return { ...result, documentKey: key, mode: "prepared", cached: false };
 }
 
@@ -666,15 +698,15 @@ async function prepareAttachment(tabId, message, { showPdf = false } = {}) {
   const submissionKey = message.submissionKey || "";
   const primary = message.primary === true;
   const key = descriptorKey(descriptor);
-  const prepared = await getPreparedPdf(key);
+  const prepared = await getPreparedPdf(key) || await getPreparedPdfById(fileId);
   if (prepared) {
-    await rememberPreparedPdf(key, submissionKey, prepared, { primary });
+    await rememberPreparedPdf(key, submissionKey, prepared, { primary, fileId });
     if (showPdf) await notifyTab(tabId, { type: "cwr-show-pdf", submissionKey, ...prepared });
     return { ...prepared, documentKey: key, mode: "prepared", cached: true };
   }
 
   const result = await convertDescriptor(tabId, submissionKey, descriptor, { reportStatus: true, showPdf });
-  await rememberPreparedPdf(key, submissionKey, result, { primary });
+  await rememberPreparedPdf(key, submissionKey, result, { primary, fileId });
   return { ...result, documentKey: key, mode: "prepared", cached: false };
 }
 
@@ -756,26 +788,17 @@ async function releasePdf(pdfUrl) {
 
 async function startConversion(tabId, submissionKey, expectedName = "", expectedFileId = "", expectedGoogleType = "") {
   await helperHealth();
-  const preparedSubmission = await getPreparedSubmission(submissionKey);
-  if (preparedSubmission) {
-    await notifyTab(tabId, {
-      type: "cwr-show-pdf",
-      pdfUrl: preparedSubmission.pdfUrl,
-      fileName: preparedSubmission.fileName,
-      pageCount: preparedSubmission.pageCount,
-      submissionKey
-    });
-    return { ...preparedSubmission, mode: "prepared" };
-  }
-
+  // ファイル番号が分かっているときは、その番号で引いた準備済みPDFを最優先する。
+  // 提出者単位の索引を先に見ると、2件目を選んでいるのに1件目が出てしまう。
   if (expectedFileId || expectedName) {
     const directKey = descriptorKey({ fileId: expectedFileId, fileName: expectedName });
-    let preparedByFile = await getPreparedPdf(directKey);
-    if (!preparedByFile && expectedName) {
+    let preparedByFile = await getPreparedPdf(directKey)
+      || await getPreparedPdfById(expectedFileId);
+    if (!preparedByFile && expectedName && !expectedFileId) {
       preparedByFile = await getPreparedPdfByName(expectedName);
     }
     if (preparedByFile) {
-      await rememberPreparedPdf(directKey, submissionKey, preparedByFile);
+      await rememberPreparedPdf(directKey, submissionKey, preparedByFile, { fileId: expectedFileId });
       await notifyTab(tabId, {
         type: "cwr-show-pdf",
         pdfUrl: preparedByFile.pdfUrl,
@@ -787,14 +810,30 @@ async function startConversion(tabId, submissionKey, expectedName = "", expected
     }
   }
 
+  // ファイル番号が取れない場合だけ、提出者単位の索引にたよる。
+  if (!expectedFileId) {
+    const preparedSubmission = await getPreparedSubmission(submissionKey);
+    if (preparedSubmission) {
+      await notifyTab(tabId, {
+        type: "cwr-show-pdf",
+        pdfUrl: preparedSubmission.pdfUrl,
+        fileName: preparedSubmission.fileName,
+        pageCount: preparedSubmission.pageCount,
+        submissionKey
+      });
+      return { ...preparedSubmission, mode: "prepared" };
+    }
+  }
+
   const descriptor = await waitForCurrentDocument(tabId, expectedName, expectedFileId, expectedGoogleType);
   if (!descriptor) {
     throw new Error("表示中のWord／PowerPoint／Google形式のファイルを見つけられませんでした。Classroomを再読み込みしてください。");
   }
 
   const key = descriptorKey(descriptor);
-  const prepared = await getPreparedPdf(key);
+  const prepared = await getPreparedPdf(key) || await getPreparedPdfById(descriptor.fileId);
   if (prepared) {
+    await rememberPreparedPdf(key, submissionKey, prepared, { fileId: descriptor.fileId });
     await notifyTab(tabId, {
       type: "cwr-show-pdf",
       pdfUrl: prepared.pdfUrl,
@@ -805,7 +844,11 @@ async function startConversion(tabId, submissionKey, expectedName = "", expected
     return { ...prepared, mode: "prepared" };
   }
 
-  return await convertDescriptor(tabId, submissionKey, descriptor);
+  const converted = await convertDescriptor(tabId, submissionKey, descriptor);
+  // 採点画面で変換したPDFも索引に残す。次に同じファイルを開いたとき、
+  // 変換をやり直さずそのまま再利用できる。
+  await rememberPreparedPdf(key, submissionKey, converted, { fileId: descriptor.fileId });
+  return converted;
 }
 
 if (globalThis.__CWR_BACKGROUND_TEST_HOOKS__) {
@@ -815,6 +858,7 @@ if (globalThis.__CWR_BACKGROUND_TEST_HOOKS__) {
     isGoogleNative,
     getPreparedPdf,
     getPreparedPdfByName,
+    getPreparedPdfById,
     getPreparedSubmission,
     rememberPreparedPdf
   });
