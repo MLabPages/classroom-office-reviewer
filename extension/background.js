@@ -7,8 +7,28 @@ const PREPARED_MAXIMUM = 600;
 const preparedPdfs = new Map();
 const preparedSubmissions = new Map();
 
+// Office が壊れたファイルで固まっても、一括準備の行列ごと止まらないように
+// すべての通信に上限時間を設ける。
+async function fetchWithTimeout(url, init, timeoutMs, timeoutMessage) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(timeoutMessage);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function helperHealth() {
-  const response = await fetch(`${HELPER_BASE}/health`, { cache: "no-store" });
+  const response = await fetchWithTimeout(
+    `${HELPER_BASE}/health`,
+    { cache: "no-store" },
+    15000,
+    "補助アプリが応答しません。Start-Reviewer.cmd を起動し直してください。"
+  );
   if (!response.ok) throw new Error("補助アプリに接続できません。");
   const health = await response.json();
   const expectedVersion = chrome.runtime.getManifest().version;
@@ -131,23 +151,53 @@ async function setPreparationState(value) {
   else await chrome.storage.session.remove(PREPARATION_TAB_KEY);
 }
 
+async function patchPreparationState(patch) {
+  const current = await getPreparationState();
+  if (!current) return null;
+  const next = { ...current, ...patch };
+  await setPreparationState(next);
+  return next;
+}
+
+// 準備専用タブがまだ生きていて、実際に処理中かどうかを確かめる。
+// 生きていない状態を「実行中」と信じ続けると、採点タブの案内が永久に止まる。
+async function inspectPreparationTab(tabId) {
+  if (!Number.isInteger(tabId)) return null;
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab) return null;
+  const response = await sendToFrame(tabId, 0, { type: "cwr-preparation-ping" });
+  return { tab, preparing: response?.preparing === true, responded: Boolean(response) };
+}
+
+async function focusTab(tabId, windowId) {
+  if (!Number.isInteger(tabId)) return false;
+  const updated = await chrome.tabs.update(tabId, { active: true }).catch(() => null);
+  if (!updated) return false;
+  const targetWindow = Number.isInteger(windowId) ? windowId : updated.windowId;
+  if (Number.isInteger(targetWindow)) {
+    await chrome.windows.update(targetWindow, { focused: true }).catch(() => undefined);
+  }
+  return true;
+}
+
 async function sendWhenReady(tabId, message) {
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
     const response = await sendToFrame(tabId, 0, message);
     if (response?.ok) return response;
     if (response?.error) throw new Error(response.error);
     await wait(500);
   }
-  throw new Error("準備専用タブを開始できませんでした。");
+  throw new Error("準備専用タブが応答しませんでした。Classroomを再読み込みしてからお試しください。");
 }
 
 async function waitForClassroomTab(tabId) {
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
     const tab = await chrome.tabs.get(tabId).catch(() => null);
-    if (tab?.status === "complete" && tab.url?.startsWith("https://classroom.google.com/")) return tab;
+    if (!tab) throw new Error("準備専用タブが閉じられました。");
+    if (tab.status === "complete" && tab.url?.startsWith("https://classroom.google.com/")) return tab;
     await wait(500);
   }
-  throw new Error("準備専用タブの読み込みが完了しませんでした。");
+  throw new Error("準備専用タブの読み込みが完了しませんでした。通信状況を確認してからお試しください。");
 }
 
 async function startBulkPreparation(sourceTabId) {
@@ -159,48 +209,129 @@ async function startBulkPreparation(sourceTabId) {
   let preparationState = await getPreparationState();
   let preparationTab = null;
   if (preparationState?.tabId) {
-    preparationTab = await chrome.tabs.get(preparationState.tabId).catch(() => null);
-  }
-  if (preparationTab && preparationState.status === "running") {
-    await setPreparationState({ ...preparationState, sourceTabId });
-    return { ok: true, alreadyRunning: true };
-  }
-  const reused = Boolean(preparationTab);
-  if (!preparationTab) {
-    preparationTab = await chrome.tabs.create({ url: sourceTab.url, active: false });
-  } else if (preparationTab.url !== sourceTab.url) {
-    preparationTab = await chrome.tabs.update(preparationTab.id, { url: sourceTab.url, active: false });
+    const inspection = await inspectPreparationTab(preparationState.tabId);
+    preparationTab = inspection?.tab || null;
+    // 実行中と記録されていても、タブが応答しない、または処理が終わっている
+    // 場合は作り直す。そうしないと「実行中」のまま二度と進まなくなる。
+    if (inspection?.preparing && preparationState.status === "running") {
+      await patchPreparationState({ sourceTabId, sourceWindowId: sourceTab.windowId });
+      return { ok: true, alreadyRunning: true, tabId: preparationState.tabId };
+    }
   }
 
-  preparationState = { tabId: preparationTab.id, sourceTabId, status: "running", startedAt: Date.now() };
+  const reused = Boolean(preparationTab);
+  if (!preparationTab) {
+    preparationTab = await chrome.tabs.create({
+      url: sourceTab.url,
+      active: true,
+      index: sourceTab.index + 1,
+      windowId: sourceTab.windowId
+    });
+  } else {
+    preparationTab = await chrome.tabs.update(preparationTab.id, { url: sourceTab.url, active: true });
+    await chrome.windows.update(preparationTab.windowId, { focused: true }).catch(() => undefined);
+  }
+
+  preparationState = {
+    tabId: preparationTab.id,
+    windowId: preparationTab.windowId,
+    sourceTabId,
+    sourceWindowId: sourceTab.windowId,
+    status: "running",
+    acknowledged: false,
+    startedAt: Date.now(),
+    lastProgressAt: Date.now()
+  };
   await setPreparationState(preparationState);
   try {
     await waitForClassroomTab(preparationTab.id);
     await sendWhenReady(preparationTab.id, { type: "cwr-run-preparation" });
   } catch (error) {
-    await setPreparationState({ ...preparationState, status: "error" });
+    await patchPreparationState({ status: "error" });
+    await focusTab(sourceTabId, sourceTab.windowId);
     throw error;
   }
-  return { ok: true, reused };
+  await patchPreparationState({ acknowledged: true });
+  return { ok: true, reused, tabId: preparationTab.id };
 }
 
 async function relayPreparationProgress(senderTabId, progress) {
   const preparationState = await getPreparationState();
   if (!preparationState || preparationState.tabId !== senderTabId) return { ok: false };
   await notifyTab(preparationState.sourceTabId, { type: "cwr-prepare-remote-progress", ...progress });
-  if (progress.status && progress.status !== "running") {
-    await setPreparationState({ ...preparationState, status: progress.status });
+  const finished = progress.status && progress.status !== "running";
+  await patchPreparationState({
+    lastProgressAt: Date.now(),
+    lastProgress: progress,
+    ...(finished ? { status: progress.status } : {})
+  });
+  // 終わったら採点タブへ自動で戻す。準備専用タブを探す手間をなくす。
+  if (finished) await focusTab(preparationState.sourceTabId, preparationState.sourceWindowId);
+  return { ok: true };
+}
+
+async function cancelBulkPreparation() {
+  const preparationState = await getPreparationState();
+  if (!preparationState || preparationState.status !== "running") {
+    return { ok: false, error: "実行中の一括準備が見つかりませんでした。" };
+  }
+  const delivered = await sendToFrame(preparationState.tabId, 0, { type: "cwr-cancel-preparation" });
+  if (!delivered) {
+    await patchPreparationState({ status: "error" });
+    await notifyTab(preparationState.sourceTabId, {
+      type: "cwr-prepare-remote-progress",
+      status: "error",
+      title: "一括準備を続けられません",
+      countText: "準備専用タブが応答しません",
+      detailText: "もう一度「全員分を一括準備」を押すと、新しい準備専用タブでやり直します。"
+    });
+    return { ok: false, error: "準備専用タブが応答しませんでした。" };
   }
   return { ok: true };
 }
 
-async function cancelBulkPreparation(sourceTabId) {
+async function focusPreparationTab() {
   const preparationState = await getPreparationState();
-  if (!preparationState || preparationState.sourceTabId !== sourceTabId || preparationState.status !== "running") {
-    return { ok: false };
+  if (!preparationState?.tabId) return { ok: false, error: "準備専用タブが見つかりませんでした。" };
+  const focused = await focusTab(preparationState.tabId, preparationState.windowId);
+  return focused ? { ok: true } : { ok: false, error: "準備専用タブが見つかりませんでした。" };
+}
+
+async function focusSourceTab() {
+  const preparationState = await getPreparationState();
+  if (!preparationState?.sourceTabId) return { ok: false, error: "採点タブが見つかりませんでした。" };
+  const focused = await focusTab(preparationState.sourceTabId, preparationState.sourceWindowId);
+  return focused ? { ok: true } : { ok: false, error: "採点タブが見つかりませんでした。" };
+}
+
+// 内容スクリプトが読み込み直されたとき、自分の役割と最新の進捗を取り戻す。
+async function describePreparationRole(tabId) {
+  const preparationState = await getPreparationState();
+  if (!preparationState) return { role: "none" };
+  if (preparationState.tabId === tabId) {
+    if (preparationState.status === "running" && preparationState.acknowledged) {
+      // 準備中のタブが再読み込みされた＝処理は失われている。
+      await patchPreparationState({ status: "error" });
+      await notifyTab(preparationState.sourceTabId, {
+        type: "cwr-prepare-remote-progress",
+        status: "error",
+        title: "一括準備が中断されました",
+        countText: "準備専用タブが再読み込みされました",
+        detailText: "もう一度「全員分を一括準備」を押すと、変換済みの提出物はやり直さずに続きを準備します。"
+      });
+      return { role: "preparation", interrupted: true };
+    }
+    return { role: "preparation" };
   }
-  await sendToFrame(preparationState.tabId, 0, { type: "cwr-cancel-preparation" });
-  return { ok: true };
+  if (preparationState.sourceTabId === tabId && preparationState.status === "running") {
+    return { role: "source", progress: preparationState.lastProgress || null };
+  }
+  return { role: "none" };
+}
+
+function sleep(milliseconds) {
+  const safe = Math.min(Math.max(Number(milliseconds) || 0, 0), 5000);
+  return new Promise((resolve) => setTimeout(() => resolve({ ok: true }), safe));
 }
 
 async function getPreparedPdf(key) {
@@ -263,12 +394,14 @@ async function fetchOfficeBuffer(descriptor) {
   const expectedName = descriptor.fileName || "Office提出物";
   let driveResponse;
   try {
-    driveResponse = await fetch(buildDownloadUrl(descriptor), {
-      credentials: "include",
-      redirect: "follow",
-      cache: "no-store"
-    });
-  } catch {
+    driveResponse = await fetchWithTimeout(
+      buildDownloadUrl(descriptor),
+      { credentials: "include", redirect: "follow", cache: "no-store" },
+      120000,
+      "Google Driveからの取得に2分以上かかったため中止しました。"
+    );
+  } catch (error) {
+    if (/2分以上/.test(error.message)) throw error;
     throw new Error("Google Driveから提出物をメモリ内で取得できませんでした。Chromeの保存画面は開きません。");
   }
 
@@ -311,14 +444,19 @@ async function convertInMemory(tabId, submissionKey, descriptor, { reportStatus 
     submissionKey
   });
 
-  const response = await fetch(`${HELPER_BASE}/convert-upload`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/octet-stream",
-      "X-File-Name": encodeURIComponent(fileName)
+  const response = await fetchWithTimeout(
+    `${HELPER_BASE}/convert-upload`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-File-Name": encodeURIComponent(fileName)
+      },
+      body: buffer
     },
-    body: buffer
-  });
+    300000,
+    `${fileName} の変換に5分以上かかったため中止しました。パスワード付きや破損したファイルの可能性があります。`
+  );
   const result = await response.json().catch(() => ({}));
   if (!response.ok || !result.ok) {
     throw new Error(result.error || "OfficeからPDFへの変換に失敗しました。");
@@ -348,13 +486,14 @@ async function convertGoogleToPdf(tabId, submissionKey, descriptor, { reportStat
 
   let response;
   try {
-    response = await fetch(buildGooglePdfExportUrl(descriptor), {
-      credentials: "include",
-      redirect: "follow",
-      cache: "no-store",
-      headers: { Accept: "application/pdf" }
-    });
-  } catch {
+    response = await fetchWithTimeout(
+      buildGooglePdfExportUrl(descriptor),
+      { credentials: "include", redirect: "follow", cache: "no-store", headers: { Accept: "application/pdf" } },
+      120000,
+      "GoogleからのPDF取得に2分以上かかったため中止しました。"
+    );
+  } catch (error) {
+    if (/2分以上/.test(error.message)) throw error;
     throw new Error("GoogleからPDFを取得できませんでした。Googleへのログイン状態を確認してください。");
   }
   const contentType = (response.headers.get("content-type") || "").toLowerCase();
@@ -368,14 +507,19 @@ async function convertGoogleToPdf(tabId, submissionKey, descriptor, { reportStat
 
   let storeResponse;
   try {
-    storeResponse = await fetch(`${HELPER_BASE}/store-pdf-upload`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/pdf",
-        "X-File-Name": encodeURIComponent(displayName)
+    storeResponse = await fetchWithTimeout(
+      `${HELPER_BASE}/store-pdf-upload`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/pdf",
+          "X-File-Name": encodeURIComponent(displayName)
+        },
+        body: buffer
       },
-      body: buffer
-    });
+      120000,
+      "表示用PDFの保存に2分以上かかったため中止しました。"
+    );
   } catch {
     throw new Error("表示用PDFを保存できませんでした。補助アプリが起動しているか確認してください。");
   }
@@ -440,14 +584,19 @@ async function startOfficeWindow(tabId, submissionKey, expectedName = "", expect
 
   const powerpoint = /\.pptx?$/i.test(documentData.fileName);
   const endpoint = powerpoint ? "/open-powerpoint-upload" : "/open-word-upload";
-  const response = await fetch(`${HELPER_BASE}${endpoint}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/octet-stream",
-      "X-File-Name": encodeURIComponent(documentData.fileName)
+  const response = await fetchWithTimeout(
+    `${HELPER_BASE}${endpoint}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-File-Name": encodeURIComponent(documentData.fileName)
+      },
+      body: documentData.buffer
     },
-    body: documentData.buffer
-  });
+    180000,
+    "別ウィンドウの準備に3分以上かかったため中止しました。"
+  );
   const result = await response.json().catch(() => ({}));
   if (!response.ok || !result.ok) {
     throw new Error(result.error || "別ウィンドウを開けませんでした。");
@@ -456,7 +605,12 @@ async function startOfficeWindow(tabId, submissionKey, expectedName = "", expect
 }
 
 async function closeOfficeWindow() {
-  const response = await fetch(`${HELPER_BASE}/close-office-window`, { method: "POST" });
+  const response = await fetchWithTimeout(
+    `${HELPER_BASE}/close-office-window`,
+    { method: "POST" },
+    60000,
+    "別ウィンドウを閉じる処理が終わりませんでした。"
+  );
   const result = await response.json().catch(() => ({}));
   if (!response.ok || !result.ok) throw new Error(result.error || "別ウィンドウを閉じられませんでした。");
   return { ok: true };
@@ -470,7 +624,12 @@ async function releasePdf(pdfUrl) {
   if (Object.values(stored[PREPARED_KEY] || {}).some((item) => item.pdfUrl === pdfUrl)) {
     return { ok: true, retained: true };
   }
-  const response = await fetch(pdfUrl.replace("/file/", "/release/"), { method: "POST" });
+  const response = await fetchWithTimeout(
+    pdfUrl.replace("/file/", "/release/"),
+    { method: "POST" },
+    30000,
+    "表示用PDFの削除が終わりませんでした。"
+  );
   const result = await response.json().catch(() => ({}));
   if (!response.ok || !result.ok) throw new Error(result.error || "表示用PDFを削除できませんでした。");
   return { ok: true };
@@ -518,29 +677,31 @@ if (globalThis.__CWR_BACKGROUND_TEST_HOOKS__) {
   });
 }
 
+const messageHandlers = {
+  "cwr-start": (tabId, message) => startConversion(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "", message.expectedGoogleType || ""),
+  "cwr-prepare-one": (tabId, message) => prepareCurrentSubmission(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "", message.expectedGoogleType || ""),
+  "cwr-start-bulk-preparation": (tabId) => startBulkPreparation(tabId),
+  "cwr-prepare-progress": (tabId, message) => relayPreparationProgress(tabId, message.progress || {}),
+  "cwr-cancel-bulk-preparation": () => cancelBulkPreparation(),
+  "cwr-focus-preparation-tab": () => focusPreparationTab(),
+  "cwr-focus-source-tab": () => focusSourceTab(),
+  "cwr-preparation-role": (tabId) => describePreparationRole(tabId),
+  // 背面タブではsetTimeoutが最大1分まで遅れるため、待ち時間をここで計る。
+  "cwr-sleep": (_tabId, message) => sleep(message.ms),
+  "cwr-open-office": (tabId, message) => startOfficeWindow(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || ""),
+  "cwr-close-office": () => closeOfficeWindow(),
+  "cwr-release-pdf": (_tabId, message) => releasePdf(message.pdfUrl)
+};
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!new Set(["cwr-start", "cwr-prepare-one", "cwr-start-bulk-preparation", "cwr-prepare-progress", "cwr-cancel-bulk-preparation", "cwr-open-office", "cwr-close-office", "cwr-release-pdf"]).has(message?.type)) return false;
+  const handler = messageHandlers[message?.type];
+  if (!handler) return false;
 
   (async () => {
     try {
       const tabId = sender.tab?.id;
       if (typeof tabId !== "number") throw new Error("Classroomのタブを特定できませんでした。");
-      const result = message.type === "cwr-start-bulk-preparation"
-        ? await startBulkPreparation(tabId)
-        : message.type === "cwr-prepare-progress"
-          ? await relayPreparationProgress(tabId, message.progress || {})
-          : message.type === "cwr-cancel-bulk-preparation"
-            ? await cancelBulkPreparation(tabId)
-            : message.type === "cwr-prepare-one"
-        ? await prepareCurrentSubmission(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "", message.expectedGoogleType || "")
-        : message.type === "cwr-open-office"
-        ? await startOfficeWindow(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "")
-        : message.type === "cwr-close-office"
-          ? await closeOfficeWindow()
-          : message.type === "cwr-release-pdf"
-            ? await releasePdf(message.pdfUrl)
-            : await startConversion(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "", message.expectedGoogleType || "");
-      sendResponse(result);
+      sendResponse(await handler(tabId, message));
     } catch (error) {
       sendResponse({
         ok: false,
@@ -555,15 +716,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const preparationState = await getPreparationState();
-  if (!preparationState || preparationState.tabId !== tabId) return;
+  if (!preparationState) return;
+  if (preparationState.sourceTabId === tabId) {
+    // 採点タブが閉じられても準備は続ける。進捗の送り先だけ空にする。
+    await patchPreparationState({ sourceTabId: null, sourceWindowId: null });
+    return;
+  }
+  if (preparationState.tabId !== tabId) return;
   if (preparationState.status === "running") {
     await notifyTab(preparationState.sourceTabId, {
       type: "cwr-prepare-remote-progress",
       status: "error",
       title: "一括準備を中断しました",
       countText: "準備専用タブが閉じられました",
-      detailText: "もう一度「全員分を一括準備」を押してください。"
+      detailText: "もう一度「全員分を一括準備」を押すと、変換済みの提出物はやり直さずに続きを準備します。"
     });
+    await focusTab(preparationState.sourceTabId, preparationState.sourceWindowId);
   }
   await setPreparationState(null);
 });

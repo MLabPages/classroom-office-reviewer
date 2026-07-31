@@ -111,4 +111,11 @@ assert.equal(slidesHooks.findSupportedFileInfo().kind, "google-presentation");
 assert.equal(slidesHooks.findSupportedFileInfo().expectedGoogleType, "presentation");
 assert.equal(slidesHooks.findSupportedFileInfo().expectedFileId, googleFileId);
 
-console.log("Content detection handles Word duplicates, native Google documents, and PDF submissions.");
+const textHooks = runDetection({ nodes: [] });
+assert.equal(textHooks.formatDuration(45000), "45秒");
+assert.equal(textHooks.formatDuration(125000), "2分5秒");
+assert.equal(textHooks.preparationCountText(0, 0, 1), "準備中…（1人目を処理中）");
+assert.equal(textHooks.preparationCountText(3, 2, 6), "3件を準備しました・未準備 2件（6人目を処理中）");
+assert.equal(textHooks.preparationCountText(4, 0, 0), "4件を準備しました");
+
+console.log("Content detection handles Word duplicates, native Google documents, PDF submissions, and progress wording.");
