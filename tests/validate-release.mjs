@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.7.3";
+const expectedVersion = "0.7.4";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -74,7 +74,7 @@ assert(content.includes('findFileName("docx?|pptx?|pdf|'));
 assert(viewer.includes(`pdfUrl.startsWith("http://127.0.0.1:${expectedPort}/file/")`));
 assert(viewerHtml.includes("前の提出物"));
 assert(viewer.includes('loadPdf(pdfUrl, fileName, params.get("pages")).catch(showError);'));
-assert(viewer.includes('\n}\nloadPdf(pdfUrl, fileName, params.get("pages"))'));
+assert(/\r?\n}\r?\nloadPdf\(pdfUrl, fileName, params\.get\("pages"\)\)/.test(viewer));
 assert(server.includes(`const port = ${expectedPort};`));
 assert(server.includes("version: appVersion"));
 assert(server.includes("const cacheMaximumPdfs = 600;"));
