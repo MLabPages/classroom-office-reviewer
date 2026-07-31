@@ -48,6 +48,7 @@ function runDetection({ nodes = [], frames = [], href } = {}) {
   const window = {};
   window.top = window;
   const document = {
+    querySelector: () => null,
     querySelectorAll(selector) {
       if (selector === "iframe[src]") return frames;
       if (selector === "a[href], iframe[src]") return frames;
