@@ -424,7 +424,7 @@
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
       if (getSubmissionKey() !== previousKey) return true;
-      await wait(200);
+      await localWait(40);
     }
     return false;
   }
@@ -1383,7 +1383,7 @@
       setStatus("提出者を切り替えられませんでした。Classroomを再読み込みしてください。", "error");
       return;
     }
-    await wait(350);
+    await localWait(50);
     sendViewerControls();
     startConversion(false);
   }
@@ -1473,6 +1473,28 @@
   function renderPdf(pdfUrl, fileName, pageCount) {
     state.pendingOverlay?.remove();
     state.pendingOverlay = null;
+
+    const existingIframe = state.overlay?.querySelector("iframe");
+    if (existingIframe && document.body.contains(state.overlay)) {
+      const previousPdfUrl = state.displayedPdfUrl;
+      state.displayedPdfUrl = pdfUrl;
+      existingIframe.title = `${fileName || "Office提出物"} の高忠実度プレビュー`;
+      existingIframe.contentWindow?.postMessage({
+        type: "cwr-load-pdf",
+        pdfUrl,
+        fileName: fileName || "Office提出物",
+        pageCount: pageCount || null
+      }, "*");
+      const bounds = findPreviewBounds();
+      state.overlay.style.top = `${bounds.top}px`;
+      state.overlay.style.right = `${bounds.right}px`;
+      sendViewerControls();
+      if (previousPdfUrl && previousPdfUrl !== pdfUrl) {
+        chrome.runtime.sendMessage({ type: "cwr-release-pdf", pdfUrl: previousPdfUrl }).catch(() => undefined);
+      }
+      return;
+    }
+
     const previousOverlay = state.overlay;
     const previousPdfUrl = state.displayedPdfUrl;
     const bounds = findPreviewBounds();
