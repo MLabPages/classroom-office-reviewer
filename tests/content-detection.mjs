@@ -21,6 +21,22 @@ class MockElement {
   getBoundingClientRect() {
     return this.rect;
   }
+
+  matches(selector) {
+    if (selector === "a[href]") return Boolean(this.href);
+    const roleMatch = selector.match(/^\[role=['"]?([\w-]+)['"]?\]$/);
+    if (roleMatch) return this.getAttribute("role") === roleMatch[1];
+    return false;
+  }
+
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (node.matches(selector)) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
 }
 
 function runDetection({ nodes = [], frames = [] }) {
@@ -179,6 +195,44 @@ const secondActiveHooks = runDetection({
 });
 assert.deepEqual(
   plain(secondActiveHooks.listSubmissionFiles().map((item) => item.fileName)),
+  [firstFile, secondFile]
+);
+
+// 前の提出者の選択欄がDOMに残っていて、かつ選択欄の表示名が途中で切られていても、
+// 表示中の提出者のメニューだけを拾い、前の提出者のファイルを混ぜない。
+// （これを混ぜると件数が増え、複数ファイルの最後まで見ても「次の学生」へ進めなくなる）
+const staleMenu = new MockElement({ attributes: { role: "menu" } });
+const staleItem1 = new MockElement({
+  text: "Microsoft Word: 25_9999 田中 期末レポート.docx",
+  attributes: { role: "menuitem" }
+});
+staleItem1.parentElement = staleMenu;
+const staleItem2 = new MockElement({
+  text: "Microsoft PowerPoint: 25_9999 田中 発表資料.pptx",
+  attributes: { role: "menuitem" }
+});
+staleItem2.parentElement = staleMenu;
+
+const currentMenu = new MockElement({ attributes: { role: "menu" } });
+// 選択欄では学籍番号の接頭辞が切られて表示される想定。
+const truncatedFirstFile = "西山 期末レポート.docx";
+const currentItem1 = new MockElement({ text: `Microsoft Word: ${truncatedFirstFile}`, attributes: { role: "menuitem" } });
+currentItem1.parentElement = currentMenu;
+const currentItem2 = new MockElement({ text: `Microsoft PowerPoint: ${secondFile}`, attributes: { role: "menuitem" } });
+currentItem2.parentElement = currentMenu;
+
+const staleGroupHooks = runDetection({
+  nodes: [
+    new MockElement({ text: `Microsoft Word: ${firstFile}` }),
+    staleItem1,
+    staleItem2,
+    currentItem1,
+    currentItem2,
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ]
+});
+assert.deepEqual(
+  plain(staleGroupHooks.listSubmissionFiles().map((item) => item.fileName)),
   [firstFile, secondFile]
 );
 

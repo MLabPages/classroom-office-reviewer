@@ -215,7 +215,7 @@
     for (const group of groups.values()) {
       const matched = group.some((node) => {
         const attachment = attachmentInfoOf(node);
-        return attachment && normalizedFileName(attachment.fileName) === displayedName;
+        return attachment && fileNamesLikelyMatch(normalizedFileName(attachment.fileName), displayedName);
       });
       if (matched) return group;
     }
@@ -259,10 +259,7 @@
       const identity = attachment.expectedFileId
         ? `id:${attachment.expectedFileId}`
         : `name:${attachment.fileName.trim().toLowerCase()}`;
-      const duplicate = seen.has(identity) || attachments.some((item) =>
-        (attachment.expectedFileId && item.expectedFileId === attachment.expectedFileId)
-        || (normalizedFileName(item.fileName) === normalizedFileName(attachment.fileName)
-          && (!attachment.expectedFileId || !item.expectedFileId)));
+      const duplicate = seen.has(identity) || attachments.some((item) => sameFile(item, attachment));
       if (duplicate) continue;
       seen.add(identity);
       attachments.push(attachment);
@@ -273,7 +270,9 @@
   function sameFile(left, right) {
     if (!left || !right) return false;
     if (left.expectedFileId && right.expectedFileId) return left.expectedFileId === right.expectedFileId;
-    return normalizedFileName(left.fileName) === normalizedFileName(right.fileName);
+    // 表示位置によって選択欄の名前が途中で切られることがあるため、
+    // 完全一致だけで比べると同じファイルを別物として重複計上してしまう。
+    return fileNamesLikelyMatch(normalizedFileName(left.fileName), normalizedFileName(right.fileName));
   }
 
   // Classroomのファイル選択欄に並ぶ順番を、そのまま拡張の順番として使う。
@@ -295,6 +294,11 @@
     // 選択欄からは番号が取れないことがあるので、表示中の番号で補う。
     if (!matched.expectedFileId && current.expectedFileId) {
       matched.expectedFileId = current.expectedFileId;
+    }
+    // 選択欄の名前は途中で切られていることがあるので、より長く読み取れた
+    // 表示中の名前のほうを採用する。
+    if (current.fileName && current.fileName.length > (matched.fileName || "").length) {
+      matched.fileName = current.fileName;
     }
     return files;
   }
@@ -335,6 +339,15 @@
     return (name || "").replace(/\s+/g, " ").trim().toLowerCase();
   }
 
+  // Classroomの選択欄では、同じファイルの名前が場所によって異なる形に
+  // 途中で切られて表示されることがある。完全一致だけで比べると、表示中の
+  // ファイルを含むメニューを見失い、前の提出者の残骸ごと混ぜてしまう。
+  function fileNamesLikelyMatch(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    return a.length >= 4 && b.length >= 4 && (a.includes(b) || b.includes(a));
+  }
+
   function findSubmissionFileMenuItem(file) {
     const target = normalizedFileName(typeof file === "string" ? file : file?.fileName);
     const targetId = typeof file === "string" ? "" : (file?.expectedFileId || "");
@@ -343,7 +356,7 @@
       const byId = items.find((item) => item.attachment?.expectedFileId === targetId);
       if (byId) return byId.node;
     }
-    return items.find((item) => item.attachment && normalizedFileName(item.attachment.fileName) === target)?.node || null;
+    return items.find((item) => item.attachment && fileNamesLikelyMatch(normalizedFileName(item.attachment.fileName), target))?.node || null;
   }
 
   // 選択欄が閉じていると項目を押しても効かない。開くボタンを押してから
@@ -1551,7 +1564,7 @@
     }
     if (state.activeFile?.name) {
       const byName = files.findIndex((file) =>
-        normalizedFileName(file.fileName) === normalizedFileName(state.activeFile.name));
+        fileNamesLikelyMatch(normalizedFileName(file.fileName), normalizedFileName(state.activeFile.name)));
       if (byName >= 0) return byName;
     }
     return 0;
