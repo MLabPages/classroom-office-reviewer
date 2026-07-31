@@ -135,6 +135,7 @@ async function sendWhenReady(tabId, message) {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const response = await sendToFrame(tabId, 0, message);
     if (response?.ok) return response;
+    if (response?.error) throw new Error(response.error);
     await wait(500);
   }
   throw new Error("準備専用タブを開始できませんでした。");
