@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.5.14";
+const expectedVersion = "0.5.15";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -40,6 +40,7 @@ assert(server.includes(`const port = ${expectedPort};`));
 assert(server.includes("version: appVersion"));
 assert(server.includes("const cacheMaximumPdfs = 600;"));
 assert(server.includes('url.pathname === "/store-pdf-upload"'));
+assert(start.includes("-Encoding UTF8"));
 assert(start.includes(`http://127.0.0.1:${expectedPort}/health`));
 assert(start.includes("$health.version -eq $expectedVersion"));
 assert(start.includes(`http://127.0.0.1:${expectedPort}/shutdown`));
