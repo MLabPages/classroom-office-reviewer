@@ -547,6 +547,8 @@
       getSubmissionKey,
       matchesRequestedFile,
       setActiveFile,
+      saveSetting,
+      loadSettings,
       extensionContextLost,
       sameSubmissionStudent,
       getStudentIdFromUrl,
@@ -829,6 +831,30 @@
     return true;
   }
 
+  // 設定の保存は「できたら嬉しい」程度の処理で、失敗しても操作は続けられる。
+  // 拡張機能を更新した直後の古いタブでは chrome.storage 自体が切り離され、
+  // ここが例外を投げてコンソールに赤いエラーが出る。保存の失敗で操作を
+  // 止めないよう、この関数を通してまとめて受け止める。
+  // 設定の読み出しも、切り離されたタブでは同期的に例外を投げる。
+  // 読めなかった場合は既定値のまま動かし、操作自体は止めない。
+  function loadSettings(keys) {
+    try {
+      const loading = chrome.storage.local.get(keys);
+      return loading && typeof loading.then === "function" ? loading : Promise.reject(new Error("設定を読み取れません。"));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  function saveSetting(values) {
+    try {
+      const saving = chrome.storage.local.set(values);
+      if (saving && typeof saving.catch === "function") saving.catch(() => undefined);
+    } catch (error) {
+      // 切り離されたタブでは保存できない。再読み込みの案内は操作側で出す。
+    }
+  }
+
   // 背面タブのsetTimeoutはChromeに最大1分まで遅らされる。待ち時間は拡張機能の
   // バックグラウンド側でも計り、先に返ってきた方を採用する。これで採点タブへ
   // 戻しても準備が止まらない。バックグラウンドが応答しない場合は手元のタイマー
@@ -939,7 +965,7 @@
     });
     panel.querySelector("#cwr-preparation-compact").addEventListener("click", () => {
       state.preparationCompact = !state.preparationCompact;
-      chrome.storage.local.set({ cwrPreparationCompact: state.preparationCompact });
+      saveSetting({ cwrPreparationCompact: state.preparationCompact });
       renderPreparation();
     });
     document.body.appendChild(panel);
@@ -1626,32 +1652,38 @@
     state.ui = root;
 
     root.querySelector("#cwr-open").addEventListener("click", () => {
+      if (reportContextLostIfNeeded()) return;
       state.mode = "pdf";
-      chrome.storage.local.set({ cwrMode: state.mode });
+      saveSetting({ cwrMode: state.mode });
       safeSendMessage({ type: "cwr-close-office" }).catch(() => undefined);
       startConversion(false);
     });
     root.querySelector("#cwr-open-window").addEventListener("click", () => {
+      if (reportContextLostIfNeeded()) return;
       state.mode = "office";
-      chrome.storage.local.set({ cwrMode: state.mode });
+      saveSetting({ cwrMode: state.mode });
       removeOverlay();
       startOfficeWindow(false);
     });
-    root.querySelector("#cwr-prepare").addEventListener("click", startDedicatedPreparation);
+    root.querySelector("#cwr-prepare").addEventListener("click", () => {
+      if (reportContextLostIfNeeded()) return;
+      startDedicatedPreparation();
+    });
     root.querySelector("#cwr-auto").addEventListener("change", (event) => {
       state.auto = event.target.checked;
-      chrome.storage.local.set({ cwrAuto: state.auto });
+      saveSetting({ cwrAuto: state.auto });
+      if (reportContextLostIfNeeded()) return;
       setStatus(state.auto ? "自動表示オン" : "自動表示オフ", "idle");
     });
     root.querySelector("#cwr-toggle").addEventListener("click", () => setEnabled(!state.enabled));
     updateUiLabels();
-    chrome.storage.local.get(["cwrAuto", "cwrMode", "cwrEnabled"]).then(({ cwrAuto, cwrMode, cwrEnabled }) => {
+    loadSettings(["cwrAuto", "cwrMode", "cwrEnabled"]).then(({ cwrAuto, cwrMode, cwrEnabled }) => {
       state.auto = state.isPreparationTab ? false : Boolean(cwrAuto);
       state.mode = ["word", "office"].includes(cwrMode) ? "office" : "pdf";
       state.enabled = cwrEnabled !== false;
       root.querySelector("#cwr-auto").checked = state.auto;
       applyEnabledUi();
-    });
+    }, () => undefined);
   }
 
   function applyEnabledUi() {
@@ -1664,7 +1696,7 @@
 
   function setEnabled(value, persist = true) {
     state.enabled = Boolean(value);
-    if (persist) chrome.storage.local.set({ cwrEnabled: state.enabled });
+    if (persist) saveSetting({ cwrEnabled: state.enabled });
     if (!state.enabled) {
       endDisplayRequest();
       removeOverlay();
@@ -1825,14 +1857,14 @@
   }
 
   function saveOverlayBounds() {
-    chrome.storage.local.set({ cwrOverlayBounds: state.overlayBounds || null }).catch(() => undefined);
+    saveSetting({ cwrOverlayBounds: state.overlayBounds || null });
   }
 
   function setWideLayout(value) {
     state.wide = Boolean(value);
     // 幅の指定が残っていると「幅いっぱい」が効かないので、横方向だけ手動値を捨てる。
     if (state.overlayBounds) delete state.overlayBounds.right;
-    chrome.storage.local.set({ cwrWide: state.wide }).catch(() => undefined);
+    saveSetting({ cwrWide: state.wide });
     saveOverlayBounds();
     applyOverlayBounds();
     sendViewerControls();
@@ -2241,7 +2273,7 @@
     if (response?.role === "preparation" && !response.interrupted) becomePreparationTab();
     if (response?.role === "source" && response.progress) handleRemotePreparationProgress(response.progress);
   }, () => undefined);
-  chrome.storage.local.get(["cwrPreparationCompact", "cwrWide", "cwrOverlayBounds"]).then((stored) => {
+  loadSettings(["cwrPreparationCompact", "cwrWide", "cwrOverlayBounds"]).then((stored) => {
     state.preparationCompact = Boolean(stored.cwrPreparationCompact);
     state.wide = Boolean(stored.cwrWide);
     state.overlayBounds = stored.cwrOverlayBounds || null;
