@@ -420,6 +420,29 @@ assert.equal(keyHooks.sameSubmissionStudent("u:ODU4NjY4MDY5MDE0|"), true);
 assert.equal(keyHooks.sameSubmissionStudent("u:OTHERSTUDENT9999|レポート.docx"), false);
 
 const textHooks = runDetection({ nodes: [] });
+
+// 学生を切り替えた直後は、Classroomがまだ前の提出物を表示している。
+// 前のファイル番号のまま変換結果が届いたら受け取らない。これを許すと
+// ビューアが一瞬点滅して、同じファイルが再表示されたように見える。
+const staleDeliveryHooks = runDetection({
+  href: "https://classroom.google.com/u/5/g/tg/course/work#u=ODU4NjY4MDY5MDE0&t=f",
+  nodes: [new MockElement({
+    attributes: { "aria-label": "次の生徒を選択: 26_0265 山田さん" },
+    rect: { width: 44, height: 44, top: 100 }
+  })],
+  frames: [new MockElement({
+    src: "https://docs.google.com/file/d/1NEWNEWNEWNEWNEWNEWNEWNEWNEWNEW/grading"
+  })]
+});
+// 表示要求前は判断材料がないので、これまでどおり受け入れる。
+assert.equal(staleDeliveryHooks.matchesRequestedFile({ submissionKey: "u:ODU4NjY4MDY5MDE0|1OLDOLDOLDOLDOLDOLDOLDOLDOLDOLD" }), true);
+staleDeliveryHooks.setActiveFile({ expectedFileId: "1NEWNEWNEWNEWNEWNEWNEWNEWNEWNEW", fileName: "新しい提出.docx" });
+// 今開いているファイルの結果だけを表示する。
+assert.equal(staleDeliveryHooks.matchesRequestedFile({ submissionKey: "u:ODU4NjY4MDY5MDE0|1NEWNEWNEWNEWNEWNEWNEWNEWNEWNEW" }), true);
+assert.equal(staleDeliveryHooks.matchesRequestedFile({ submissionKey: "u:ODU4NjY4MDY5MDE0|1OLDOLDOLDOLDOLDOLDOLDOLDOLDOLD" }), false);
+// ファイル番号を読めない画面では、従来どおり受け入れて表示を止めない。
+assert.equal(staleDeliveryHooks.matchesRequestedFile({ submissionKey: "u:ODU4NjY4MDY5MDE0|" }), true);
+
 assert.equal(textHooks.formatDuration(45000), "45秒");
 assert.equal(textHooks.formatDuration(125000), "2分5秒");
 assert.equal(textHooks.preparationCountText(0, 0, 1), "準備中…（1人目を処理中）");
