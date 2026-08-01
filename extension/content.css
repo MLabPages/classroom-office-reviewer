@@ -21,6 +21,7 @@
 #cwr-open-window,
 #cwr-reconvert,
 #cwr-prepare,
+#cwr-show-preparation,
 #cwr-cache,
 #cwr-toggle {
   border: 0;
@@ -41,6 +42,8 @@
 #cwr-reconvert:focus-visible,
 #cwr-prepare:hover,
 #cwr-prepare:focus-visible,
+#cwr-show-preparation:hover,
+#cwr-show-preparation:focus-visible,
 #cwr-cache:hover,
 #cwr-cache:focus-visible,
 #cwr-toggle:hover,
@@ -479,6 +482,12 @@
   display: none;
 }
 
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-elapsed,
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-bar,
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-actions {
+  display: none;
+}
+
 /* 止まっているときの案内だけは、小さく表示していても隠さない。 */
 #cwr-preparation.cwr-preparation-compact.cwr-preparation-stalled #cwr-preparation-note {
   display: block;
@@ -498,6 +507,13 @@
 #cwr-preparation.cwr-preparation-compact #cwr-preparation-focus {
   padding: 6px 12px;
   font-size: 12px;
+}
+
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-count {
+  overflow: hidden;
+  margin-bottom: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 #cwr-open-window:disabled {
@@ -544,6 +560,7 @@
 
 /* すぐ使う操作は青、必要時だけ使う再変換・管理は控えめな輪郭にする。 */
 #cwr-reconvert,
+#cwr-show-preparation,
 #cwr-cache {
   border: 1px solid #8ab4f8;
   color: #d2e3fc;

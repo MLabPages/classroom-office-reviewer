@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.8.4";
+const expectedVersion = "0.8.5";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -36,7 +36,11 @@ assert(background.includes("const PREPARATION_TAB_KEY"));
 assert(content.includes('id="cwr-prepare"'));
 assert(content.includes('id="cwr-reconvert"'));
 assert(content.includes('id="cwr-cache"'));
+assert(content.includes('id="cwr-show-preparation"'));
 assert(content.includes("function getCacheIdentity"));
+assert(content.includes("function showPreparationPanel"));
+assert(content.includes("preparationPanelHidden"));
+assert(content.includes('openButton.textContent = "PDFで表示"'));
 assert(content.includes('type: "cwr-cache-summary"'));
 assert(content.includes('"cwr-prepare-one"'));
 // 1人が複数ファイルを出した場合、2件目以降も準備する経路が要る。
