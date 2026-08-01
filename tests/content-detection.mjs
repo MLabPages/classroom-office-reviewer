@@ -183,13 +183,14 @@ assert.deepEqual(plain(menuOnlyHooks.listSubmissionFiles().map((item) => item.fi
 // 現行Classroomは、選択用の menuitem と同じ data-selection-id を持つ
 // 別要素にだけDrive URLを置く。ここからファイルIDを結び付けられないと、
 // 左右ボタンで同名の複数提出を選んでも対象を確認できない。
+const currentClassroomSameFile = "26_0250 胡井 期末レポート.docx";
 const currentClassroomMenu = new MockElement({ attributes: { role: "menu" } });
 const currentClassroomFirstItem = new MockElement({
-  text: `Microsoft Word: ${firstFile}`,
+  text: `Microsoft Word: ${currentClassroomSameFile}`,
   attributes: { role: "menuitem", "data-cursor-id": "i:m:first" }
 });
 const currentClassroomSecondItem = new MockElement({
-  text: `Microsoft PowerPoint: ${secondFile}`,
+  text: `Microsoft Word: ${currentClassroomSameFile}`,
   attributes: { role: "menuitem", "data-cursor-id": "i:m:second" }
 });
 const currentClassroomFirstUrl = new MockElement({
@@ -198,25 +199,26 @@ const currentClassroomFirstUrl = new MockElement({
     "data-url": "https://drive.google.com/file/d/1DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD/view"
   }
 });
-const currentClassroomSecondUrl = new MockElement({
-  attributes: {
-    "data-selection-id": "m:second",
-    "data-url": "https://drive.google.com/file/d/1EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE/view"
-  }
+// 2件目は実画面と同じく、選択項目の内側にDriveリンクを持つ。
+const currentClassroomSecondLink = new MockElement({
+  href: "https://drive.google.com/file/d/1EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE/view"
 });
+currentClassroomSecondItem.querySelector = (selector) => selector.includes("a[href]")
+  ? currentClassroomSecondLink
+  : null;
+currentClassroomSecondLink.parentElement = currentClassroomSecondItem;
 for (const item of [
   currentClassroomFirstItem,
   currentClassroomSecondItem,
-  currentClassroomFirstUrl,
-  currentClassroomSecondUrl
+  currentClassroomFirstUrl
 ]) item.parentElement = currentClassroomMenu;
 const currentClassroomMenuHooks = runDetection({
   nodes: [
-    new MockElement({ text: `Microsoft Word: ${firstFile}` }),
+    new MockElement({ text: `Microsoft Word: ${currentClassroomSameFile}` }),
     currentClassroomFirstItem,
     currentClassroomSecondItem,
     currentClassroomFirstUrl,
-    currentClassroomSecondUrl,
+    currentClassroomSecondLink,
     new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
   ],
   frames: [new MockElement({ src: "https://docs.google.com/file/d/1DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD/grading" })]
@@ -224,6 +226,13 @@ const currentClassroomMenuHooks = runDetection({
 assert.deepEqual(
   plain(currentClassroomMenuHooks.findSubmissionAttachments().map((item) => item.expectedFileId)),
   ["1DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD", "1EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"]
+);
+assert.equal(
+  currentClassroomMenuHooks.findSubmissionFileMenuItem({
+    fileName: currentClassroomSameFile,
+    expectedFileId: "1EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"
+  }),
+  currentClassroomSecondItem
 );
 
 // 選択欄が閉じていて項目が隠れていても、2件目を見落とさない。
