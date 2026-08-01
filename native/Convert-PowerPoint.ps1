@@ -30,14 +30,29 @@ try {
     Copy-Item -LiteralPath $source -Destination $workingCopy -Force
     Unblock-File -LiteralPath $workingCopy -ErrorAction SilentlyContinue
 
+    # PowerPointはPDF形式で保存すると、拡張子がない保存先へ自動的に
+    # .pdfを追加する。補助アプリは未完成扱いの .pdf.part を受け取るため、
+    # PowerPointには実際の .pdf を渡し、完了後に期待する名前へ移す。
+    $powerPointTarget = $target
+    if ($target.EndsWith('.pdf.part', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $powerPointTarget = $target.Substring(0, $target.Length - '.part'.Length)
+    }
+
     $powerPoint = New-Object -ComObject PowerPoint.Application
     $powerPoint.AutomationSecurity = 3
     $presentation = $powerPoint.Presentations.Open($workingCopy, $true, $false, $false)
     $pageCount = $presentation.Slides.Count
-    $presentation.SaveAs($target, 32)
+    $presentation.SaveAs($powerPointTarget, 32)
     $presentation.Close()
     [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($presentation)
     $presentation = $null
+
+    if ($powerPointTarget -ne $target) {
+        if (-not (Test-Path -LiteralPath $powerPointTarget -PathType Leaf)) {
+            throw 'PDFファイルを作成できませんでした。'
+        }
+        Move-Item -LiteralPath $powerPointTarget -Destination $target -Force
+    }
 
     if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
         throw 'PDFファイルを作成できませんでした。'
