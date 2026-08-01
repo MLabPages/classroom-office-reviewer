@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.8.2";
+const expectedVersion = "0.8.3";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -80,6 +80,7 @@ assert(!content.includes('addEventListener("unload"'));
 // ここを戻すと、前の提出物のまま同じPDFが再表示される。
 assert(content.includes("async function waitForSubmissionChange(previousKey, timeoutMs = 20000, previousFileId"));
 assert(content.includes("waitForSubmissionChange(before, 8000, beforeFileId)"));
+assert(content.includes("waitForSubmissionChange(before, 20000, beforeFileId)"));
 // 遅れて届いた前のファイルの変換結果で、新しい表示を上書きしない。
 assert(content.includes("function matchesRequestedFile"));
 assert(content.includes("if (!matchesRequestedFile(message))"));
