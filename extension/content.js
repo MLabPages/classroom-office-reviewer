@@ -2235,7 +2235,11 @@
   window.addEventListener("resize", () => {
     if (state.overlay) applyOverlayBounds();
   });
-  window.addEventListener("unload", () => {
+  // タブを閉じるときはWord／PowerPoint側の窓も片付ける。
+  // `unload`はChromeで廃止予定になり、画面に警告が出るうえ、
+  // 将来は呼ばれなくなって後片付けごと動かなくなる。`pagehide`は
+  // 同じ場面で確実に呼ばれる後継の合図なので、こちらを使う。
+  window.addEventListener("pagehide", () => {
     if (state.mode === "office") {
       safeSendMessage({ type: "cwr-close-office" }).catch(() => undefined);
     }

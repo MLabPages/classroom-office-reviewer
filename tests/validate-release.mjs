@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.7.15";
+const expectedVersion = "0.7.16";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -69,6 +69,9 @@ assert.equal((background.match(/await fetch\(/g) || []).length, 1);
 // 改行コードに左右されないよう、行をまたいだ正規表現で確かめる。
 assert(/chrome\.tabs\.create\(\{[^}]*active: true/.test(background));
 assert(content.includes("function startStallWatchdog"));
+// `unload`はChromeで廃止予定。戻すと採点画面に警告が出続ける。
+assert(content.includes('window.addEventListener("pagehide"'));
+assert(!content.includes('addEventListener("unload"'));
 assert(content.includes("function becomePreparationTab"));
 assert(content.includes('findFileName("docx?|pptx?|pdf|'));
 assert(viewer.includes(`pdfUrl.startsWith("http://127.0.0.1:${expectedPort}/file/")`));
