@@ -180,6 +180,52 @@ const menuOnlyHooks = runDetection({
 });
 assert.deepEqual(plain(menuOnlyHooks.listSubmissionFiles().map((item) => item.fileName)), [firstFile, secondFile]);
 
+// 現行Classroomは、選択用の menuitem と同じ data-selection-id を持つ
+// 別要素にだけDrive URLを置く。ここからファイルIDを結び付けられないと、
+// 左右ボタンで同名の複数提出を選んでも対象を確認できない。
+const currentClassroomMenu = new MockElement({ attributes: { role: "menu" } });
+const currentClassroomFirstItem = new MockElement({
+  text: `Microsoft Word: ${firstFile}`,
+  attributes: { role: "menuitem", "data-cursor-id": "i:m:first" }
+});
+const currentClassroomSecondItem = new MockElement({
+  text: `Microsoft PowerPoint: ${secondFile}`,
+  attributes: { role: "menuitem", "data-cursor-id": "i:m:second" }
+});
+const currentClassroomFirstUrl = new MockElement({
+  attributes: {
+    "data-selection-id": "m:first",
+    "data-url": "https://drive.google.com/file/d/1DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD/view"
+  }
+});
+const currentClassroomSecondUrl = new MockElement({
+  attributes: {
+    "data-selection-id": "m:second",
+    "data-url": "https://drive.google.com/file/d/1EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE/view"
+  }
+});
+for (const item of [
+  currentClassroomFirstItem,
+  currentClassroomSecondItem,
+  currentClassroomFirstUrl,
+  currentClassroomSecondUrl
+]) item.parentElement = currentClassroomMenu;
+const currentClassroomMenuHooks = runDetection({
+  nodes: [
+    new MockElement({ text: `Microsoft Word: ${firstFile}` }),
+    currentClassroomFirstItem,
+    currentClassroomSecondItem,
+    currentClassroomFirstUrl,
+    currentClassroomSecondUrl,
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ],
+  frames: [new MockElement({ src: "https://docs.google.com/file/d/1DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD/grading" })]
+});
+assert.deepEqual(
+  plain(currentClassroomMenuHooks.findSubmissionAttachments().map((item) => item.expectedFileId)),
+  ["1DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD", "1EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"]
+);
+
 // 選択欄が閉じていて項目が隠れていても、2件目を見落とさない。
 const hiddenMenuHooks = runDetection({
   nodes: [
@@ -272,6 +318,29 @@ assert.equal(runDetection({ href: realGradingUrl }).getStudentIdFromUrl(), "Nzk3
 assert.equal(
   runDetection({ href: "https://classroom.google.com/u/5/g/tg/course/work" }).getStudentIdFromUrl(),
   ""
+);
+
+// 同名の複数提出でも、表示中フレームのファイルIDが変われば別の提出物として扱う。
+const sameNameFile = "26_0273 清水 期末レポート.docx";
+const sameNameFrames = [new MockElement({
+  src: "https://docs.google.com/file/d/1FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF/grading"
+})];
+const sameNameKeyHooks = runDetection({
+  href: realGradingUrl,
+  nodes: [
+    new MockElement({ text: `Microsoft Word: ${sameNameFile}` }),
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ],
+  frames: sameNameFrames
+});
+assert.equal(
+  sameNameKeyHooks.getSubmissionKey(),
+  "u:Nzk3MDYyNjExODcy|1FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+);
+sameNameFrames[0].src = "https://docs.google.com/file/d/1GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG/grading";
+assert.equal(
+  sameNameKeyHooks.getSubmissionKey(),
+  "u:Nzk3MDYyNjExODcy|1GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"
 );
 
 // Google形式の名前は拡張子が無く、重複表示を境界で切り分けられない。

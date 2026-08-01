@@ -217,6 +217,35 @@
       || "";
   }
 
+  // 現行のClassroomでは、選ぶための項目には data-cursor-id だけがあり、
+  // 実際のDrive URLは同じ data-selection-id を持つ「新しいウィンドウで開く」
+  // 側に置かれている。両方を結び付けないと、同名の複数提出を区別できない。
+  function menuSelectionIdOf(node) {
+    const selectionId = node?.getAttribute?.("data-selection-id") || "";
+    if (selectionId) return selectionId;
+    const cursorId = node?.getAttribute?.("data-cursor-id") || "";
+    return cursorId.match(/^[io]:(.+)$/)?.[1] || "";
+  }
+
+  function submissionFileUrlOf(node) {
+    const directUrl = fileUrlOf(node);
+    if (directUrl) return directUrl;
+    const selectionId = menuSelectionIdOf(node);
+    if (!selectionId) return "";
+    const menu = node?.closest?.("[role='menu']") || null;
+    const candidates = document.querySelectorAll(
+      "[data-selection-id], [data-cursor-id], [data-url], [data-file-url], [data-file-id], a[href]"
+    );
+    for (const candidate of candidates) {
+      if (candidate === node) continue;
+      if (menu && candidate.closest?.("[role='menu']") !== menu) continue;
+      if (menuSelectionIdOf(candidate) !== selectionId) continue;
+      const url = fileUrlOf(candidate);
+      if (url) return url;
+    }
+    return "";
+  }
+
   // Classroomのファイル選択欄は、通常のリンクではなく role=menuitem の
   // span として描画されることがある。2件目以降も同じ欄から拾う。
   // 選択欄が閉じているあいだ項目は隠れているだけでDOMには残るため、
@@ -233,8 +262,9 @@
     if (items.length < 2) return items;
     // 画面には別の提出者のメニューが残っていることがある。表示中のファイルが
     // 含まれるメニューが見つかったら、その1つだけを使う。
+    const displayedId = state.activeFile?.id || findDisplayedFileId();
     const displayedName = normalizedFileName(state.activeFile?.name || findOfficeFileName());
-    if (!displayedName) return items;
+    if (!displayedId && !displayedName) return items;
     const groups = new Map();
     for (const node of items) {
       const menu = node.closest?.("[role='menu']") || null;
@@ -242,6 +272,11 @@
       groups.get(menu).push(node);
     }
     if (groups.size < 2) return items;
+    if (displayedId) {
+      for (const group of groups.values()) {
+        if (group.some((node) => attachmentInfoOf(node)?.expectedFileId === displayedId)) return group;
+      }
+    }
     for (const group of groups.values()) {
       const matched = group.some((node) => {
         const attachment = attachmentInfoOf(node);
@@ -253,7 +288,7 @@
   }
 
   function attachmentInfoOf(node) {
-    const url = fileUrlOf(node);
+    const url = submissionFileUrlOf(node);
     const label = [node.getAttribute("aria-label"), node.getAttribute("title"), node.getAttribute("data-tooltip"), textOf(node)]
       .filter(Boolean)
       .join(" ");
@@ -497,6 +532,7 @@
       normalizedFileName,
       studentDisplayName,
       getStudentLabel,
+      getSubmissionKey,
       extensionContextLost,
       sameSubmissionStudent,
       getStudentIdFromUrl,
@@ -652,9 +688,11 @@
     const studentKey = getStudentKey();
     if (!studentKey) return "";
     const currentFile = fileInfo || (state.activeFile?.name
-      ? { fileName: state.activeFile.name }
+      ? { fileName: state.activeFile.name, expectedFileId: state.activeFile.id }
       : findSupportedFileInfo());
-    return [studentKey, currentFile?.fileName || ""].join("|");
+    // 同じ名前のファイルを複数提出することがある。名前だけを鍵にすると、
+    // Classroom側で別ファイルを選んでも変化なしと誤認して古いPDFを残してしまう。
+    return [studentKey, currentFile?.expectedFileId || currentFile?.id || currentFile?.fileName || ""].join("|");
   }
 
   // 届いたPDFを捨てるかどうかは「提出者が変わったか」だけで決める。
@@ -2120,6 +2158,8 @@
       if (enteredSubmission) updateUiLabels();
       const key = getSubmissionKey();
       if (!key || key === state.currentKey) return;
+      const previousStudentKey = state.currentKey.split("|")[0] || "";
+      const fileChangedWithinStudent = Boolean(previousStudentKey && previousStudentKey === getStudentKey());
       const hadPrevious = Boolean(state.currentKey);
       state.currentKey = key;
       endDisplayRequest();
@@ -2133,7 +2173,10 @@
           ? "次の提出物へ切り替えています。表示は切替まで維持します。"
           : "提出者が切り替わりました。", "idle");
       }
-      if (state.enabled && hadPrevious && state.auto && isSubmissionView() && findSupportedFileInfo()) {
+      // Classroom上で利用者が同じ学生の別ファイルを選んだ場合は、
+      // 自動表示の設定にかかわらず、その明示操作に表示を追従させる。
+      // 学生を前後に移動したときだけは、従来どおり自動表示の設定を尊重する。
+      if (state.enabled && hadPrevious && (state.auto || fileChangedWithinStudent) && isSubmissionView() && findSupportedFileInfo()) {
         setTimeout(() => {
           if (state.mode === "office" && findSupportedFileInfo()?.kind === "office") startOfficeWindow(true);
           else startConversion(true);
