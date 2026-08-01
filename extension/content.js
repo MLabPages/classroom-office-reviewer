@@ -281,8 +281,12 @@
     for (const node of nodes) {
       const url = fileUrlOf(node);
       const isMenuItem = node.getAttribute?.("role") === "menuitem";
-      // 選択欄の項目は閉じていると見えないので、リンクだけ表示中か確かめる。
-      if (!isMenuItem && !visible(node)) continue;
+      // 選択欄の項目は閉じていると見えない。さらに新しいClassroomでは、
+      // 提出ファイルへのDriveリンク自体が画面に出ない作りになったため、
+      // 「見えないリンク」を捨てると添付が1件も見つからず、表示が
+      // 前の提出者のまま固まる。リンクの見た目ではなく、Driveの
+      // ファイルを指しているかどうかで判断する。
+      if (!isMenuItem && !/(?:drive|docs)\.google\.com/i.test(url) && !visible(node)) continue;
       if (!/(?:drive|docs)\.google\.com/i.test(url) && !isMenuItem) continue;
       const attachment = attachmentInfoOf(node);
       if (!attachment) continue;
@@ -492,6 +496,7 @@
       findSubmissionFileMenuItems,
       normalizedFileName,
       studentDisplayName,
+      getStudentLabel,
       getStudentIdFromUrl,
       dedupeDoubledLabel
     });
@@ -590,8 +595,11 @@
     // data-value 属性を持つ項目は生徒リストである可能性が高い。ステータス絞り込みメニュー等の場合はマーカーが含まれるため除外される。
     const checkedItems = document.querySelectorAll("[aria-checked='true'][data-value], [aria-selected='true'][data-value]");
     for (const item of checkedItems) {
+      // 画面に出ていない項目（メニューを閉じている間の控えの要素など）は
+      // 「名」のような断片しか持たず、名前として使うと誤表示になる。
+      if (!visible(item)) continue;
       const text = textOf(item);
-      if (text && text.length < 220 && !markers.some((marker) => text.includes(marker))) {
+      if (text && text.length >= 2 && text.length < 220) {
         return text;
       }
     }
@@ -605,6 +613,14 @@
       const parent = element.closest("button, [role='button'], [role='combobox']") || element.parentElement || element;
       const label = textOf(parent);
       if (label) return label.slice(0, 220);
+    }
+
+    // 最後の手立て：提出ファイル名は「26_0259 森本（Morimoto） - 課題名.docx」の
+    // 形をとることが多い。ここから提出者名だけを取り出す。
+    const fileInfo = findSupportedFileInfo();
+    const separated = (fileInfo?.fileName || "").split(/\s-\s/);
+    if (separated.length >= 2 && separated[0].trim().length >= 2) {
+      return separated[0].trim().slice(0, 220);
     }
     return "";
   }

@@ -5,12 +5,13 @@ import { readFile } from "node:fs/promises";
 const content = await readFile(new URL("../extension/content.js", import.meta.url), "utf8");
 
 class MockElement {
-  constructor({ text = "", attributes = {}, src = "", href = "", rect = { width: 600, height: 60, top: 60 } } = {}) {
+  constructor({ text = "", attributes = {}, src = "", href = "", rect = { width: 600, height: 60, top: 60 }, hidden = false } = {}) {
     this.textContent = text;
     this.attributes = attributes;
     this.src = src;
     this.href = href;
     this.rect = rect;
+    this.hidden = hidden;
     this.parentElement = null;
   }
 
@@ -59,7 +60,9 @@ function runDetection({ nodes = [], frames = [], href } = {}) {
     __CWR_TEST_HOOKS__: hooks,
     Element: MockElement,
     document,
-    getComputedStyle: () => ({ display: "block", visibility: "visible" }),
+    getComputedStyle: (element) => (element?.hidden
+      ? { display: "none", visibility: "hidden" }
+      : { display: "block", visibility: "visible" }),
     globalThis: null,
     location,
     window
@@ -277,6 +280,41 @@ assert.equal(labelHooks.dedupeDoubledLabel("期末レポート期末レポート
 assert.equal(labelHooks.dedupeDoubledLabel("期末レポート"), "期末レポート");
 // 偶然おなじ長さで前後が違う名前を、誤って半分に切らない。
 assert.equal(labelHooks.dedupeDoubledLabel("前期レポート後期レポート"), "前期レポート後期レポート");
+
+// 実際のClassroom画面で確認した構造の回帰確認。
+// 表示中の提出者は aria-checked="true" の項目に入っているが、同じ条件に
+// 一致する「名」だけの見えない要素も同居している。見えない要素を拾うと
+// 一覧が「□□名」になり、提出者名が分からなくなる。
+const hiddenNameFragment = new MockElement({
+  text: "名",
+  attributes: { "aria-checked": "true", "data-value": "858586088821" },
+  hidden: true
+});
+const shownStudentEntry = new MockElement({
+  text: "26_0259 森本（Morimoto）提出済み",
+  attributes: { "aria-checked": "true", "data-value": "858671205828" }
+});
+const studentLabelHooks = runDetection({ nodes: [hiddenNameFragment, shownStudentEntry] });
+assert.equal(studentLabelHooks.getStudentLabel(), "26_0259 森本（Morimoto）提出済み");
+assert.equal(
+  studentLabelHooks.studentDisplayName(studentLabelHooks.getStudentLabel()),
+  "26_0259 森本（Morimoto）"
+);
+
+// 新しいClassroomでは、提出ファイルのDriveリンクが画面に出ない状態で
+// 描画されることがある。見えないという理由だけで捨てると添付が0件になり、
+// 提出者を切り替えてもビューアが前のPDFのまま固まる。
+const hiddenDriveLink = new MockElement({
+  text: "26_0259 森本（Morimoto） - マーケティング＿期末レポート.docx",
+  href: "https://drive.google.com/file/d/1TM9BwPn-wzKdt76NQXLpJW3Hjskz1Sdk/view?usp=drive_web",
+  hidden: true
+});
+const hiddenLinkHooks = runDetection({ nodes: [hiddenDriveLink] });
+assert.equal(hiddenLinkHooks.findSubmissionAttachments().length, 1);
+assert.equal(
+  hiddenLinkHooks.findSubmissionAttachments()[0].expectedFileId,
+  "1TM9BwPn-wzKdt76NQXLpJW3Hjskz1Sdk"
+);
 
 const textHooks = runDetection({ nodes: [] });
 assert.equal(textHooks.formatDuration(45000), "45秒");
