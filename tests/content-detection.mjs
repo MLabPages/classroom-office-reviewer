@@ -40,7 +40,7 @@ class MockElement {
   }
 }
 
-function runDetection({ nodes = [], frames = [], href } = {}) {
+function runDetection({ nodes = [], frames = [], href, runtimeId = "test-extension-id" } = {}) {
   const hooks = {};
   const location = {
     hostname: "classroom.google.com",
@@ -58,6 +58,7 @@ function runDetection({ nodes = [], frames = [], href } = {}) {
   };
   const context = vm.createContext({
     __CWR_TEST_HOOKS__: hooks,
+    chrome: { runtime: runtimeId ? { id: runtimeId } : {} },
     Element: MockElement,
     document,
     getComputedStyle: (element) => (element?.hidden
@@ -315,6 +316,12 @@ assert.equal(
   hiddenLinkHooks.findSubmissionAttachments()[0].expectedFileId,
   "1TM9BwPn-wzKdt76NQXLpJW3Hjskz1Sdk"
 );
+
+// 拡張機能を更新すると、開いたままのタブに残ったスクリプトは本体から
+// 切り離され、chrome.runtime.id が消える。ボタンは画面に残るのに操作が
+// 届かなくなるため、この状態を確実に見分けられる必要がある。
+assert.equal(runDetection({}).extensionContextLost(), false);
+assert.equal(runDetection({ runtimeId: "" }).extensionContextLost(), true);
 
 const textHooks = runDetection({ nodes: [] });
 assert.equal(textHooks.formatDuration(45000), "45秒");
