@@ -191,6 +191,30 @@ assert.equal(attachments[2].expectedFileId, "1CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC")
 const files = multiHooks.listSubmissionFiles();
 assert.deepEqual(plain(files.map((item) => item.fileName)), [firstFile, secondFile, pdfRecordFile]);
 
+// 既存の添付データにGoogleドキュメント／スライドや未知の形式が混ざっても、
+// 判定できた項目を一覧用データとして保持し、1件の未知形式で止まらない。
+const mixedDocumentId = "1DOCGGGGGGGGGGGGGGGGGGGGGGGGGGGG";
+const mixedSlidesId = "1SLIDEGGGGGGGGGGGGGGGGGGGGGGGGG";
+const mixedHooks = runDetection({
+  nodes: [
+    new MockElement({ text: "Google ドキュメント: 研究レポート" }),
+    new MockElement({ text: "研究レポート", href: `https://docs.google.com/document/d/${mixedDocumentId}/edit` }),
+    new MockElement({ text: "発表スライド", href: `https://docs.google.com/presentation/d/${mixedSlidesId}/edit` }),
+    new MockElement({ text: "集計表.xlsx", href: "https://drive.google.com/file/d/1XLSXGGGGGGGGGGGGGGGGGGGGGGGGGG/view" }),
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ],
+  frames: [new MockElement({ src: `https://docs.google.com/document/d/${mixedDocumentId}/grading` })]
+});
+const mixedAttachments = mixedHooks.findSubmissionAttachments();
+assert.deepEqual(plain(mixedAttachments.map((item) => item.kind)), ["google-document", "google-presentation", "unknown"]);
+assert.deepEqual(plain(mixedHooks.listSubmissionFiles().map((item) => item.fileName)), ["研究レポート", "発表スライド", "集計表.xlsx"]);
+assert.equal(mixedAttachments[0].sourceUrl, `https://docs.google.com/document/d/${mixedDocumentId}/edit`);
+assert.equal(mixedAttachments[1].sourceUrl, `https://docs.google.com/presentation/d/${mixedSlidesId}/edit`);
+assert.equal(mixedHooks.fileTypeLabel({ kind: "office", fileName: "report.docx" }), "Word");
+assert.equal(mixedHooks.fileTypeLabel({ kind: "google-presentation", fileName: "slides" }), "Googleスライド");
+assert.equal(mixedHooks.fileTypeLabel({ kind: "unknown", fileName: "集計表.xlsx" }), "XLSX");
+assert.equal(mixedHooks.submissionCatalogKey({ studentKey: "u:student", expectedFileId: mixedDocumentId }), `u:student|${mixedDocumentId}`);
+
 // Classroomがリンクを出さず、role=menuitemだけでファイルを並べる場合も拾う。
 const menuOnlyHooks = runDetection({
   nodes: [

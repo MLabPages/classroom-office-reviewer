@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.8.9";
+const expectedVersion = "0.9.0";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -116,6 +116,17 @@ assert(background.includes("async function storeExistingPdf"));
 assert(background.includes("if (isPdfDescriptor(descriptor)) return storeExistingPdf"));
 assert(viewer.includes(`pdfUrl.startsWith("http://127.0.0.1:${expectedPort}/file/")`));
 assert(viewerHtml.includes("前の提出物"));
+assert(viewerHtml.includes('id="submission-search"'));
+assert(viewerHtml.includes('id="submission-panel"'));
+assert(viewer.includes("filterSubmissionEntries"));
+assert(manifest.web_accessible_resources[0].resources.includes("submission-list.js"));
+assert(viewer.includes('type: "cwr-select-submission"'));
+assert(content.includes("submissionCatalog"));
+assert(content.includes("SUBMISSION_CATALOG_STORAGE_KEY"));
+assert(content.includes("loadSubmissionCatalog"));
+assert(content.includes("cachedPdfUrl"));
+assert(content.includes('event.data?.type === "cwr-select-submission"'));
+assert(content.includes("function openExternalSubmission"));
 assert(viewer.includes('loadPdf(pdfUrl, fileName, params.get("pages")).catch(showError);'));
 assert(/\r?\n}\r?\nloadPdf\(pdfUrl, fileName, params\.get\("pages"\)\)/.test(viewer));
 assert(server.includes(`const port = ${expectedPort};`));

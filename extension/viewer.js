@@ -1,4 +1,5 @@
 import * as pdfjsLib from "./vendor/pdf.mjs";
+import { filterSubmissionEntries, normalizeSubmissionSearch } from "./submission-list.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("vendor/pdf.worker.mjs");
 
@@ -21,6 +22,12 @@ const moreMenu = document.getElementById("more-menu");
 const wideButton = document.getElementById("wide");
 const filesButton = document.getElementById("files");
 const filesMenu = document.getElementById("files-menu");
+const submissionsToggle = document.getElementById("submissions-toggle");
+const submissionPanel = document.getElementById("submission-panel");
+const submissionPanelClose = document.getElementById("submission-panel-close");
+const submissionSearch = document.getElementById("submission-search");
+const submissionCount = document.getElementById("submission-count");
+const submissionList = document.getElementById("submission-list");
 let pdfDocument = null;
 let zoom = 1;
 let renderGeneration = 0;
@@ -28,6 +35,11 @@ let resizeTimer = null;
 let progressTimer = null;
 let progressStartedAt = 0;
 let progressText = "";
+let submissionEntries = [];
+let activeSubmissionKey = "";
+let submissionFilter = "";
+let submissionListReceived = false;
+let submissionPanelOpen = true;
 
 nameElement.textContent = fileName;
 
@@ -61,6 +73,65 @@ function closeMoreMenu() {
 function closeFilesMenu() {
   filesMenu.hidden = true;
   filesButton.setAttribute("aria-expanded", "false");
+}
+
+function setSubmissionPanelOpen(open) {
+  submissionPanelOpen = Boolean(open);
+  submissionPanel.hidden = !submissionPanelOpen;
+  submissionsToggle.dataset.open = String(submissionPanelOpen);
+  submissionsToggle.setAttribute("aria-expanded", String(submissionPanelOpen));
+  submissionsToggle.title = submissionPanelOpen ? "提出物一覧を閉じる" : "提出物一覧を表示";
+  submissionsToggle.setAttribute("aria-label", submissionsToggle.title);
+}
+
+function renderSubmissionList(entries = submissionEntries, selectedKey = activeSubmissionKey) {
+  const list = Array.isArray(entries) ? entries : [];
+  const filtered = filterSubmissionEntries(list, submissionFilter);
+  const query = normalizeSubmissionSearch(submissionFilter);
+  submissionCount.textContent = list.length
+    ? (query ? `${filtered.length}/${list.length}件` : `${list.length}件`)
+    : "";
+  if (!submissionListReceived) {
+    const message = document.createElement("div");
+    message.id = "submission-list-empty";
+    message.textContent = "取得済みの提出物を読み込んでいます…";
+    submissionList.replaceChildren(message);
+    return;
+  }
+  if (!filtered.length) {
+    const message = document.createElement("div");
+    message.id = "submission-list-empty";
+    message.textContent = list.length ? "検索条件に一致する提出物がありません。" : "取得済みの提出物がありません。";
+    submissionList.replaceChildren(message);
+    return;
+  }
+  submissionList.replaceChildren(...filtered.map((entry) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "submission-item";
+    item.setAttribute("role", "option");
+    item.dataset.active = String(entry.catalogKey === selectedKey);
+    item.dataset.status = entry.status || "available";
+    item.setAttribute("aria-selected", String(entry.catalogKey === selectedKey));
+    item.title = `${entry.studentName || "提出者不明"}：${entry.fileName || "提出物"}`;
+
+    const student = document.createElement("span");
+    student.className = "submission-item-student";
+    student.textContent = entry.studentName || "提出者不明";
+    const file = document.createElement("span");
+    file.className = "submission-item-file";
+    file.textContent = entry.fileName || "提出物";
+    const type = document.createElement("span");
+    type.className = "submission-item-type";
+    type.textContent = entry.status === "unavailable" || entry.status === "failed"
+      ? `${entry.fileType || "不明"}・準備できていない可能性があります`
+      : (entry.fileType || "形式不明");
+    item.append(student, file, type);
+    item.addEventListener("click", () => {
+      send({ type: "cwr-select-submission", catalogKey: entry.catalogKey });
+    });
+    return item;
+  }));
 }
 
 // 1人が複数ファイルを提出している場合だけ、切り替えボタンを出す。
@@ -109,6 +180,12 @@ filesButton.addEventListener("click", () => {
   filesMenu.hidden = !open;
   filesButton.setAttribute("aria-expanded", String(open));
 });
+submissionsToggle.addEventListener("click", () => setSubmissionPanelOpen(!submissionPanelOpen));
+submissionPanelClose.addEventListener("click", () => setSubmissionPanelOpen(false));
+submissionSearch.addEventListener("input", () => {
+  submissionFilter = submissionSearch.value;
+  renderSubmissionList();
+});
 document.addEventListener("click", (event) => {
   if (!moreMenu.hidden && !event.target.closest("#more-wrap")) closeMoreMenu();
   if (!filesMenu.hidden && !event.target.closest("#files-wrap")) closeFilesMenu();
@@ -128,6 +205,10 @@ window.addEventListener("message", (event) => {
     nextButton.disabled = event.data.next === false;
     wideButton.textContent = event.data.wide ? "Classroomの右側を表示" : "幅いっぱいに広げる";
     renderFileSwitcher(event.data.files, event.data.activeIndex ?? -1);
+    submissionEntries = Array.isArray(event.data.submissions) ? event.data.submissions : [];
+    activeSubmissionKey = event.data.activeSubmissionKey || "";
+    submissionListReceived = true;
+    renderSubmissionList();
     return;
   }
   if (event.data?.type !== "cwr-viewer-status") return;
@@ -293,6 +374,8 @@ window.addEventListener("resize", () => {
   resizeTimer = setTimeout(() => renderPages().catch(showError), 250);
 });
 updateHeaderDensity();
+setSubmissionPanelOpen(true);
+renderSubmissionList();
 
 async function loadPdf(pdfUrl, targetFileName, targetPageCount) {
   try {
