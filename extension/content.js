@@ -1,5 +1,8 @@
 (() => {
   const isClassroomTop = location.hostname === "classroom.google.com" && window === window.top;
+  const SUBMISSION_CATALOG_STORAGE_KEY = "classroomWordReviewerSubmissionCatalogV1";
+  const SUBMISSION_CATALOG_MAXIMUM = 2000;
+  const SUBMISSION_CATALOG_CONTEXT_MAXIMUM = 24;
   // 準備専用タブが背面のとき、Chromeはタイマーを最大1分まで遅らせる。
   // 進捗が途絶えたと判断するまでの余裕をここで一括管理する。
   const PROGRESS_TICK_MS = 2000;
@@ -50,6 +53,12 @@
     wide: false,
     overlayBounds: null,
     activeFile: null,
+    submissionCatalog: [],
+    submissionCatalogContext: "",
+    submissionCatalogStorage: {},
+    submissionCatalogLoaded: false,
+    submissionCatalogSaveTimer: null,
+    catalogActiveKey: "",
     fileSwitching: false,
     ui: null,
     overlay: null,
@@ -226,6 +235,8 @@
         // 出ていたら（近大ゼミ2026…近大ゼミ2026… のように）前半だけを使う。
         const googleLabel = source?.match(/Google\s*(?:ドキュメント|Docs?|スライド|Slides?)\s*[:：]\s*(.{1,160})$/i);
         if (googleLabel) return dedupeDoubledLabel(googleLabel[1].trim());
+        const attachmentName = matchFileName(source, "docx?|pptx?|pdf|xlsx?|csv|txt|rtf|odt|ods|odp|jpe?g|png|gif|webp|zip");
+        if (attachmentName) return attachmentName;
       }
       current = current.parentElement;
     }
@@ -334,14 +345,19 @@
     const googleType = googleTypeOfUrl(url) || googleTypeOfLabel(label);
     const fileName = attachmentNameOf(node, googleType);
     const fileId = parseDriveId(url);
-    if (!fileName || (!googleType && !/\.(?:docx?|pptx?|pdf)$/i.test(fileName))) return null;
+    const sourceUrl = /^https?:\/\//i.test(url) ? url : "";
+    if (!fileName || (!googleType && !/\.(?:docx?|pptx?|pdf|xlsx?|csv|txt|rtf|odt|ods|odp|jpe?g|png|gif|webp|zip)$/i.test(fileName))) return null;
     const isPdf = !googleType && /\.pdf$/i.test(fileName);
+    const isOffice = !googleType && /\.(?:docx?|pptx?)$/i.test(fileName);
     return {
-      kind: googleType ? (googleType === "document" ? "google-document" : "google-presentation") : (isPdf ? "pdf" : "office"),
+      kind: googleType
+        ? (googleType === "document" ? "google-document" : "google-presentation")
+        : (isPdf ? "pdf" : (isOffice ? "office" : "unknown")),
       fileName,
       expectedName: googleType ? "" : fileName,
       expectedFileId: fileId,
-      expectedGoogleType: googleType
+      expectedGoogleType: googleType,
+      sourceUrl
     };
   }
 
@@ -587,6 +603,7 @@
       formatDuration,
       preparationCountText,
       findSubmissionAttachments,
+      attachmentInfoOf,
       listSubmissionFiles,
       findSubmissionFileMenuItems,
       findSubmissionFileMenuItem,
@@ -602,7 +619,9 @@
       extensionContextLost,
       sameSubmissionStudent,
       getStudentIdFromUrl,
-      dedupeDoubledLabel
+      dedupeDoubledLabel,
+      fileTypeLabel,
+      submissionCatalogKey
     });
     return;
   }
@@ -693,7 +712,9 @@
       }
       endDisplayRequest();
       state.convertedKey = getSubmissionKey();
+      state.catalogActiveKey = "";
       renderPdf(message.pdfUrl, message.fileName, message.pageCount);
+      rememberDisplayedPdf(message.pdfUrl, message.fileName, message.pageCount);
       setStatus("提出物を表示中", "ready");
       // 採点中の画面を動かさず、別タブで次の3人分だけ低優先度に準備する。
       safeSendMessage({ type: "cwr-prefetch-next" }).catch(() => undefined);
@@ -783,6 +804,182 @@
     // 同じ名前のファイルを複数提出することがある。名前だけを鍵にすると、
     // Classroom側で別ファイルを選んでも変化なしと誤認して古いPDFを残してしまう。
     return [studentKey, currentFile?.expectedFileId || currentFile?.id || currentFile?.fileName || ""].join("|");
+  }
+
+  function fileTypeLabel(file = {}) {
+    if (file.kind === "pdf") return "PDF";
+    if (file.kind === "office") return /\.pptx?$/i.test(file.fileName || "") ? "PowerPoint" : "Word";
+    if (file.kind === "google-document") return "Googleドキュメント";
+    if (file.kind === "google-presentation") return "Googleスライド";
+    const extension = (file.fileName || "").match(/\.([a-z0-9]+)$/i)?.[1];
+    return extension ? extension.toUpperCase() : "不明";
+  }
+
+  function submissionCatalogContext() {
+    const path = location.pathname || (location.href || "").split(/[?#]/)[0];
+    return path.replace(/\/u\/\d+(?=\/)/i, "/u/*");
+  }
+
+  function ensureSubmissionCatalogContext() {
+    const context = submissionCatalogContext();
+    if (state.submissionCatalogContext === context) return;
+    state.submissionCatalogContext = context;
+    state.submissionCatalog = [];
+  }
+
+  function localPdfUrl(value) {
+    return typeof value === "string" && /^http:\/\/127\.0\.0\.1:18765\/file\/[a-f0-9]{24}\.pdf$/i.test(value)
+      ? value
+      : "";
+  }
+
+  function submissionCatalogKey(file = {}) {
+    const student = String(file.studentKey || file.studentId || (file.studentSeq ? `seq:${file.studentSeq}` : file.studentName || "unknown-student"));
+    const identity = file.expectedFileId || file.fileId || normalizedFileName(file.fileName || "") || "unknown-file";
+    return `${student}|${identity}`;
+  }
+
+  function sourceUrlForFile(file) {
+    if (file?.sourceUrl && /^https?:\/\//i.test(file.sourceUrl)) return file.sourceUrl;
+    const matched = findSubmissionAttachments().find((item) => sameFile(item, file));
+    if (matched?.sourceUrl) return matched.sourceUrl;
+    const frames = [...document.querySelectorAll("iframe[src]")];
+    return frames
+      .map((frame) => frame.src || "")
+      .find((value) => {
+        if (!value || !/(?:drive|docs)\.google\.com/i.test(value)) return false;
+        if (file?.expectedFileId && parseDriveId(value) === file.expectedFileId) return true;
+        return file?.expectedGoogleType === googleTypeOfUrl(value);
+      }) || "";
+  }
+
+  function scheduleSubmissionCatalogSave() {
+    if (!state.submissionCatalogLoaded || !state.submissionCatalogContext) return;
+    clearTimeout(state.submissionCatalogSaveTimer);
+    state.submissionCatalogSaveTimer = setTimeout(() => {
+      if (!contextAvailable()) return;
+      const stored = { ...(state.submissionCatalogStorage || {}) };
+      stored[state.submissionCatalogContext] = state.submissionCatalog
+        .slice(-SUBMISSION_CATALOG_MAXIMUM)
+        .map((entry) => ({
+          studentKey: entry.studentKey || "",
+          studentName: entry.studentName || "",
+          studentSeq: entry.studentSeq || 0,
+          fileSeq: entry.fileSeq || 0,
+          fileCount: entry.fileCount || 0,
+          fileName: entry.fileName || "提出物",
+          fileType: fileTypeLabel(entry),
+          kind: entry.kind || "unknown",
+          expectedName: entry.expectedName || entry.fileName || "",
+          expectedFileId: entry.expectedFileId || "",
+          expectedGoogleType: entry.expectedGoogleType || "",
+          sourceUrl: entry.sourceUrl || "",
+          cachedPdfUrl: localPdfUrl(entry.cachedPdfUrl || entry.pdfUrl),
+          pageCount: entry.pageCount || null,
+          status: entry.status || "available"
+        }));
+      const contexts = Object.entries(stored).slice(-SUBMISSION_CATALOG_CONTEXT_MAXIMUM);
+      state.submissionCatalogStorage = Object.fromEntries(contexts);
+      saveSetting({ [SUBMISSION_CATALOG_STORAGE_KEY]: state.submissionCatalogStorage });
+      state.submissionCatalogSaveTimer = null;
+    }, 250);
+  }
+
+  function mergeSubmissionCatalog(entries = [], { persist = true } = {}) {
+    ensureSubmissionCatalogContext();
+    for (const raw of entries) {
+      if (!raw || (!raw.fileName && !raw.sourceUrl)) continue;
+      const entry = {
+        ...raw,
+        studentName: raw.studentName || raw.studentLabel || "",
+        fileName: raw.fileName || "提出物",
+        kind: raw.kind || "unknown",
+        status: raw.status || (raw.kind === "unknown" ? "unsupported" : "available"),
+        sourceUrl: raw.sourceUrl || raw.fileUrl || "",
+        cachedPdfUrl: localPdfUrl(raw.cachedPdfUrl || raw.pdfUrl),
+        pageCount: raw.pageCount || null
+      };
+      entry.fileType = fileTypeLabel(entry);
+      const key = submissionCatalogKey(entry);
+      const index = state.submissionCatalog.findIndex((item) => submissionCatalogKey(item) === key);
+      if (index < 0) {
+        state.submissionCatalog.push(entry);
+        continue;
+      }
+      const previous = state.submissionCatalog[index];
+      const merged = { ...previous, ...entry };
+      for (const field of ["studentName", "sourceUrl", "expectedFileId", "expectedName", "expectedGoogleType", "kind", "fileType", "cachedPdfUrl", "pageCount"]) {
+        if (!entry[field] && previous[field]) merged[field] = previous[field];
+      }
+      merged.fileType = fileTypeLabel(merged);
+      state.submissionCatalog[index] = merged;
+    }
+    if (persist) scheduleSubmissionCatalogSave();
+  }
+
+  async function loadSubmissionCatalog() {
+    if (!contextAvailable()) return;
+    ensureSubmissionCatalogContext();
+    try {
+      const stored = await loadSettings([SUBMISSION_CATALOG_STORAGE_KEY]);
+      state.submissionCatalogStorage = stored[SUBMISSION_CATALOG_STORAGE_KEY]
+        && typeof stored[SUBMISSION_CATALOG_STORAGE_KEY] === "object"
+        ? stored[SUBMISSION_CATALOG_STORAGE_KEY]
+        : {};
+      const savedEntries = state.submissionCatalogStorage[state.submissionCatalogContext];
+      if (Array.isArray(savedEntries)) mergeSubmissionCatalog(savedEntries, { persist: false });
+    } catch (error) {
+      state.submissionCatalogStorage = {};
+    } finally {
+      state.submissionCatalogLoaded = true;
+      syncSubmissionCatalogFromLedger();
+      if (isSubmissionView()) syncCurrentSubmissionCatalog(listSubmissionFiles());
+      sendViewerControls();
+    }
+  }
+
+  function syncSubmissionCatalogFromLedger() {
+    if (!Array.isArray(progress.ledger) || progress.ledger.length === 0) return;
+    mergeSubmissionCatalog(progress.ledger.map((entry) => ({
+      ...entry,
+      studentName: entry.studentName || entry.studentLabel || "",
+      sourceUrl: entry.sourceUrl || entry.fileUrl || "",
+      expectedFileId: entry.expectedFileId || entry.fileId || "",
+      expectedGoogleType: entry.expectedGoogleType || "",
+      cachedPdfUrl: entry.cachedPdfUrl || entry.pdfUrl || "",
+      status: entry.status === "ok" ? "available" : (entry.status || "unavailable")
+    })));
+  }
+
+  function syncCurrentSubmissionCatalog(files = []) {
+    if (!isSubmissionView() || !files.length) return;
+    const studentKey = getStudentKey();
+    if (!studentKey) return;
+    const studentName = studentDisplayName(getStudentLabel());
+    mergeSubmissionCatalog(files.map((file, index) => ({
+      ...file,
+      studentKey,
+      studentName,
+      fileSeq: index + 1,
+      fileCount: files.length,
+      sourceUrl: sourceUrlForFile(file)
+    })));
+  }
+
+  function rememberDisplayedPdf(pdfUrl, fileName, pageCount) {
+    const cachedPdfUrl = localPdfUrl(pdfUrl);
+    if (!cachedPdfUrl || !getStudentKey()) return;
+    const current = state.activeFile || currentDisplayedFileInfo() || {};
+    mergeSubmissionCatalog([{
+      ...current,
+      studentKey: getStudentKey(),
+      studentName: studentDisplayName(getStudentLabel()),
+      fileName: fileName || current.fileName || "提出物",
+      expectedFileId: current.expectedFileId || current.id || findDisplayedFileId(),
+      cachedPdfUrl,
+      pageCount: pageCount || null,
+      status: "available"
+    }]);
   }
 
   // 届いたPDFを捨てるかどうかは「提出者が変わったか」だけで決める。
@@ -1263,6 +1460,7 @@
 
   function setPreparationProgress(patch = {}) {
     Object.assign(progress, patch);
+    syncSubmissionCatalogFromLedger();
     if (!progress.startedAt) progress.startedAt = Date.now();
     if (!state.preparationPanelHidden) {
       ensurePreparationPanel();
@@ -1634,9 +1832,16 @@
                 seq: progress.ledger.length + 1,
                 studentSeq: sequence,
                 studentLabel: studentLabelForLedger,
+                studentName: studentLabelForLedger,
+                studentKey: getStudentKey(),
                 fileSeq: fileIndex + 1,
                 fileCount: files.length,
                 fileName: file.fileName,
+                kind: file.kind || "unknown",
+                expectedName: file.expectedName || file.fileName || "",
+                expectedFileId: file.expectedFileId || "",
+                expectedGoogleType: file.expectedGoogleType || "",
+                sourceUrl: file.sourceUrl || "",
                 status: "failed",
                 cached: false,
                 pdfUrl: "",
@@ -1696,19 +1901,19 @@
                   : `${fileName}${ofFiles} のPDF準備が完了しました。`,
                 fileName
               });
-              addLedgerEntry(fileIndex, { fileName }, {
+              addLedgerEntry(fileIndex, preparedFile, {
                 status: "ok",
                 cached: response.cached === true,
                 pdfUrl: response.pdfUrl || ""
               });
             } else {
               if (/補助アプリ|Start-Reviewer|古い版|起動していません/.test(response?.error || "")) {
-                addLedgerEntry(fileIndex, { fileName });
+                addLedgerEntry(fileIndex, preparedFile);
                 throw new Error(response.error);
               }
               failedCount += 1;
               failedNames.push(fileName);
-              addLedgerEntry(fileIndex, { fileName });
+              addLedgerEntry(fileIndex, preparedFile);
             }
           }
           // 画面を動かした場合だけ、元の表示へ戻す。
@@ -2056,6 +2261,7 @@
 
     beginDisplayRequest();
     setActiveFile(fileInfo);
+    state.catalogActiveKey = "";
     const key = getSubmissionKey(fileInfo);
     logCurrentFileContext(isAutomatic ? "自動表示を開始" : "PDF表示を開始", fileInfo);
     setStatus("提出物を取得中…", "working");
@@ -2073,9 +2279,11 @@
       if (!response.completed) {
         setStatus(`${response.fileName} を一時取得中…`, "working");
       }
+      return true;
     } catch (error) {
       endDisplayRequest();
       setStatus(error.message || "処理を開始できませんでした。", "error");
+      return false;
     }
   }
 
@@ -2272,7 +2480,13 @@
   }
 
   function setActiveFile(file) {
-    state.activeFile = file ? { id: file.expectedFileId || "", name: file.fileName || "" } : null;
+    state.activeFile = file ? {
+      id: file.expectedFileId || "",
+      name: file.fileName || "",
+      kind: file.kind || "",
+      sourceUrl: file.sourceUrl || "",
+      expectedGoogleType: file.expectedGoogleType || ""
+    } : null;
   }
 
   function logCurrentFileContext(reason, fileInfo = null) {
@@ -2320,12 +2534,19 @@
   }
 
   function sendViewerControls() {
-    const frame = state.overlay?.querySelector("iframe");
-    if (!frame) return;
     const previousButton = findSubmissionButton("previous");
     const nextButton = findSubmissionButton("next");
-    const files = isSubmissionView() ? listSubmissionFiles() : [];
+    const submissionView = isSubmissionView();
+    const files = submissionView ? listSubmissionFiles() : [];
+    if (submissionView) syncCurrentSubmissionCatalog(files);
+    syncSubmissionCatalogFromLedger();
+    const frame = state.overlay?.querySelector("iframe");
+    if (!frame) return;
     const activeIndex = activeFileIndex(files);
+    const activeFile = files[activeIndex] || currentDisplayedFileInfo();
+    const activeSubmissionKey = state.catalogActiveKey || (activeFile
+      ? submissionCatalogKey({ ...activeFile, studentKey: getStudentKey() })
+      : "");
     const hasEarlierFile = activeIndex > 0;
     const hasLaterFile = activeIndex >= 0 && activeIndex < files.length - 1;
     // Classroomのボタンが一瞬見つからないだけで矢印を無効化すると、押しても
@@ -2339,7 +2560,15 @@
       next: hasLaterFile || !atLast,
       wide: state.wide,
       files: files.map((file) => ({ name: file.fileName })),
-      activeIndex
+      activeIndex,
+      submissions: state.submissionCatalog.map((entry) => ({
+        catalogKey: submissionCatalogKey(entry),
+        studentName: entry.studentName || "",
+        fileName: entry.fileName || "提出物",
+        fileType: fileTypeLabel(entry),
+        status: entry.status || "available"
+      })),
+      activeSubmissionKey
     }, "*");
   }
 
@@ -2362,17 +2591,162 @@
       const selected = await selectSubmissionFile(file);
       if (!selected) throw new Error("Classroomのファイル選択欄から対象ファイルを確認できませんでした。");
       setActiveFile(selected);
+      state.catalogActiveKey = "";
       state.currentKey = getSubmissionKey(selected);
       sendViewerControls();
-      await startConversion(false, selected);
+      const started = await startConversion(false, selected);
+      if (started === false && file.kind?.startsWith("google-")) openExternalSubmission(file);
+      return started !== false;
     } catch (error) {
       endDisplayRequest();
       setStatus(error.message || "このファイルを表示できませんでした。", "error");
+      return false;
     } finally {
       // Classroom側のDOM更新が落ち着くまで、学生切替とみなさない。
       setTimeout(() => {
         state.fileSwitching = false;
       }, 600);
+    }
+  }
+
+  function viewerCanDisplaySubmission(file) {
+    return ["pdf", "office", "google-document", "google-presentation"].includes(file?.kind);
+  }
+
+  function externalSubmissionUrl(file) {
+    const url = file?.sourceUrl || file?.fileUrl || "";
+    return /^https:\/\/(?:drive|docs)\.google\.com\//i.test(url) ? url : "";
+  }
+
+  function openExternalSubmission(file) {
+    const url = externalSubmissionUrl(file);
+    if (!url) return false;
+    const opened = window.open(url, "_blank", "noopener,noreferrer");
+    if (!opened) {
+      setStatus("Google側の画面を新しいタブで開けませんでした。ポップアップを許可してください。", "error");
+      return false;
+    }
+    try { opened.opener = null; } catch (error) { /* noop */ }
+    setStatus(`${file.fileName || "提出物"} をGoogle側で開きました。`, "ready");
+    return true;
+  }
+
+  function catalogStudentKeys() {
+    const groups = new Map();
+    for (const entry of state.submissionCatalog) {
+      const key = entry.studentKey || (entry.studentSeq ? `seq:${entry.studentSeq}` : "");
+      if (!key) continue;
+      const sequence = Number.isFinite(Number(entry.studentSeq)) ? Number(entry.studentSeq) : Number.POSITIVE_INFINITY;
+      const previous = groups.get(key);
+      if (!previous || sequence < previous.sequence) groups.set(key, { key, sequence, order: previous?.order ?? groups.size });
+    }
+    return [...groups.values()]
+      .sort((left, right) => left.sequence - right.sequence || left.order - right.order)
+      .map((group) => group.key);
+  }
+
+  async function moveToCatalogStudent(target) {
+    const targetKey = target?.studentKey || "";
+    if (!targetKey || targetKey === getStudentKey()) return targetKey === getStudentKey();
+    const students = catalogStudentKeys();
+    const currentKey = getStudentKey();
+    const targetIndex = students.indexOf(targetKey);
+    const currentIndex = students.indexOf(currentKey);
+    const direction = targetIndex >= 0 && currentIndex >= 0 && targetIndex < currentIndex ? "previous" : "next";
+
+    for (let attempt = 0; attempt < 1000; attempt += 1) {
+      if (getStudentKey() === targetKey) return true;
+      const button = findSubmissionButton(direction);
+      if (!button || submissionButtonDisabled(button)) return false;
+      const before = getStudentKey();
+      const beforeFileId = findDisplayedFileId();
+      button.click();
+      if (!await waitForSubmissionChange(before, 8000, beforeFileId)) return false;
+      await waitForSubmissionFile(5000);
+      state.activeFile = null;
+      state.catalogActiveKey = "";
+      state.convertedKey = "";
+      state.currentKey = getSubmissionKey();
+      sendViewerControls();
+    }
+    return false;
+  }
+
+  function catalogFileMatches(left, right) {
+    if (!left || !right) return false;
+    if (left.expectedFileId && right.expectedFileId) return left.expectedFileId === right.expectedFileId;
+    return fileNamesLikelyMatch(normalizedFileName(left.fileName), normalizedFileName(right.fileName));
+  }
+
+  async function showCatalogSubmission(entry) {
+    if (!entry) return;
+    const files = listSubmissionFiles();
+    const index = files.findIndex((file) => catalogFileMatches(file, entry));
+    if (index >= 0) {
+      const opened = await showSubmissionFile(index);
+      if (!opened && localPdfUrl(entry.cachedPdfUrl)) {
+        setActiveFile(entry);
+        state.catalogActiveKey = submissionCatalogKey({ ...entry, studentKey: getStudentKey() });
+        state.currentKey = getSubmissionKey(entry);
+        renderPdf(entry.cachedPdfUrl, entry.fileName, entry.pageCount);
+        setStatus(`${entry.fileName || "提出物"} の保存済みPDFを表示中`, "ready");
+      } else if (!opened && entry.kind?.startsWith("google-")) {
+        openExternalSubmission(entry);
+      }
+      return;
+    }
+
+    if (localPdfUrl(entry.cachedPdfUrl)) {
+      setActiveFile(entry);
+      state.catalogActiveKey = submissionCatalogKey({ ...entry, studentKey: getStudentKey() });
+      state.currentKey = getSubmissionKey(entry);
+      renderPdf(entry.cachedPdfUrl, entry.fileName, entry.pageCount);
+      setStatus(`${entry.fileName || "提出物"} の保存済みPDFを表示中`, "ready");
+      return;
+    }
+
+    if (!viewerCanDisplaySubmission(entry)) {
+      if (!openExternalSubmission(entry)) {
+        setStatus(`${entry.fileName || "提出物"} はこのビューアーで表示できず、開くためのURLも取得できません。`, "error");
+      }
+      return;
+    }
+
+    const selected = await selectSubmissionFile({
+      ...entry,
+      expectedName: entry.expectedName || entry.fileName || ""
+    });
+    if (!selected) {
+      if (entry.kind?.startsWith("google-") && openExternalSubmission(entry)) return;
+      throw new Error("Classroomのファイル選択欄から対象ファイルを確認できませんでした。");
+    }
+    setActiveFile(selected);
+    state.catalogActiveKey = "";
+    state.currentKey = getSubmissionKey(selected);
+    sendViewerControls();
+    const started = await startConversion(false, selected);
+    if (started === false && entry.kind?.startsWith("google-")) openExternalSubmission(entry);
+  }
+
+  async function selectSubmissionFromCatalog(catalogKey) {
+    if (!contextAvailable() || !state.enabled) return;
+    const entry = state.submissionCatalog.find((item) => submissionCatalogKey(item) === catalogKey);
+    if (!entry) {
+      setStatus("一覧から選んだ提出物が見つかりません。Classroomを再読み込みしてください。", "error");
+      return;
+    }
+    state.fileSwitching = true;
+    try {
+      setStatus(`${entry.studentName || "提出者"}：${entry.fileName} を選択しています…`, "working");
+      if (entry.studentKey && entry.studentKey !== getStudentKey()) {
+        const moved = await moveToCatalogStudent(entry);
+        if (!moved) throw new Error("Classroomで対象の提出者へ移動できませんでした。Classroomを再読み込みしてください。");
+      }
+      await showCatalogSubmission(entry);
+    } catch (error) {
+      setStatus(error.message || "一覧から提出物を開けませんでした。", "error");
+    } finally {
+      setTimeout(() => { state.fileSwitching = false; }, 600);
     }
   }
 
@@ -2578,6 +2952,8 @@
         state.pendingOverlay = null;
         state.overlay = overlay;
         state.displayedPdfUrl = pdfUrl;
+        if (state.viewerStatus) iframe.contentWindow?.postMessage({ type: "cwr-viewer-status", ...state.viewerStatus }, "*");
+        sendViewerControls();
         if (previousPdfUrl && previousPdfUrl !== pdfUrl) {
           safeSendMessage({ type: "cwr-release-pdf", pdfUrl: previousPdfUrl }).catch(() => undefined);
         }
@@ -2599,6 +2975,7 @@
     if (event.data?.type === "cwr-toggle-wide") setWideLayout(!state.wide);
     if (event.data?.type === "cwr-reset-size") resetOverlayBounds();
     if (event.data?.type === "cwr-show-file") showSubmissionFile(Number(event.data.index) || 0);
+    if (event.data?.type === "cwr-select-submission") selectSubmissionFromCatalog(String(event.data.catalogKey || ""));
   });
 
   function handlePossibleSubmissionChange() {
@@ -2634,6 +3011,7 @@
       state.currentKey = key;
       endDisplayRequest();
       state.activeFile = null;
+      state.catalogActiveKey = "";
       if (state.preparing) return;
       sendViewerControls();
       if (hadPrevious) {
@@ -2673,6 +3051,7 @@
   makeUi();
   state.submissionView = isSubmissionView();
   state.currentKey = state.submissionView ? getSubmissionKey() : "";
+  loadSubmissionCatalog();
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (!contextAvailable()) return;
     if (areaName === "local" && changes.cwrEnabled) {

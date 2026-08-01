@@ -36,6 +36,26 @@
     #more-menu button:hover, #more-menu button:focus-visible,
     #files-menu button:hover, #files-menu button:focus-visible { background: #3c4043; }
     #files-menu button[data-active="true"] { color: #8ab4f8; font-weight: 700; }
+    #submissions-toggle[data-open="true"] { color: #d2e3fc; border-color: #8ab4f8; background: #303134; }
+    #submission-panel { position: absolute; top: 50px; bottom: 0; left: 0; z-index: 4; display: flex; flex-direction: column; width: min(330px, calc(100vw - 16px)); padding: 12px; border-right: 1px solid #5f6368; background: #292a2d; box-shadow: 8px 0 24px rgba(0,0,0,.35); }
+    #submission-panel[hidden] { display: none; }
+    #submission-panel-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    #submission-panel-header strong { min-width: 0; flex: 1 1 auto; font-size: 15px; }
+    #submission-panel-close { flex: 0 0 auto; border: 0; border-radius: 8px; padding: 3px 8px; color: #bdc1c6; background: transparent; font: inherit; font-size: 20px; cursor: pointer; }
+    #submission-panel-close:hover, #submission-panel-close:focus-visible { color: #fff; background: #3c4043; outline: 2px solid #8ab4f8; }
+    #submission-search-label { margin-bottom: 4px; color: #bdc1c6; font-size: 12px; }
+    #submission-search { width: 100%; border: 1px solid #5f6368; border-radius: 8px; padding: 8px 9px; color: #e8eaed; background: #202124; font: inherit; }
+    #submission-search:focus { border-color: #8ab4f8; outline: 2px solid rgba(138,180,248,.35); }
+    #submission-count { min-height: 18px; margin: 8px 2px 6px; color: #9aa0a6; font-size: 12px; }
+    #submission-list { min-height: 0; flex: 1 1 auto; overflow-y: auto; display: grid; align-content: start; gap: 4px; padding-right: 2px; }
+    .submission-item { display: grid; gap: 3px; width: 100%; border: 1px solid transparent; border-radius: 8px; padding: 8px 9px; color: #e8eaed; background: transparent; text-align: left; font: inherit; cursor: pointer; }
+    .submission-item:hover, .submission-item:focus-visible { background: #3c4043; outline: 2px solid #8ab4f8; outline-offset: 1px; }
+    .submission-item[data-active="true"] { border-color: #8ab4f8; background: rgba(138,180,248,.14); }
+    .submission-item[data-status="unavailable"], .submission-item[data-status="failed"] { border-left-color: #fdd663; }
+    .submission-item-student { overflow: hidden; color: #8ab4f8; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .submission-item-file { overflow-wrap: anywhere; font-size: 13px; line-height: 1.35; }
+    .submission-item-type { color: #9aa0a6; font-size: 11px; }
+    #submission-list-empty { padding: 18px 8px; color: #9aa0a6; font-size: 12px; line-height: 1.5; }
     main { position: absolute; inset: 50px 0 0; overflow: auto; background: #202124; }
     main.presentation-mode { scroll-snap-type: y mandatory; }
     #pages { display: grid; justify-items: center; gap: 16px; min-width: 100%; width: max-content; min-height: 100%; padding: 10px 16px 28px; }
@@ -46,7 +66,12 @@
     #message[data-kind="error"] { color: #f28b82; }
     html:fullscreen header { display: none; }
     html:fullscreen main { inset: 0; background: #111; }
+    html:fullscreen #submission-panel { top: 0; }
     html:fullscreen #pages { gap: 24px; padding: 8px 16px 32px; }
+    @media (max-width: 620px) {
+      #submission-panel { width: min(300px, calc(100vw - 12px)); }
+      #submissions-toggle { padding-inline: 8px; }
+    }
   </style>
 </head>
 <body>
@@ -58,6 +83,7 @@
       <button id="files" type="button" title="この提出者のファイル" aria-haspopup="true" aria-expanded="false" hidden>1/1</button>
       <span id="files-menu" role="menu" hidden></span>
     </span>
+    <button id="submissions-toggle" type="button" title="提出物一覧を表示" aria-label="提出物一覧を表示" aria-expanded="true"><span class="label">一覧</span><span class="icon" aria-hidden="true">☷</span></button>
     <span id="meta">読み込み中…</span>
     <span id="progress" role="status"></span>
     <button id="zoom-out" type="button" title="縮小" aria-label="縮小">−</button>
@@ -78,6 +104,16 @@
     </span>
     <button id="close" type="button" title="閉じる" aria-label="閉じる">✕</button>
   </header>
+  <aside id="submission-panel" aria-label="提出物一覧">
+    <div id="submission-panel-header">
+      <strong>提出物一覧</strong>
+      <button id="submission-panel-close" type="button" title="一覧を閉じる" aria-label="一覧を閉じる">×</button>
+    </div>
+    <label id="submission-search-label" for="submission-search">学生名・ファイル名で検索</label>
+    <input id="submission-search" type="search" autocomplete="off" placeholder="学生名またはファイル名">
+    <p id="submission-count" role="status"></p>
+    <div id="submission-list" role="listbox" aria-label="提出物一覧"></div>
+  </aside>
   <main id="main"><div id="pages"><div id="message">表示用PDFを読み込んでいます…</div></div></main>
   <script type="module" src="viewer.js"></script>
 </body>
