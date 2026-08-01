@@ -323,6 +323,24 @@ assert.equal(
 assert.equal(runDetection({}).extensionContextLost(), false);
 assert.equal(runDetection({ runtimeId: "" }).extensionContextLost(), true);
 
+// 変換済みPDFが届いたとき、捨てる判断は「提出者が変わったか」だけで行う。
+// Classroomはファイル名を二重に連結して描くことがあり、要求時と受信時で
+// 名前が食い違う。名前まで突き合わせると正しいPDFまで破棄され、
+// 左右の切り替えを押しても画面が真っ黒のまま止まってしまう。
+const keyHooks = runDetection({
+  href: "https://classroom.google.com/u/5/g/tg/course/work#u=ODU4NjY4MDY5MDE0&t=f",
+  nodes: [new MockElement({
+    attributes: { "aria-label": "次の生徒を選択: 26_0265 山田さん" },
+    rect: { width: 44, height: 44, top: 100 }
+  })]
+});
+// 同じ提出者なら、ファイル名部分が違っても受け入れる。
+assert.equal(keyHooks.sameSubmissionStudent("u:ODU4NjY4MDY5MDE0|レポート.docx"), true);
+assert.equal(keyHooks.sameSubmissionStudent("u:ODU4NjY4MDY5MDE0|レポート.docxレポート.docx"), true);
+assert.equal(keyHooks.sameSubmissionStudent("u:ODU4NjY4MDY5MDE0|"), true);
+// 別の提出者のPDFは、これまでどおり確実に捨てる。
+assert.equal(keyHooks.sameSubmissionStudent("u:OTHERSTUDENT9999|レポート.docx"), false);
+
 const textHooks = runDetection({ nodes: [] });
 assert.equal(textHooks.formatDuration(45000), "45秒");
 assert.equal(textHooks.formatDuration(125000), "2分5秒");
