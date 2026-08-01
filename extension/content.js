@@ -1317,8 +1317,12 @@
     if (!button) return document.hidden ? "stuck" : "missing";
     if (submissionButtonDisabled(button)) return "end";
     const before = getStudentKey();
+    // 一括準備でも、学生の番号だけでは切替完了とみなさない。Classroomは
+    // URLを先に更新し、数秒間は前の学生のファイルを表示し続けることがある。
+    // ここを確認しないと、2人目のPDFを3人目以降として繰り返し保存してしまう。
+    const beforeFileId = findDisplayedFileId();
     button.click();
-    if (!await waitForSubmissionChange(before)) return "stuck";
+    if (!await waitForSubmissionChange(before, 20000, beforeFileId)) return "stuck";
     await wait(direction === "next" ? 650 : 180);
     return "moved";
   }
