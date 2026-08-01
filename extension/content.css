@@ -19,7 +19,9 @@
 
 #cwr-open,
 #cwr-open-window,
+#cwr-reconvert,
 #cwr-prepare,
+#cwr-cache,
 #cwr-toggle {
   border: 0;
   border-radius: 999px;
@@ -35,8 +37,12 @@
 #cwr-open:focus-visible,
 #cwr-open-window:hover,
 #cwr-open-window:focus-visible,
+#cwr-reconvert:hover,
+#cwr-reconvert:focus-visible,
 #cwr-prepare:hover,
 #cwr-prepare:focus-visible,
+#cwr-cache:hover,
+#cwr-cache:focus-visible,
 #cwr-toggle:hover,
 #cwr-toggle:focus-visible {
   background: #1765cc;
@@ -534,6 +540,30 @@
     bottom: 12px;
     width: min(360px, calc(100vw - 24px));
   }
+}
+
+/* すぐ使う操作は青、必要時だけ使う再変換・管理は控えめな輪郭にする。 */
+#cwr-reconvert,
+#cwr-cache {
+  border: 1px solid #8ab4f8;
+  color: #d2e3fc;
+  background: transparent;
+}
+
+#cwr-reconvert {
+  border-color: #fdd663;
+  color: #fdd663;
+}
+
+#cwr-reconvert:hover,
+#cwr-reconvert:focus-visible {
+  background: rgba(253, 214, 99, 0.16);
+  outline-color: #fdd663;
+}
+
+#cwr-controls button:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 #cwr-cache-panel {

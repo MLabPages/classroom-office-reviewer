@@ -1153,7 +1153,7 @@
   function reportPreparationProgress() {
     if (!state.dedicatedPreparation) return;
     try {
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         type: "cwr-prepare-progress",
         progress: {
           status: isPreparationFinished() ? progress.phase : "running",
@@ -1278,7 +1278,7 @@
     });
     startStallWatchdog();
     try {
-      const response = await chrome.runtime.sendMessage({ type: "cwr-start-bulk-preparation" });
+      const response = await safeSendMessage({ type: "cwr-start-bulk-preparation" });
       if (!response?.ok) throw new Error(response?.error || "準備専用タブを開始できませんでした。");
       updatePreparation(
         response.alreadyRunning ? "準備専用タブで処理中" : "準備専用タブを起動しました",
@@ -1492,7 +1492,7 @@
             });
             let response = null;
             for (let attempt = 0; attempt < 3; attempt += 1) {
-              response = await chrome.runtime.sendMessage({
+              response = await safeSendMessage({
                 // 1件目は表示中のファイルなので、画面と突き合わせる確実な経路を使う。
                 // 2件目以降は画面に出ていないため、ファイル番号を直接指定して取得する。
                 type: preparedFile.expectedFileId && !onScreen ? "cwr-prepare-attachment" : "cwr-prepare-one",
@@ -1803,7 +1803,7 @@
     const key = getSubmissionKey(fileInfo);
     setStatus("提出物を取得中…", "working");
     try {
-      const response = await chrome.runtime.sendMessage({
+      const response = await safeSendMessage({
         type: "cwr-start",
         submissionKey: key,
         expectedName: fileInfo.expectedName || "",
@@ -1841,7 +1841,7 @@
     const key = getSubmissionKey();
     setStatus(isPowerPoint(fileName) ? "PowerPoint発表画面を準備中…" : "Word別ウィンドウを準備中…", "working");
     try {
-      const response = await chrome.runtime.sendMessage({
+      const response = await safeSendMessage({
         type: "cwr-open-office",
         submissionKey: key,
         expectedName: fileInfo.expectedName || "",
