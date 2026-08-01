@@ -497,6 +497,7 @@
       normalizedFileName,
       studentDisplayName,
       getStudentLabel,
+      extensionContextLost,
       getStudentIdFromUrl,
       dedupeDoubledLabel
     });
@@ -719,6 +720,26 @@
     } catch (error) {
       return Promise.reject(error);
     }
+  }
+
+  // 拡張機能を更新・再読み込みすると、既に開いていたページに残った
+  // このスクリプトは拡張本体から切り離される（chrome.runtime.id が消える）。
+  // 画面上のボタンはそのまま残るのに、押しても本体へ届かないので
+  // 「まったく反応しない」状態になる。表示中のPDFも前の提出者のまま固まる。
+  function extensionContextLost() {
+    try {
+      return !(chrome && chrome.runtime && chrome.runtime.id);
+    } catch (error) {
+      return true;
+    }
+  }
+
+  // 切り離された状態で操作されたときは、黙って何もしないのではなく
+  // 「なぜ効かないのか」と「どうすれば直るのか」をそのまま画面に出す。
+  function reportContextLostIfNeeded() {
+    if (!extensionContextLost()) return false;
+    setStatus("この画面は拡張機能の更新前に開かれたため、操作を受け取れません。Classroomのタブを再読み込み（F5）してください。", "error");
+    return true;
   }
 
   // 背面タブのsetTimeoutはChromeに最大1分まで遅らされる。待ち時間は拡張機能の
@@ -1816,6 +1837,7 @@
     // ここで busy を理由に黙って戻ると、ボタンが完全に無反応に見える。
     // 手動操作は常に受け付け、進行中の表示要求は捨てて上書きする。
     if (!state.enabled) return;
+    if (reportContextLostIfNeeded()) return;
     const files = listSubmissionFiles();
     const file = files[index];
     if (!file) {
@@ -1844,6 +1866,7 @@
 
   async function moveToAdjacentSubmission(direction) {
     if (!state.enabled) return;
+    if (reportContextLostIfNeeded()) return;
     const files = listSubmissionFiles();
     const currentIndex = activeFileIndex(files);
     if (direction === "next" && currentIndex >= 0 && currentIndex < files.length - 1) {
@@ -2134,6 +2157,14 @@
     subtree: true,
     characterData: true
   });
+  // 拡張機能を更新すると、開いたままのタブは操作を受け取れなくなる。
+  // 押してから気づくのでは遅いので、切り離しを見つけた時点で知らせ、
+  // 監視も止めて無駄な処理を続けないようにする。
+  const contextWatcher = setInterval(() => {
+    if (!extensionContextLost()) return;
+    clearInterval(contextWatcher);
+    reportContextLostIfNeeded();
+  }, 4000);
   window.addEventListener("resize", () => {
     if (state.overlay) applyOverlayBounds();
   });
