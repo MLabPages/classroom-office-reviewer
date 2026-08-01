@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.8.5";
+const expectedVersion = "0.8.6";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -93,7 +93,8 @@ assert(content.includes("if (!matchesRequestedFile(message))"));
 assert(content.includes("function saveSetting"));
 assert(content.includes("function loadSettings"));
 assert(content.includes("function extensionContextLost"));
-assert(content.includes("if (extensionContextLost())"));
+assert(content.includes("function contextAvailable"));
+assert(content.includes("state.mutationObserver?.disconnect()"));
 assert.equal((content.match(/chrome\.storage\.local\.(?:get|set)\(/g) || []).length, 2);
 assert(content.includes("function becomePreparationTab"));
 assert(content.includes('findFileName("docx?|pptx?|pdf|'));

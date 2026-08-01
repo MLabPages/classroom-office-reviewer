@@ -31,6 +31,9 @@
     watchdogTimer: null,
     lastRemoteProgressAt: 0,
     busyWatchdog: null,
+    contextInvalidated: false,
+    mutationObserver: null,
+    contextWatcher: null,
     preparationCompact: false,
     preparationPanelHidden: false,
     preparationLedgerExpanded: false,
@@ -821,6 +824,7 @@
   // Promiseを返さず同期的に例外を投げる。呼び出し側ごとにtry/catchを書き忘れると
   // そこで処理全体が止まって画面が固まって見えるため、ここでまとめて吸収する。
   function safeSendMessage(message) {
+    if (!contextAvailable()) return Promise.resolve({ ok: false, contextInvalidated: true });
     try {
       return chrome.runtime.sendMessage(message);
     } catch (error) {
@@ -840,6 +844,22 @@
     }
   }
 
+  // 更新で切り離された古いスクリプトは、後から届くClassroomのDOM更新や
+  // 変換完了を受け取れない。各タイマーを個別に残すと同じ例外が何度も出るため、
+  // ここで一度だけ監視・待機をまとめて止める。
+  function contextAvailable() {
+    if (!state.contextInvalidated && !extensionContextLost()) return true;
+    state.contextInvalidated = true;
+    clearTimeout(state.timer);
+    clearTimeout(state.busyWatchdog);
+    clearInterval(state.preparationTimer);
+    clearInterval(state.progressTicker);
+    clearInterval(state.watchdogTimer);
+    clearInterval(state.contextWatcher);
+    state.mutationObserver?.disconnect();
+    return false;
+  }
+
   // 切り離された状態で操作されたときは、黙って何もしないのではなく
   // 「なぜ効かないのか」と「どうすれば直るのか」をそのまま画面に出す。
   function reportContextLostIfNeeded() {
@@ -855,6 +875,7 @@
   // 設定の読み出しも、切り離されたタブでは同期的に例外を投げる。
   // 読めなかった場合は既定値のまま動かし、操作自体は止めない。
   function loadSettings(keys) {
+    if (!contextAvailable()) return Promise.resolve({});
     try {
       const loading = chrome.storage.local.get(keys);
       return loading && typeof loading.then === "function" ? loading : Promise.reject(new Error("設定を読み取れません。"));
@@ -864,6 +885,7 @@
   }
 
   function saveSetting(values) {
+    if (!contextAvailable()) return;
     try {
       const saving = chrome.storage.local.set(values);
       if (saving && typeof saving.catch === "function") saving.catch(() => undefined);
@@ -887,7 +909,7 @@
       };
       localWait(milliseconds).then(finish);
       try {
-        chrome.runtime.sendMessage({ type: "cwr-sleep", ms: milliseconds }).then(finish, () => undefined);
+        safeSendMessage({ type: "cwr-sleep", ms: milliseconds }).then(finish, () => undefined);
       } catch (error) {
         // Ignore extension context invalidated error
       }
@@ -1325,6 +1347,7 @@
   // 区別しないと、背面タブで画面が止まっただけなのに「全員分の準備が完了」と
   // 誤って報告してしまう。
   async function moveSubmission(direction) {
+    if (!contextAvailable()) return "stuck";
     const button = await waitForSubmissionButton(direction);
     // 「押せない状態で見つかった」なら本当に端。「見つからない」だけのときは、
     // 背面で止まっているか描き直し中の可能性があるので端と決めつけない。
@@ -1389,6 +1412,7 @@
   }
 
   async function prepareAllSubmissions({ dedicated = false, limit = 0, startAtCurrent = false } = {}) {
+    if (!contextAvailable()) return;
     if (state.preparing) return;
     if (!await waitForSubmissionView()) {
       throw new Error("提出物を個別に開いてから一括準備を開始してください。");
@@ -1631,12 +1655,7 @@
     // 拡張機能を再読み込みした直後は、この古いスクリプトだけがページに残る。
     // DOM監視や準備用タイマーからここへ入ると、Chromeが文脈切れの例外を
     // コンソールへ出すことがあるため、以降の画面更新を止める。
-    if (extensionContextLost()) {
-      clearTimeout(state.timer);
-      clearInterval(state.progressTicker);
-      clearInterval(state.watchdogTimer);
-      return;
-    }
+    if (!contextAvailable()) return;
     const root = state.ui;
     if (!root) return;
     const submissionView = isSubmissionView();
@@ -1731,6 +1750,7 @@
     root.querySelector("#cwr-toggle").addEventListener("click", () => setEnabled(!state.enabled));
     updateUiLabels();
     loadSettings(["cwrAuto", "cwrMode", "cwrEnabled"]).then(({ cwrAuto, cwrMode, cwrEnabled }) => {
+      if (!contextAvailable()) return;
       state.auto = state.isPreparationTab ? false : Boolean(cwrAuto);
       state.mode = ["word", "office"].includes(cwrMode) ? "office" : "pdf";
       state.enabled = cwrEnabled !== false;
@@ -1802,6 +1822,7 @@
   }
 
   async function startConversion(isAutomatic, requestedFile = null) {
+    if (!contextAvailable()) return;
     if (!state.enabled) return;
     // 自動表示のときだけ、進行中の要求を尊重して二重に走らせない。
     // 手動操作は必ず受け付け、前の要求を捨てて新しい表示を優先する。
@@ -1849,6 +1870,7 @@
   }
 
   async function startOfficeWindow(isAutomatic) {
+    if (!contextAvailable()) return;
     if (!state.enabled) return;
     // 手動操作は必ず受け付ける（startConversionと同じ考え方）。
     if (isAutomatic && state.busy) return;
@@ -2245,6 +2267,7 @@
   }
 
   function renderPdf(pdfUrl, fileName, pageCount) {
+    if (!contextAvailable()) return;
     state.pendingOverlay?.remove();
     state.pendingOverlay = null;
 
@@ -2345,12 +2368,7 @@
   function handlePossibleSubmissionChange() {
     clearTimeout(state.timer);
     state.timer = setTimeout(() => {
-      if (extensionContextLost()) {
-        clearTimeout(state.timer);
-        clearInterval(state.progressTicker);
-        clearInterval(state.watchdogTimer);
-        return;
-      }
+      if (!contextAvailable()) return;
       // 準備専用タブは自動操作中なので、採点用の表示処理は動かさない。
       if (state.isPreparationTab && state.preparing) return;
       // 同じ提出者の別ファイルを選択中は、学生切替として扱わない。
@@ -2407,6 +2425,7 @@
     if (response?.role === "source" && response.progress) handleRemotePreparationProgress(response.progress);
   }, () => undefined);
   loadSettings(["cwrPreparationCompact", "cwrWide", "cwrOverlayBounds"]).then((stored) => {
+    if (!contextAvailable()) return;
     state.preparationCompact = Boolean(stored.cwrPreparationCompact);
     state.wide = Boolean(stored.cwrWide);
     state.overlayBounds = stored.cwrOverlayBounds || null;
@@ -2418,12 +2437,14 @@
   state.submissionView = isSubmissionView();
   state.currentKey = state.submissionView ? getSubmissionKey() : "";
   chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (!contextAvailable()) return;
     if (areaName === "local" && changes.cwrEnabled) {
       const enabled = changes.cwrEnabled.newValue !== false;
       if (enabled !== state.enabled) setEnabled(enabled, false);
     }
   });
-  new MutationObserver(handlePossibleSubmissionChange).observe(document.documentElement, {
+  state.mutationObserver = new MutationObserver(handlePossibleSubmissionChange);
+  state.mutationObserver.observe(document.documentElement, {
     childList: true,
     subtree: true,
     characterData: true
@@ -2431,12 +2452,12 @@
   // 拡張機能を更新すると、開いたままのタブは操作を受け取れなくなる。
   // 押してから気づくのでは遅いので、切り離しを見つけた時点で知らせ、
   // 監視も止めて無駄な処理を続けないようにする。
-  const contextWatcher = setInterval(() => {
-    if (!extensionContextLost()) return;
-    clearInterval(contextWatcher);
+  state.contextWatcher = setInterval(() => {
+    if (contextAvailable()) return;
     reportContextLostIfNeeded();
   }, 4000);
   window.addEventListener("resize", () => {
+    if (!contextAvailable()) return;
     if (state.overlay) applyOverlayBounds();
   });
   // タブを閉じるときはWord／PowerPoint側の窓も片付ける。
@@ -2444,6 +2465,7 @@
   // 将来は呼ばれなくなって後片付けごと動かなくなる。`pagehide`は
   // 同じ場面で確実に呼ばれる後継の合図なので、こちらを使う。
   window.addEventListener("pagehide", () => {
+    if (!contextAvailable()) return;
     if (state.mode === "office") {
       safeSendMessage({ type: "cwr-close-office" }).catch(() => undefined);
     }
