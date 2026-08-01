@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.9.1";
+const expectedVersion = "0.9.2";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -48,6 +48,7 @@ assert(content.includes('"cwr-prepare-one"'));
 assert(content.includes('"cwr-prepare-attachment"'));
 assert(content.includes("function findSubmissionAttachments"));
 assert(content.includes("function findSubmissionFileMenuItems"));
+assert(content.includes("function selectedSubmissionAttachment"));
 assert(content.includes("function selectSubmissionFile"));
 assert(content.includes("state.fileSwitching"));
 assert(content.includes("function listSubmissionFiles"));

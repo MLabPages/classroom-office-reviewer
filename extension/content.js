@@ -189,6 +189,14 @@
   function findSupportedFileInfo() {
     const googleFileInfo = findGoogleFileInfo();
     if (googleFileInfo) return googleFileInfo;
+    // 同じ提出物にWordとPDFが添付されている場合、全体を検索すると
+    // メニューの先頭にあるWordを、現在選択中のPDFと誤認してしまう。
+    // Classroomの実DOMでは選択中のmenuitemが tabindex="0" になるため、
+    // まず現在の選択項目を使い、Word/PDFの種別を確定する。
+    const selectedAttachment = selectedSubmissionAttachment();
+    if (selectedAttachment && ["office", "pdf"].includes(selectedAttachment.kind)) {
+      return selectedAttachment;
+    }
     const officeFileName = findOfficeFileName();
     if (officeFileName) {
       // Drive上のファイル番号を早い段階で確定させておく。ここを空のままにすると、
@@ -359,6 +367,22 @@
       expectedGoogleType: googleType,
       sourceUrl
     };
+  }
+
+  function selectedSubmissionAttachment() {
+    const selectedItem = findSubmissionFileMenuItems().find((node) => {
+      const selected = [
+        node.getAttribute("aria-selected"),
+        node.getAttribute("aria-current"),
+        node.getAttribute("data-selected")
+      ].some((value) => value === "true") || node.getAttribute("tabindex") === "0";
+      return selected;
+    });
+    const attachment = selectedItem ? attachmentInfoOf(selectedItem) : null;
+    if (!attachment) return null;
+    const displayedId = findDisplayedFileId();
+    if (displayedId) attachment.expectedFileId = displayedId;
+    return attachment;
   }
 
   // 1人が複数ファイルを提出することがある。リンクだけでなく、
@@ -564,6 +588,7 @@
     let downloadUrl = "";
     let fileId = parseDriveId(location.href);
     const classroomGoogleInfo = isClassroomTop ? findGoogleFileInfo() : null;
+    const currentFileInfo = findSupportedFileInfo();
     const googleType = (classroomGoogleInfo?.expectedFileId ? classroomGoogleInfo.expectedGoogleType : "") || (/docs\.google\.com\/document\/(?:u\/\d+\/)?d\//i.test(location.href)
       ? "document"
       : /docs\.google\.com\/presentation\/(?:u\/\d+\/)?d\//i.test(location.href)
@@ -581,8 +606,8 @@
 
     const authMatch = location.href.match(/\/u\/(\d+)(?:\/|$)/);
     return {
-      fileName: classroomGoogleInfo?.fileName || findOfficeFileName() || findPdfFileName() || (googleType === "document" ? "Googleドキュメント" : googleType === "presentation" ? "Googleスライド" : ""),
-      fileId,
+      fileName: currentFileInfo?.fileName || classroomGoogleInfo?.fileName || findOfficeFileName() || findPdfFileName() || (googleType === "document" ? "Googleドキュメント" : googleType === "presentation" ? "Googleスライド" : ""),
+      fileId: currentFileInfo?.expectedFileId || fileId,
       downloadUrl,
       googleType,
       submissionView: !isClassroomTop || isSubmissionView(),
@@ -604,6 +629,7 @@
       preparationCountText,
       findSubmissionAttachments,
       attachmentInfoOf,
+      selectedSubmissionAttachment,
       listSubmissionFiles,
       findSubmissionFileMenuItems,
       findSubmissionFileMenuItem,
