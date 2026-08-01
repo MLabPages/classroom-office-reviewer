@@ -67,14 +67,15 @@
   grid-column: 2;
   grid-row: 1;
   justify-self: end;
-  width: 28px;
+  width: 38px;
   height: 28px;
   margin-right: 4px;
   border: 0;
   border-radius: 8px;
   color: #bdc1c6;
   background: transparent;
-  font-size: 18px;
+  font: 11px/1 Arial, "Noto Sans JP", sans-serif;
+  font-weight: 700;
   line-height: 1;
   cursor: grab;
 }
@@ -184,10 +185,19 @@
 
 #cwr-status[data-kind="error"] {
   color: #f28b82;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
 }
 
 #cwr-status[data-kind="ready"] {
   color: #81c995;
+}
+
+/* 幅を小さくしても、原因を読めずに再現不能にならないようにする。 */
+#cwr-controls:not(.cwr-controls-collapsed) #cwr-status[data-kind="error"] {
+  max-height: 4.5em;
+  padding-top: 2px;
 }
 
 #cwr-overlay {
@@ -642,6 +652,12 @@
   border: 1px solid #8ab4f8;
   color: #d2e3fc;
   background: transparent;
+}
+
+#cwr-reconvert {
+  padding-inline: 9px;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 #cwr-reconvert {
