@@ -133,6 +133,12 @@ function isGoogleNative(descriptor) {
   return ["document", "presentation"].includes(descriptor?.googleType);
 }
 
+// 提出物がすでにPDFなら、Officeでの変換もGoogleのPDF書き出しも不要。
+// Driveから直接ダウンロードして、そのまま表示用として保存する。
+function isPdfDescriptor(descriptor) {
+  return !isGoogleNative(descriptor) && /\.pdf$/i.test(descriptor?.fileName || "");
+}
+
 function buildGooglePdfExportUrl(descriptor) {
   if (!descriptor.fileId) throw new Error("Google形式の提出物を識別できませんでした。");
   const authuser = Number.isInteger(descriptor.authuser) ? descriptor.authuser : 0;
@@ -674,9 +680,77 @@ async function convertGoogleToPdf(tabId, submissionKey, descriptor, { reportStat
   return converted;
 }
 
+// 提出物がすでにPDFの場合は、Officeでの変換や書き出しをせず、
+// Driveからそのままダウンロードして表示用として保存するだけにする。
+async function storeExistingPdf(tabId, submissionKey, descriptor, { reportStatus = true, showPdf = true, cacheIdentity, force = false } = {}) {
+  const displayName = /\.pdf$/i.test(descriptor.fileName || "") ? descriptor.fileName : `${descriptor.fileName || "提出物"}.pdf`;
+  if (reportStatus) await notifyTab(tabId, {
+    type: "cwr-status",
+    state: "working",
+    text: "PDFの提出物を取得中…",
+    submissionKey
+  });
+
+  let driveResponse;
+  try {
+    driveResponse = await fetchWithTimeout(
+      buildDownloadUrl(descriptor),
+      { credentials: "include", redirect: "follow", cache: "no-store" },
+      120000,
+      "Google Driveからの取得に2分以上かかったため中止しました。"
+    );
+  } catch (error) {
+    if (/2分以上/.test(error.message)) throw error;
+    throw new Error("Google DriveからPDFを取得できませんでした。");
+  }
+  const contentType = (driveResponse.headers.get("content-type") || "").toLowerCase();
+  if (!driveResponse.ok || contentType.includes("text/html")) {
+    throw new Error("Google DriveからPDFを取得できませんでした。");
+  }
+  const buffer = await driveResponse.arrayBuffer();
+  if (buffer.byteLength > 100 * 1024 * 1024) throw new Error("PDFが100MBを超えているため、表示を中止しました。");
+  const signature = new TextDecoder("latin1").decode(buffer.slice(0, 5));
+  if (signature !== "%PDF-") throw new Error("取得結果がPDF形式ではありませんでした。");
+  const sourceHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", buffer))]
+    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+
+  let storeResponse;
+  try {
+    storeResponse = await fetchWithTimeout(
+      `${HELPER_BASE}/store-pdf-upload`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/pdf",
+          "X-File-Name": encodeURIComponent(displayName),
+          ...cacheHeaders(cacheIdentity, {
+            sourceHash,
+            sourceSize: buffer.byteLength,
+            etag: driveResponse.headers.get("etag") || "",
+            lastModified: driveResponse.headers.get("last-modified") || ""
+          }, force)
+        },
+        body: buffer
+      },
+      120000,
+      "PDFの保存に2分以上かかったため中止しました。"
+    );
+  } catch {
+    throw new Error("PDFを保存できませんでした。補助アプリが起動しているか確認してください。");
+  }
+  const result = await storeResponse.json().catch(() => ({}));
+  if (!storeResponse.ok || !result.ok) throw new Error(result.error || "PDFを保存できませんでした。");
+  if (reportStatus && result.cached) await notifyTab(tabId, {
+    type: "cwr-status", state: "ready", text: "この提出物はもともとPDFです。変換不要で表示します。", submissionKey
+  });
+  const converted = helperResultToConverted(result, displayName, "pdf-passthrough");
+  if (showPdf) await notifyTab(tabId, { type: "cwr-show-pdf", submissionKey, ...converted });
+  return converted;
+}
+
 async function convertDescriptor(tabId, submissionKey, descriptor, options = {}) {
   const cacheIdentity = cacheIdentityFor(options.cacheIdentity, descriptor);
-  const mode = isGoogleNative(descriptor) ? "google-pdf" : "memory";
+  const mode = isGoogleNative(descriptor) ? "google-pdf" : (isPdfDescriptor(descriptor) ? "pdf-passthrough" : "memory");
   const fallbackName = descriptor.fileName || "提出物";
   if (!options.force) {
     const cached = await findPersistentCachedPdf(cacheIdentity, descriptor, fallbackName, mode);
@@ -689,15 +763,15 @@ async function convertDescriptor(tabId, submissionKey, descriptor, options = {})
     }
   }
   const conversionOptions = { ...options, cacheIdentity };
-  return isGoogleNative(descriptor)
-    ? convertGoogleToPdf(tabId, submissionKey, descriptor, conversionOptions)
-    : convertInMemory(tabId, submissionKey, descriptor, conversionOptions);
+  if (isGoogleNative(descriptor)) return convertGoogleToPdf(tabId, submissionKey, descriptor, conversionOptions);
+  if (isPdfDescriptor(descriptor)) return storeExistingPdf(tabId, submissionKey, descriptor, conversionOptions);
+  return convertInMemory(tabId, submissionKey, descriptor, conversionOptions);
 }
 
 async function prepareCurrentSubmission(tabId, submissionKey, expectedName, expectedFileId, expectedGoogleType, cacheIdentity) {
   await helperHealth();
   const descriptor = await waitForCurrentDocument(tabId, expectedName, expectedFileId, expectedGoogleType);
-  if (!descriptor) throw new Error("この提出者のWord／PowerPoint／Google形式のファイルを見つけられませんでした。");
+  if (!descriptor) throw new Error("この提出者のWord／PowerPoint／PDF／Google形式のファイルを見つけられませんでした。");
   const key = descriptorKey(descriptor);
   const prepared = !cacheIdentity && (await getPreparedPdf(key) || await getPreparedPdfById(descriptor.fileId));
   if (prepared) {
@@ -894,7 +968,7 @@ async function startConversion(tabId, submissionKey, expectedName = "", expected
 
   const descriptor = await waitForCurrentDocument(tabId, expectedName, expectedFileId, expectedGoogleType);
   if (!descriptor) {
-    throw new Error("表示中のWord／PowerPoint／Google形式のファイルを見つけられませんでした。Classroomを再読み込みしてください。");
+    throw new Error("表示中のWord／PowerPoint／PDF／Google形式のファイルを見つけられませんでした。Classroomを再読み込みしてください。");
   }
 
   const key = descriptorKey(descriptor);
