@@ -498,6 +498,7 @@
       studentDisplayName,
       getStudentLabel,
       extensionContextLost,
+      sameSubmissionStudent,
       getStudentIdFromUrl,
       dedupeDoubledLabel
     });
@@ -563,7 +564,7 @@
     }
 
     if (message?.type === "cwr-status") {
-      if (message.submissionKey && message.submissionKey !== getSubmissionKey()) return false;
+      if (!sameSubmissionStudent(message.submissionKey)) return false;
       setStatus(message.text, message.state);
       if (message.state === "error") endDisplayRequest();
     }
@@ -573,7 +574,7 @@
         safeSendMessage({ type: "cwr-release-pdf", pdfUrl: message.pdfUrl }).catch(() => undefined);
         return false;
       }
-      if (message.submissionKey && message.submissionKey !== getSubmissionKey()) {
+      if (!sameSubmissionStudent(message.submissionKey)) {
         endDisplayRequest();
         safeSendMessage({ type: "cwr-release-pdf", pdfUrl: message.pdfUrl }).catch(() => undefined);
         setStatus("提出者が切り替わったため、古い表示を破棄しました。", "idle");
@@ -654,6 +655,17 @@
       ? { fileName: state.activeFile.name }
       : findSupportedFileInfo());
     return [studentKey, currentFile?.fileName || ""].join("|");
+  }
+
+  // 届いたPDFを捨てるかどうかは「提出者が変わったか」だけで決める。
+  // ファイル名はClassroomの描画途中で二重連結や省略が起き、要求時と
+  // 受信時で一致しないことがある。名前まで含めて突き合わせると、
+  // 同じ提出者の正しいPDFまで破棄され、画面が真っ黒のまま止まる。
+  function sameSubmissionStudent(submissionKey) {
+    if (!submissionKey) return true;
+    const currentStudent = getStudentKey();
+    if (!currentStudent) return true;
+    return submissionKey.split("|")[0] === currentStudent;
   }
 
   function findSubmissionButton(direction) {
