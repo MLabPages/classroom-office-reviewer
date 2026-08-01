@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.8.7";
+const expectedVersion = "0.8.8";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -80,6 +80,8 @@ assert(content.includes("function startStallWatchdog"));
 assert(content.includes("const BACKGROUND_RETRY_MS = 10000;"));
 assert(content.includes("const BACKGROUND_STALLED_RETRY_MS = 30000;"));
 assert(content.includes("function waitForSubmissionFileWithRecovery"));
+assert(content.includes("function currentDisplayedFileInfo"));
+assert(content.includes("function logCurrentFileContext"));
 assert(!content.includes("function waitForVisibleTab"));
 assert(content.includes('id="cwr-controls-toggle"'));
 assert(content.includes('id="cwr-controls-drag"'));

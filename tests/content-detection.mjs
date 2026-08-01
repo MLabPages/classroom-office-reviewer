@@ -366,6 +366,17 @@ assert.equal(
   sameNameKeyHooks.getSubmissionKey(),
   "u:Nzk3MDYyNjExODcy|1GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"
 );
+// Classroomで2件目を直接選んだとき、前回のactiveFileを残していても
+// iframeの現在ファイル番号を優先する。ここが逆だと2件目で1件目のPDFを使う。
+sameNameKeyHooks.setActiveFile({ expectedFileId: "1FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", fileName: sameNameFile });
+assert.equal(
+  sameNameKeyHooks.currentDisplayedFileInfo().expectedFileId,
+  "1GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"
+);
+assert.equal(
+  sameNameKeyHooks.getSubmissionKey(),
+  "u:Nzk3MDYyNjExODcy|1GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"
+);
 
 // Google形式の名前は拡張子が無く、重複表示を境界で切り分けられない。
 // ちょうど半分の繰り返しのときだけ前半を採用し、それ以外は触らない。

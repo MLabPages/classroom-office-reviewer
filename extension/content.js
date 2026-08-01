@@ -44,6 +44,7 @@
     preparationLedgerExpanded: false,
     controlsCollapsed: true,
     controlsPosition: null,
+    controlsDraggedAt: 0,
     wide: false,
     overlayBounds: null,
     activeFile: null,
@@ -282,8 +283,8 @@
     if (items.length < 2) return items;
     // 画面には別の提出者のメニューが残っていることがある。表示中のファイルが
     // 含まれるメニューが見つかったら、その1つだけを使う。
-    const displayedId = state.activeFile?.id || findDisplayedFileId();
-    const displayedName = normalizedFileName(state.activeFile?.name || findOfficeFileName());
+    const displayedId = findDisplayedFileId() || state.activeFile?.id || "";
+    const displayedName = normalizedFileName(findOfficeFileName() || state.activeFile?.name || "");
     if (!displayedId && !displayedName) return items;
     const groups = new Map();
     for (const node of items) {
@@ -393,6 +394,23 @@
       matched.fileName = current.fileName;
     }
     return files;
+  }
+
+  // Classroomで利用者が右側の添付を直接選んだときは、拡張が前回覚えた
+  // activeFile より、いま表示されているプレビューiframeのファイルIDを優先する。
+  // ここを逆にすると、2件目を選んでも1件目のキーとキャッシュを再利用してしまう。
+  function currentDisplayedFileInfo() {
+    const displayedId = findDisplayedFileId();
+    const detected = findSupportedFileInfo();
+    const selectedAttachment = displayedId
+      ? findSubmissionAttachments().find((file) => file.expectedFileId === displayedId)
+      : null;
+    const current = selectedAttachment || detected;
+    if (!current) return null;
+    return {
+      ...current,
+      expectedFileId: displayedId || current.expectedFileId || ""
+    };
   }
 
   function inspectSubmissionFile() {
@@ -557,6 +575,7 @@
       studentDisplayName,
       getStudentLabel,
       getSubmissionKey,
+      currentDisplayedFileInfo,
       matchesRequestedFile,
       setActiveFile,
       saveSetting,
@@ -694,7 +713,7 @@
 
     // 最後の手立て：提出ファイル名は「26_0259 森本（Morimoto） - 課題名.docx」の
     // 形をとることが多い。ここから提出者名だけを取り出す。
-    const fileInfo = findSupportedFileInfo();
+    const fileInfo = currentDisplayedFileInfo();
     const separated = (fileInfo?.fileName || "").split(/\s-\s/);
     if (separated.length >= 2 && separated[0].trim().length >= 2) {
       return separated[0].trim().slice(0, 220);
@@ -727,7 +746,7 @@
   // 同姓同名や同じファイル名でも、別の授業・課題・提出者のPDFを取り違えない。
   function getCacheIdentity(fileInfo = null) {
     const match = location.pathname.match(/\/c\/([^/]+)\/a\/([^/]+)/);
-    const currentFile = fileInfo || state.activeFile || findSupportedFileInfo() || {};
+    const currentFile = fileInfo || currentDisplayedFileInfo() || state.activeFile || {};
     return {
       courseId: match?.[1] || "unknown-course",
       assignmentId: match?.[2] || "unknown-assignment",
@@ -739,9 +758,9 @@
   function getSubmissionKey(fileInfo = null) {
     const studentKey = getStudentKey();
     if (!studentKey) return "";
-    const currentFile = fileInfo || (state.activeFile?.name
+    const currentFile = fileInfo || currentDisplayedFileInfo() || (state.activeFile?.name
       ? { fileName: state.activeFile.name, expectedFileId: state.activeFile.id }
-      : findSupportedFileInfo());
+      : null);
     // 同じ名前のファイルを複数提出することがある。名前だけを鍵にすると、
     // Classroom側で別ファイルを選んでも変化なしと誤認して古いPDFを残してしまう。
     return [studentKey, currentFile?.expectedFileId || currentFile?.id || currentFile?.fileName || ""].join("|");
@@ -1709,7 +1728,7 @@
     const root = state.ui;
     if (!root) return;
     const submissionView = isSubmissionView();
-    const fileInfo = submissionView ? findSupportedFileInfo() : null;
+    const fileInfo = submissionView ? currentDisplayedFileInfo() : null;
     const googleDocument = fileInfo?.kind === "google-document";
     const googlePresentation = fileInfo?.kind === "google-presentation";
     const powerpoint = submissionView && isPowerPoint(fileInfo?.fileName || "");
@@ -1751,9 +1770,9 @@
     state.ui.classList.toggle("cwr-controls-collapsed", state.controlsCollapsed);
     const launcher = state.ui.querySelector("#cwr-controls-toggle");
     launcher?.setAttribute("aria-expanded", String(!state.controlsCollapsed));
-    if (state.controlsPosition && Number.isFinite(state.controlsPosition.top)) {
-      state.ui.style.top = `${Math.round(state.controlsPosition.top)}px`;
-    }
+    const ratio = state.controlsPosition?.ratio;
+    const top = Number.isFinite(ratio) ? Math.max(0.08, Math.min(0.92, ratio)) * window.innerHeight : window.innerHeight / 2;
+    state.ui.style.top = `${Math.round(top)}px`;
   }
 
   function setControlsCollapsed(value, persist = true) {
@@ -1764,28 +1783,36 @@
 
   function attachControlsDrag(root) {
     const grip = root.querySelector("#cwr-controls-drag");
-    if (!grip) return;
-    grip.addEventListener("pointerdown", (event) => {
+    const launcher = root.querySelector("#cwr-controls-toggle");
+    if (!grip || !launcher) return;
+    const beginDrag = (event, allowWhenCollapsed) => {
       if (event.button !== 0) return;
-      event.preventDefault();
+      if (!allowWhenCollapsed && state.controlsCollapsed) return;
       const startTop = root.getBoundingClientRect().top + root.getBoundingClientRect().height / 2;
       const startY = event.clientY;
-      grip.setPointerCapture?.(event.pointerId);
+      event.currentTarget.setPointerCapture?.(event.pointerId);
       root.classList.add("cwr-controls-dragging");
+      let dragged = false;
       const move = (moveEvent) => {
+        if (Math.abs(moveEvent.clientY - startY) > 4) dragged = true;
         const top = Math.max(28, Math.min(window.innerHeight - 28, startTop + moveEvent.clientY - startY));
-        state.controlsPosition = { top };
+        state.controlsPosition = { ratio: top / Math.max(1, window.innerHeight) };
         root.style.top = `${Math.round(top)}px`;
       };
       const end = () => {
         root.classList.remove("cwr-controls-dragging");
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", end);
-        if (state.controlsPosition) saveSetting({ cwrControlsPosition: state.controlsPosition });
+        if (dragged && state.controlsPosition) {
+          state.controlsDraggedAt = Date.now();
+          saveSetting({ cwrControlsPositionV2: state.controlsPosition });
+        }
       };
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", end, { once: true });
-    });
+    };
+    grip.addEventListener("pointerdown", (event) => beginDrag(event, false));
+    launcher.addEventListener("pointerdown", (event) => beginDrag(event, true));
   }
 
   function makeUi() {
@@ -1796,8 +1823,8 @@
     root.id = "cwr-controls";
     root.setAttribute("aria-label", "Classroom Office Reviewer");
     root.innerHTML = `
-      <button id="cwr-controls-toggle" type="button" title="Classroom Office Reviewerを開く" aria-label="Classroom Office Reviewerを開く" aria-expanded="false">CWR</button>
-      <button id="cwr-controls-drag" type="button" title="ドラッグして位置を変える" aria-label="ドラッグして位置を変える">⠿</button>
+      <button id="cwr-controls-toggle" type="button" title="操作パネルを開く（ドラッグして移動）" aria-label="操作パネルを開く（ドラッグして移動）" aria-expanded="false">開く</button>
+      <button id="cwr-controls-drag" type="button" title="ドラッグして位置を変える" aria-label="ドラッグして位置を変える">移動</button>
       <button id="cwr-open" type="button">PDFで表示</button>
       <button id="cwr-open-window" type="button">Word別窓で表示</button>
       <button id="cwr-reconvert" type="button">このファイルを再変換</button>
@@ -1813,7 +1840,10 @@
     `;
     document.body.appendChild(root);
     state.ui = root;
-    root.querySelector("#cwr-controls-toggle").addEventListener("click", () => setControlsCollapsed(!state.controlsCollapsed));
+    root.querySelector("#cwr-controls-toggle").addEventListener("click", () => {
+      if (Date.now() - state.controlsDraggedAt < 350) return;
+      setControlsCollapsed(!state.controlsCollapsed);
+    });
     attachControlsDrag(root);
 
     root.querySelector("#cwr-open").addEventListener("click", () => {
@@ -1846,16 +1876,17 @@
     root.querySelector("#cwr-toggle").addEventListener("click", () => setEnabled(!state.enabled));
     updateUiLabels();
     applyControlsLayout();
-    loadSettings(["cwrAuto", "cwrMode", "cwrEnabled", "cwrControlsCollapsed", "cwrControlsPosition"]).then(({
-      cwrAuto, cwrMode, cwrEnabled, cwrControlsCollapsed, cwrControlsPosition
+    loadSettings(["cwrAuto", "cwrMode", "cwrEnabled", "cwrControlsCollapsed", "cwrControlsPositionV2"]).then(({
+      cwrAuto, cwrMode, cwrEnabled, cwrControlsCollapsed, cwrControlsPositionV2
     }) => {
       if (!contextAvailable()) return;
       state.auto = state.isPreparationTab ? false : Boolean(cwrAuto);
       state.mode = ["word", "office"].includes(cwrMode) ? "office" : "pdf";
       state.enabled = cwrEnabled !== false;
       state.controlsCollapsed = cwrControlsCollapsed !== false;
-      state.controlsPosition = cwrControlsPosition && Number.isFinite(cwrControlsPosition.top)
-        ? cwrControlsPosition
+      // v0.8.7以前のpx座標は画面サイズが変わると下部へずれてしまうため使わない。
+      state.controlsPosition = cwrControlsPositionV2 && Number.isFinite(cwrControlsPositionV2.ratio)
+        ? cwrControlsPositionV2
         : null;
       root.querySelector("#cwr-auto").checked = state.auto;
       applyEnabledUi();
@@ -1889,6 +1920,8 @@
     if (status) {
       status.textContent = text;
       status.dataset.kind = kind;
+      status.title = text;
+      status.setAttribute("aria-label", text);
     }
     if (state.preparing && !isPreparationFinished()) setPreparationProgress({ detailText: text });
     state.overlay?.querySelector("iframe")?.contentWindow?.postMessage({ type: "cwr-viewer-status", text, kind }, "*");
@@ -1935,23 +1968,22 @@
       if (!isAutomatic) setStatus("提出物を個別に開いてから操作してください。", "error");
       return;
     }
-    const detectedFileInfo = findSupportedFileInfo();
-    const fileInfo = requestedFile || (state.activeFile?.name
-      ? {
-        ...(detectedFileInfo || { kind: "office" }),
-        fileName: state.activeFile.name,
-        expectedName: state.activeFile.name,
-        expectedFileId: state.activeFile.id || findDisplayedFileId()
-      }
-      : detectedFileInfo);
+    // Classroomの添付を切り替えた直後は、タイトルとiframeが少しずれて更新される。
+    // 手動・自動ともに現在のiframeを基準に待ち、前回のactiveFileを使い回さない。
+    const detectedFileInfo = requestedFile || await waitForCurrentDisplayedFile(isAutomatic ? 3500 : 1200);
+    const fileInfo = requestedFile || detectedFileInfo || (state.activeFile?.name
+      ? { kind: "office", fileName: state.activeFile.name, expectedName: state.activeFile.name, expectedFileId: state.activeFile.id }
+      : null);
     if (!fileInfo) {
-      if (!isAutomatic) setStatus("表示中のWord／PowerPoint／Google形式のファイルが見つかりません。", "error");
+      const detail = logCurrentFileContext("表示対象を特定できませんでした");
+      if (!isAutomatic) setStatus(`表示中のWord／PowerPoint／Google形式のファイルを特定できませんでした。表示ファイルID: ${detail.displayedFileId || "取得待ち"}`, "error");
       return;
     }
 
     beginDisplayRequest();
     setActiveFile(fileInfo);
     const key = getSubmissionKey(fileInfo);
+    logCurrentFileContext(isAutomatic ? "自動表示を開始" : "PDF表示を開始", fileInfo);
     setStatus("提出物を取得中…", "working");
     try {
       const response = await safeSendMessage({
@@ -1982,7 +2014,7 @@
       if (!isAutomatic) setStatus("提出物を個別に開いてから操作してください。", "error");
       return;
     }
-    const fileInfo = findSupportedFileInfo();
+    const fileInfo = await waitForCurrentDisplayedFile(isAutomatic ? 3500 : 1200);
     const fileName = fileInfo?.fileName || "";
     if (!fileInfo || fileInfo.kind !== "office" || !/\.(?:docx?|pptx?)$/i.test(fileName)) {
       if (!isAutomatic) setStatus("表示中のWord／PowerPointファイルが見つかりません。", "error");
@@ -1990,7 +2022,8 @@
     }
 
     beginDisplayRequest();
-    const key = getSubmissionKey();
+    const key = getSubmissionKey(fileInfo);
+    logCurrentFileContext(isAutomatic ? "別窓の自動表示を開始" : "別窓表示を開始", fileInfo);
     setStatus(isPowerPoint(fileName) ? "PowerPoint発表画面を準備中…" : "Word別ウィンドウを準備中…", "working");
     try {
       const response = await safeSendMessage({
@@ -2010,7 +2043,7 @@
 
   async function reconvertCurrentFile() {
     if (reportContextLostIfNeeded()) return;
-    const fileInfo = findSupportedFileInfo();
+    const fileInfo = await waitForCurrentDisplayedFile(1200);
     if (!fileInfo) {
       setStatus("再変換する提出物を個別に開いてください。", "error");
       return;
@@ -2166,6 +2199,29 @@
 
   function setActiveFile(file) {
     state.activeFile = file ? { id: file.expectedFileId || "", name: file.fileName || "" } : null;
+  }
+
+  function logCurrentFileContext(reason, fileInfo = null) {
+    const current = fileInfo || currentDisplayedFileInfo() || {};
+    const details = {
+      displayedFileId: findDisplayedFileId(),
+      expectedFileId: current.expectedFileId || "",
+      fileName: current.fileName || "",
+      submissionKey: getSubmissionKey(current),
+      cacheIdentity: getCacheIdentity(current)
+    };
+    console.info("[Classroom Office Reviewer]", reason, details);
+    return details;
+  }
+
+  async function waitForCurrentDisplayedFile(timeoutMs = 3000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const fileInfo = currentDisplayedFileInfo();
+      if (fileInfo?.expectedFileId || fileInfo?.fileName) return fileInfo;
+      await wait(120);
+    }
+    return currentDisplayedFileInfo();
   }
 
   // Classroomが実際に表示しているファイルを最優先で正とする。拡張が独自に
@@ -2516,9 +2572,9 @@
       // Classroom上で利用者が同じ学生の別ファイルを選んだ場合は、
       // 自動表示の設定にかかわらず、その明示操作に表示を追従させる。
       // 学生を前後に移動したときだけは、従来どおり自動表示の設定を尊重する。
-      if (state.enabled && hadPrevious && (state.auto || fileChangedWithinStudent) && isSubmissionView() && findSupportedFileInfo()) {
+      if (state.enabled && hadPrevious && (state.auto || fileChangedWithinStudent) && isSubmissionView() && currentDisplayedFileInfo()) {
         setTimeout(() => {
-          if (state.mode === "office" && findSupportedFileInfo()?.kind === "office") startOfficeWindow(true);
+          if (state.mode === "office" && currentDisplayedFileInfo()?.kind === "office") startOfficeWindow(true);
           else startConversion(true);
         }, 120);
       }
