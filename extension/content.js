@@ -32,6 +32,7 @@
     lastRemoteProgressAt: 0,
     busyWatchdog: null,
     preparationCompact: false,
+    preparationPanelHidden: false,
     preparationLedgerExpanded: false,
     wide: false,
     overlayBounds: null,
@@ -945,6 +946,7 @@
   }
 
   function ensurePreparationPanel() {
+    if (state.preparationPanelHidden) return null;
     const existing = document.getElementById("cwr-preparation");
     if (existing) return existing;
     const panel = document.createElement("section");
@@ -991,7 +993,16 @@
   function closePreparationPanel() {
     clearInterval(state.preparationTimer);
     state.preparationTimer = null;
+    state.preparationPanelHidden = true;
     document.getElementById("cwr-preparation")?.remove();
+    updateUiLabels();
+  }
+
+  function showPreparationPanel() {
+    state.preparationPanelHidden = false;
+    ensurePreparationPanel();
+    renderPreparation();
+    updateUiLabels();
   }
 
   function handlePreparationCancelClick() {
@@ -1053,7 +1064,7 @@
     panel.querySelector("#cwr-preparation-note").textContent = preparationNote();
 
     const cancelButton = panel.querySelector("#cwr-preparation-cancel");
-    cancelButton.textContent = finished ? "閉じる" : "現在の処理後に中止";
+    cancelButton.textContent = finished ? "通知を閉じる" : "現在の処理後に中止";
     cancelButton.disabled = running && progress.cancelRequested === true;
 
     const focusButton = panel.querySelector("#cwr-preparation-focus");
@@ -1062,7 +1073,7 @@
     focusButton.classList.toggle("cwr-preparation-urgent", Boolean(progress.stalled));
 
     const compactButton = panel.querySelector("#cwr-preparation-compact");
-    compactButton.textContent = state.preparationCompact ? "大きく表示" : "小さく表示";
+    compactButton.textContent = state.preparationCompact ? "展開" : "最小化";
     compactButton.setAttribute("aria-pressed", String(state.preparationCompact));
 
     renderLedger(panel);
@@ -1138,8 +1149,10 @@
   function setPreparationProgress(patch = {}) {
     Object.assign(progress, patch);
     if (!progress.startedAt) progress.startedAt = Date.now();
-    ensurePreparationPanel();
-    renderPreparation();
+    if (!state.preparationPanelHidden) {
+      ensurePreparationPanel();
+      renderPreparation();
+    }
     if (state.dedicatedPreparation) reportPreparationProgress();
   }
 
@@ -1262,6 +1275,7 @@
       setPreparationProgress({ remote: true });
       return;
     }
+    state.preparationPanelHidden = false;
     state.remotePreparing = true;
     updateUiLabels();
     setPreparationProgress({
@@ -1634,6 +1648,7 @@
     const officeButton = root.querySelector("#cwr-open-window");
     const reconvertButton = root.querySelector("#cwr-reconvert");
     const prepareButton = root.querySelector("#cwr-prepare");
+    const showPreparationButton = root.querySelector("#cwr-show-preparation");
     const autoInput = root.querySelector("#cwr-auto");
     if (!submissionView) {
       openButton.textContent = "提出物を開くと表示できます";
@@ -1642,16 +1657,11 @@
       officeButton.disabled = true;
       reconvertButton.disabled = true;
       prepareButton.disabled = true;
+      showPreparationButton.hidden = !state.preparationPanelHidden;
       autoInput.disabled = true;
       return;
     }
-    openButton.textContent = googleDocument
-      ? "Googleドキュメントを表示"
-      : googlePresentation
-        ? "Googleスライドを表示"
-        : powerpoint
-          ? "PowerPointを正確に表示"
-          : "Wordで正確に表示";
+    openButton.textContent = "PDFで表示";
     officeButton.textContent = googleDocument || googlePresentation
       ? "Google形式はPDF表示のみ"
       : powerpoint
@@ -1663,6 +1673,7 @@
     const busyPreparing = state.remotePreparing || state.preparing;
     prepareButton.textContent = busyPreparing ? "一括準備を実行中…" : "全員分を一括準備";
     prepareButton.disabled = busyPreparing;
+    showPreparationButton.hidden = !state.preparationPanelHidden;
     autoInput.disabled = false;
   }
 
@@ -1674,10 +1685,11 @@
     root.id = "cwr-controls";
     root.setAttribute("aria-label", "Classroom Office Reviewer");
     root.innerHTML = `
-      <button id="cwr-open" type="button">Wordで正確に表示</button>
+      <button id="cwr-open" type="button">PDFで表示</button>
       <button id="cwr-open-window" type="button">Word別窓で表示</button>
       <button id="cwr-reconvert" type="button">このファイルを再変換</button>
       <button id="cwr-prepare" type="button">全員分を一括準備</button>
+      <button id="cwr-show-preparation" type="button" hidden>準備状況を表示</button>
       <button id="cwr-cache" type="button">キャッシュ管理</button>
       <label id="cwr-auto-label">
         <input id="cwr-auto" type="checkbox">
@@ -1708,6 +1720,7 @@
       if (reportContextLostIfNeeded()) return;
       startDedicatedPreparation();
     });
+    root.querySelector("#cwr-show-preparation").addEventListener("click", showPreparationPanel);
     root.querySelector("#cwr-cache").addEventListener("click", showCachePanel);
     root.querySelector("#cwr-auto").addEventListener("change", (event) => {
       state.auto = event.target.checked;
