@@ -40,7 +40,7 @@ class MockElement {
   }
 }
 
-function runDetection({ nodes = [], frames = [], href, runtimeId = "test-extension-id" } = {}) {
+function runDetection({ nodes = [], frames = [], href, runtimeId = "test-extension-id", storageBroken = false } = {}) {
   const hooks = {};
   const location = {
     hostname: "classroom.google.com",
@@ -56,9 +56,24 @@ function runDetection({ nodes = [], frames = [], href, runtimeId = "test-extensi
       return nodes;
     }
   };
+  // 拡張機能を更新した直後の古いタブでは、chrome.storage の呼び出しが
+  // Promiseではなく同期的な例外になる。その状態を再現する。
+  const storage = storageBroken
+    ? {
+      local: {
+        get() { throw new Error("Extension context invalidated."); },
+        set() { throw new Error("Extension context invalidated."); }
+      }
+    }
+    : {
+      local: {
+        get: async () => ({}),
+        set: async () => undefined
+      }
+    };
   const context = vm.createContext({
     __CWR_TEST_HOOKS__: hooks,
-    chrome: { runtime: runtimeId ? { id: runtimeId } : {} },
+    chrome: { runtime: runtimeId ? { id: runtimeId } : {}, storage },
     Element: MockElement,
     document,
     getComputedStyle: (element) => (element?.hidden
@@ -420,6 +435,18 @@ assert.equal(keyHooks.sameSubmissionStudent("u:ODU4NjY4MDY5MDE0|"), true);
 assert.equal(keyHooks.sameSubmissionStudent("u:OTHERSTUDENT9999|レポート.docx"), false);
 
 const textHooks = runDetection({ nodes: [] });
+
+// 拡張機能を更新した直後の古いタブでは chrome.storage が切り離される。
+// 設定の保存・読み出しは補助的な処理なので、ここで例外を投げて
+// コンソールに赤いエラーを残さず、操作は続けられる状態を保つ。
+const brokenStorageHooks = runDetection({ storageBroken: true });
+assert.doesNotThrow(() => brokenStorageHooks.saveSetting({ cwrAuto: true }));
+await assert.rejects(brokenStorageHooks.loadSettings(["cwrAuto"]));
+// 正常なタブでは、これまでどおり設定を読み書きできる。
+const workingStorageHooks = runDetection({ nodes: [] });
+assert.doesNotThrow(() => workingStorageHooks.saveSetting({ cwrAuto: true }));
+assert.deepEqual(await workingStorageHooks.loadSettings(["cwrAuto"]), {});
+
 
 // 学生を切り替えた直後は、Classroomがまだ前の提出物を表示している。
 // 前のファイル番号のまま変換結果が届いたら受け取らない。これを許すと

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.7.17";
+const expectedVersion = "0.7.18";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -79,6 +79,11 @@ assert(content.includes("waitForSubmissionChange(before, 8000, beforeFileId)"));
 // 遅れて届いた前のファイルの変換結果で、新しい表示を上書きしない。
 assert(content.includes("function matchesRequestedFile"));
 assert(content.includes("if (!matchesRequestedFile(message))"));
+// 設定の読み書きは必ず受け止める。直接呼ぶと、拡張機能の更新後に残った
+// 古いタブで「Extension context invalidated.」がコンソールへ出る。
+assert(content.includes("function saveSetting"));
+assert(content.includes("function loadSettings"));
+assert.equal((content.match(/chrome\.storage\.local\.(?:get|set)\(/g) || []).length, 2);
 assert(content.includes("function becomePreparationTab"));
 assert(content.includes('findFileName("docx?|pptx?|pdf|'));
 assert(viewer.includes(`pdfUrl.startsWith("http://127.0.0.1:${expectedPort}/file/")`));
