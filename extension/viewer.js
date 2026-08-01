@@ -242,9 +242,17 @@ async function toggleFullscreen() {
 }
 
 fullscreenButton.addEventListener("click", () => toggleFullscreen().catch(showError));
+document.getElementById("reconvert").addEventListener("click", () => {
+  closeMoreMenu();
+  send({ type: "cwr-reconvert" });
+});
 document.getElementById("prepare").addEventListener("click", () => {
   closeMoreMenu();
   send({ type: "cwr-prepare-all" });
+});
+document.getElementById("cache").addEventListener("click", () => {
+  closeMoreMenu();
+  send({ type: "cwr-cache-manage" });
 });
 document.getElementById("disable").addEventListener("click", () => {
   closeMoreMenu();

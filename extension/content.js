@@ -3,7 +3,12 @@
   // 準備専用タブが背面のとき、Chromeはタイマーを最大1分まで遅らせる。
   // 進捗が途絶えたと判断するまでの余裕をここで一括管理する。
   const PROGRESS_TICK_MS = 2000;
-  const STALL_WARNING_MS = 40000;
+  // 背面タブではChromeからの進捗通知が遅れる。短時間の無通信を停止と
+  // 誤認しないよう、警告は自動再試行を十分続けた後にだけ出す。
+  const STALL_WARNING_MS = 120000;
+  const BACKGROUND_RETRY_MS = 10000;
+  const BACKGROUND_STALLED_RETRY_MS = 30000;
+  const BACKGROUND_RETRY_BEFORE_STALLED = 3;
   // 提出者の切替ボタンは、採点画面が出ていれば数百ミリ秒で見つかる。
   // 見つからない時間を長く待つと、先頭と末尾の判定でそのぶん待たされる。
   const SUBMISSION_BUTTON_WAIT_MS = 5000;
@@ -34,9 +39,11 @@
     contextInvalidated: false,
     mutationObserver: null,
     contextWatcher: null,
-    preparationCompact: false,
+    preparationCompact: true,
     preparationPanelHidden: false,
     preparationLedgerExpanded: false,
+    controlsCollapsed: true,
+    controlsPosition: null,
     wide: false,
     overlayBounds: null,
     activeFile: null,
@@ -57,6 +64,7 @@
     skipped: 0,
     current: 0,
     startedAt: 0,
+    delayed: false,
     stalled: false,
     remote: false,
     ledger: []
@@ -958,9 +966,10 @@
         : "学生を切り替えると、準備済みのPDFがすぐ表示されます。";
     }
     if (progress.stalled) {
-      return state.isPreparationTab
-        ? "このタブを前面に表示すると、止まっているところから自動で再開します。"
-        : "準備が進んでいません。Chromeが背面のタブを止めている可能性があります。「準備タブを開く」を押すと、続きから自動で再開します。";
+      return "Classroomの画面更新を待っています。正しい学生・ファイルを確認できるまで、30秒ごとに自動で再試行します。";
+    }
+    if (progress.delayed) {
+      return "準備タブは背面ですが、正しい学生・ファイルを確認しながら自動で再試行しています。";
     }
     return state.isPreparationTab
       ? "このタブは自動で操作します。完了まで触らずにお待ちください。終わると採点タブへ自動で戻ります。"
@@ -1200,6 +1209,7 @@
           skipped: progress.skipped,
           current: progress.current,
           startedAt: progress.startedAt,
+          delayed: progress.delayed === true,
           stalled: progress.stalled === true,
           cancelRequested: progress.cancelRequested === true,
           ledger: progress.ledger
@@ -1219,6 +1229,7 @@
       title,
       countText,
       detailText,
+      delayed: false,
       stalled: false,
       cancelRequested: false
     });
@@ -1248,6 +1259,8 @@
       if (!state.remotePreparing || progress.stalled) return;
       if (Date.now() - state.lastRemoteProgressAt <= STALL_WARNING_MS) return;
       progress.stalled = true;
+      progress.delayed = false;
+      progress.detailText = "準備専用タブからの進捗を待っています。復旧すれば自動で表示を更新します。";
       renderPreparation();
     }, 5000);
   }
@@ -1265,6 +1278,7 @@
     updateUiLabels();
     setPreparationProgress({
       remote: true,
+      delayed: running && message.delayed === true,
       stalled: running && message.stalled === true,
       phase: running ? "running" : message.status,
       title: message.title || progress.title,
@@ -1346,61 +1360,99 @@
   // 見つからない）、"stuck"（押したのに画面が変わらない）を区別する。
   // 区別しないと、背面タブで画面が止まっただけなのに「全員分の準備が完了」と
   // 誤って報告してしまう。
-  async function moveSubmission(direction) {
-    if (!contextAvailable()) return "stuck";
+  async function moveSubmission(direction, transition = null) {
+    if (!contextAvailable()) return { status: "stuck", transition };
+    // すでに押した矢印の結果待ちでは、再クリックしない。遅れてDOMだけ
+    // 更新された瞬間にもう一度押すと、1人飛ばしてしまうためである。
+    if (transition) {
+      if (!await waitForSubmissionChange(transition.before, BACKGROUND_RETRY_MS, transition.beforeFileId)) {
+        return { status: "stuck", transition };
+      }
+      await wait(direction === "next" ? 650 : 180);
+      return { status: "moved" };
+    }
     const button = await waitForSubmissionButton(direction);
     // 「押せない状態で見つかった」なら本当に端。「見つからない」だけのときは、
     // 背面で止まっているか描き直し中の可能性があるので端と決めつけない。
-    if (!button) return document.hidden ? "stuck" : "missing";
-    if (submissionButtonDisabled(button)) return "end";
+    if (!button) return { status: document.hidden ? "stuck" : "missing" };
+    if (submissionButtonDisabled(button)) return { status: "end" };
     const before = getStudentKey();
     // 一括準備でも、学生の番号だけでは切替完了とみなさない。Classroomは
     // URLを先に更新し、数秒間は前の学生のファイルを表示し続けることがある。
     // ここを確認しないと、2人目のPDFを3人目以降として繰り返し保存してしまう。
     const beforeFileId = findDisplayedFileId();
     button.click();
-    if (!await waitForSubmissionChange(before, 20000, beforeFileId)) return "stuck";
+    const pendingTransition = { before, beforeFileId };
+    if (!await waitForSubmissionChange(before, 20000, beforeFileId)) {
+      return { status: "stuck", transition: pendingTransition };
+    }
     await wait(direction === "next" ? 650 : 180);
-    return "moved";
+    return { status: "moved" };
   }
 
-  // Chromeは背面のタブの描画を止めるため、Classroomの画面が更新されなくなる
-  // ことがある。中断せずに前面へ戻るのを待ち、続きから自動で再開する。
-  async function waitForVisibleTab(timeoutMs = 600000) {
-    if (!document.hidden) return true;
-    setPreparationProgress({
-      stalled: true,
-      detailText: "Chromeが背面のタブを止めています。準備タブを前面に表示すると、続きから自動で再開します。"
-    });
-    const startedAt = Date.now();
-    while (document.hidden && Date.now() - startedAt < timeoutMs) {
-      await wait(1000);
-    }
-    const visible = !document.hidden;
-    setPreparationProgress({
-      stalled: false,
-      detailText: visible ? "画面の更新を確認しました。準備を再開します。" : "画面が更新されないまま10分が過ぎました。"
-    });
-    return visible;
-  }
-
-  // 呼び出し側へは "moved" / "end" / "stuck" だけを返す。
+  // 背面であることは停止理由ではない。Classroomが学生とファイルを入れ替える
+  // まで、同じ移動を安全に確認し直す。前のファイルIDを必ず渡すため、再試行で
+  // 別学生へ誤って進んだり、前の学生のPDFを保存したりしない。
   async function moveWithRecovery(direction) {
-    const result = await moveSubmission(direction);
-    if (result === "moved" || result === "end") return result;
+    let retries = 0;
+    let transition = null;
+    while (!state.prepareCancelled && contextAvailable()) {
+      const result = await moveSubmission(direction, transition);
+      const status = result.status;
+      if (status === "moved" || status === "end") {
+        if (retries) {
+          setPreparationProgress({
+            delayed: false,
+            stalled: false,
+            detailText: "Classroomの画面更新を確認しました。準備を続けます。"
+          });
+        }
+        return status;
+      }
 
-    if (result === "missing") {
-      // 反対向きのボタンがあれば画面は生きている＝先頭または末尾。
-      // どちらも無いときだけ描き直し中とみなし、もう一度だけ長めに待つ。
-      if (findSubmissionButton(direction === "next" ? "previous" : "next")) return "end";
-      if (!await waitForSubmissionButton(direction, 10000)) return "end";
-    } else {
-      if (!await waitForVisibleTab()) return "stuck";
-      await wait(1200);
+      if (status === "missing" && findSubmissionButton(direction === "next" ? "previous" : "next")) return "end";
+      transition = result.transition || null;
+      retries += 1;
+      const stalled = retries > BACKGROUND_RETRY_BEFORE_STALLED;
+      setPreparationProgress({
+        delayed: !stalled && document.hidden,
+        stalled,
+        detailText: stalled
+          ? "Classroomの画面更新を待っています。正しい学生・ファイルを確認するため、30秒後に自動で再試行します。"
+          : document.hidden
+            ? `背面で画面更新を待っています（${retries}/${BACKGROUND_RETRY_BEFORE_STALLED}回目の自動再試行）。`
+            : `画面更新を確認中です（${retries}/${BACKGROUND_RETRY_BEFORE_STALLED}回目の自動再試行）。`
+      });
+      await wait(stalled ? BACKGROUND_STALLED_RETRY_MS : BACKGROUND_RETRY_MS);
+      // 最初のクリックを確認する間は再クリックしない。確認が続けて失敗した
+      // 場合だけ、Classroomがクリック自体を取りこぼした可能性として押し直す。
+      if (!transition || (retries > BACKGROUND_RETRY_BEFORE_STALLED && retries % 3 === 0)) transition = null;
     }
+    return "stuck";
+  }
 
-    const retried = await moveSubmission(direction);
-    return retried === "moved" ? "moved" : retried === "stuck" ? "stuck" : "end";
+  async function waitForSubmissionFileWithRecovery(timeoutMs = 15000) {
+    let retries = 0;
+    while (!state.prepareCancelled && contextAvailable()) {
+      const fileInfo = await waitForSubmissionFile(timeoutMs);
+      if (fileInfo) {
+        if (retries) setPreparationProgress({ delayed: false, stalled: false, detailText: "提出物を確認しました。準備を続けます。" });
+        return fileInfo;
+      }
+      retries += 1;
+      const stalled = retries > BACKGROUND_RETRY_BEFORE_STALLED;
+      setPreparationProgress({
+        delayed: !stalled && document.hidden,
+        stalled,
+        detailText: stalled
+          ? "提出物の表示を待っています。正しいファイルを確認するため、30秒後に自動で再試行します。"
+          : document.hidden
+            ? `背面で提出物の表示を待っています（${retries}/${BACKGROUND_RETRY_BEFORE_STALLED}回目の自動再試行）。`
+            : `提出物の表示を確認中です（${retries}/${BACKGROUND_RETRY_BEFORE_STALLED}回目の自動再試行）。`
+      });
+      await wait(stalled ? BACKGROUND_STALLED_RETRY_MS : BACKGROUND_RETRY_MS);
+    }
+    return null;
   }
 
   // 実行中は内訳を分けず「未準備」でまとめ、終了時の要約で対象外と失敗を分ける。
@@ -1432,6 +1484,7 @@
       skipped: 0,
       current: 0,
       startedAt: Date.now(),
+      delayed: false,
       stalled: false,
       cancelRequested: false,
       ledger: []
@@ -1457,7 +1510,7 @@
       }
 
       updatePreparation("最初の提出物を確認中…", "Classroomのファイルプレビューを待っています。");
-      const initialFileInfo = await waitForSubmissionFile(20000);
+      const initialFileInfo = await waitForSubmissionFileWithRecovery(20000);
       const initialNavigation = findNextSubmissionButton() || findPreviousSubmissionButton();
       if (!initialFileInfo && !initialNavigation) {
         throw new Error("Classroomの提出者画面を読み込めませんでした。準備専用タブで提出物が表示されているか確認してください。");
@@ -1474,10 +1527,7 @@
         // 名前で保存され、採点時に準備済みPDFを見つけられなくなる。
         let fileInfo = sequence === 1 && initialFileInfo
           ? initialFileInfo
-          : await waitForSubmissionFile(15000);
-        if (!fileInfo && document.hidden && await waitForVisibleTab()) {
-          fileInfo = await waitForSubmissionFile(15000);
-        }
+          : await waitForSubmissionFileWithRecovery(15000);
         const studentKey = getStudentKey();
         if (!studentKey || seen.has(studentKey)) break;
         seen.add(studentKey);
@@ -1594,7 +1644,7 @@
         if (state.prepareCancelled) break;
         const moved = await moveWithRecovery("next");
         if (moved === "stuck") {
-          throw new Error("Classroomの画面が更新されなくなったため、途中で停止しました。準備専用タブを前面にしてから、もう一度「全員分を一括準備」を押すと続きから準備します。");
+          break;
         }
         if (moved === "end") break;
         forwardMoves += 1;
@@ -1696,6 +1746,48 @@
     autoInput.disabled = false;
   }
 
+  function applyControlsLayout() {
+    if (!state.ui) return;
+    state.ui.classList.toggle("cwr-controls-collapsed", state.controlsCollapsed);
+    const launcher = state.ui.querySelector("#cwr-controls-toggle");
+    launcher?.setAttribute("aria-expanded", String(!state.controlsCollapsed));
+    if (state.controlsPosition && Number.isFinite(state.controlsPosition.top)) {
+      state.ui.style.top = `${Math.round(state.controlsPosition.top)}px`;
+    }
+  }
+
+  function setControlsCollapsed(value, persist = true) {
+    state.controlsCollapsed = Boolean(value);
+    if (persist) saveSetting({ cwrControlsCollapsed: state.controlsCollapsed });
+    applyControlsLayout();
+  }
+
+  function attachControlsDrag(root) {
+    const grip = root.querySelector("#cwr-controls-drag");
+    if (!grip) return;
+    grip.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const startTop = root.getBoundingClientRect().top + root.getBoundingClientRect().height / 2;
+      const startY = event.clientY;
+      grip.setPointerCapture?.(event.pointerId);
+      root.classList.add("cwr-controls-dragging");
+      const move = (moveEvent) => {
+        const top = Math.max(28, Math.min(window.innerHeight - 28, startTop + moveEvent.clientY - startY));
+        state.controlsPosition = { top };
+        root.style.top = `${Math.round(top)}px`;
+      };
+      const end = () => {
+        root.classList.remove("cwr-controls-dragging");
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", end);
+        if (state.controlsPosition) saveSetting({ cwrControlsPosition: state.controlsPosition });
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", end, { once: true });
+    });
+  }
+
   function makeUi() {
     // 準備専用タブでは自動操作の邪魔になるため、採点用の操作パネルは出さない。
     if (state.isPreparationTab && !isPreparationFinished()) return;
@@ -1704,6 +1796,8 @@
     root.id = "cwr-controls";
     root.setAttribute("aria-label", "Classroom Office Reviewer");
     root.innerHTML = `
+      <button id="cwr-controls-toggle" type="button" title="Classroom Office Reviewerを開く" aria-label="Classroom Office Reviewerを開く" aria-expanded="false">CWR</button>
+      <button id="cwr-controls-drag" type="button" title="ドラッグして位置を変える" aria-label="ドラッグして位置を変える">⠿</button>
       <button id="cwr-open" type="button">PDFで表示</button>
       <button id="cwr-open-window" type="button">Word別窓で表示</button>
       <button id="cwr-reconvert" type="button">このファイルを再変換</button>
@@ -1719,6 +1813,8 @@
     `;
     document.body.appendChild(root);
     state.ui = root;
+    root.querySelector("#cwr-controls-toggle").addEventListener("click", () => setControlsCollapsed(!state.controlsCollapsed));
+    attachControlsDrag(root);
 
     root.querySelector("#cwr-open").addEventListener("click", () => {
       if (reportContextLostIfNeeded()) return;
@@ -1749,13 +1845,21 @@
     });
     root.querySelector("#cwr-toggle").addEventListener("click", () => setEnabled(!state.enabled));
     updateUiLabels();
-    loadSettings(["cwrAuto", "cwrMode", "cwrEnabled"]).then(({ cwrAuto, cwrMode, cwrEnabled }) => {
+    applyControlsLayout();
+    loadSettings(["cwrAuto", "cwrMode", "cwrEnabled", "cwrControlsCollapsed", "cwrControlsPosition"]).then(({
+      cwrAuto, cwrMode, cwrEnabled, cwrControlsCollapsed, cwrControlsPosition
+    }) => {
       if (!contextAvailable()) return;
       state.auto = state.isPreparationTab ? false : Boolean(cwrAuto);
       state.mode = ["word", "office"].includes(cwrMode) ? "office" : "pdf";
       state.enabled = cwrEnabled !== false;
+      state.controlsCollapsed = cwrControlsCollapsed !== false;
+      state.controlsPosition = cwrControlsPosition && Number.isFinite(cwrControlsPosition.top)
+        ? cwrControlsPosition
+        : null;
       root.querySelector("#cwr-auto").checked = state.auto;
       applyEnabledUi();
+      applyControlsLayout();
     }, () => undefined);
   }
 
@@ -2358,7 +2462,9 @@
       setStatus("プレビューを閉じました。", "idle");
     }
     if (event.data?.type === "cwr-disable") setEnabled(false);
+    if (event.data?.type === "cwr-reconvert") reconvertCurrentFile();
     if (event.data?.type === "cwr-prepare-all") startDedicatedPreparation();
+    if (event.data?.type === "cwr-cache-manage") showCachePanel();
     if (event.data?.type === "cwr-navigate") moveToAdjacentSubmission(event.data.direction === "previous" ? "previous" : "next");
     if (event.data?.type === "cwr-toggle-wide") setWideLayout(!state.wide);
     if (event.data?.type === "cwr-reset-size") resetOverlayBounds();
@@ -2426,7 +2532,8 @@
   }, () => undefined);
   loadSettings(["cwrPreparationCompact", "cwrWide", "cwrOverlayBounds"]).then((stored) => {
     if (!contextAvailable()) return;
-    state.preparationCompact = Boolean(stored.cwrPreparationCompact);
+    // 既存利用者も、次の一括準備からは本文を覆わない1行表示を既定にする。
+    state.preparationCompact = stored.cwrPreparationCompact !== false;
     state.wide = Boolean(stored.cwrWide);
     state.overlayBounds = stored.cwrOverlayBounds || null;
     renderPreparation();
