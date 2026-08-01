@@ -189,7 +189,7 @@
 #cwr-preparation {
   position: fixed;
   right: 18px;
-  bottom: 18px;
+  top: 18px;
   z-index: 2147483647;
   width: min(390px, calc(100vw - 36px));
   color: #e8eaed;
@@ -537,7 +537,7 @@
 
   #cwr-preparation {
     right: 12px;
-    bottom: 12px;
+    top: 12px;
     width: min(360px, calc(100vw - 24px));
   }
 }
