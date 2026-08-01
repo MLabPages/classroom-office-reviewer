@@ -1610,6 +1610,15 @@
   }
 
   function updateUiLabels() {
+    // 拡張機能を再読み込みした直後は、この古いスクリプトだけがページに残る。
+    // DOM監視や準備用タイマーからここへ入ると、Chromeが文脈切れの例外を
+    // コンソールへ出すことがあるため、以降の画面更新を止める。
+    if (extensionContextLost()) {
+      clearTimeout(state.timer);
+      clearInterval(state.progressTicker);
+      clearInterval(state.watchdogTimer);
+      return;
+    }
     const root = state.ui;
     if (!root) return;
     const submissionView = isSubmissionView();
@@ -2319,6 +2328,12 @@
   function handlePossibleSubmissionChange() {
     clearTimeout(state.timer);
     state.timer = setTimeout(() => {
+      if (extensionContextLost()) {
+        clearTimeout(state.timer);
+        clearInterval(state.progressTicker);
+        clearInterval(state.watchdogTimer);
+        return;
+      }
       // 準備専用タブは自動操作中なので、採点用の表示処理は動かさない。
       if (state.isPreparationTab && state.preparing) return;
       // 同じ提出者の別ファイルを選択中は、学生切替として扱わない。
