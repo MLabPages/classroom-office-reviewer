@@ -598,7 +598,8 @@
           return;
         }
         sendResponse({ ok: true });
-        prepareAllSubmissions({ dedicated: true });
+        // 表示中の1件は既にキャッシュにあるため、そこを起点に次の3人分まで低優先度で準備する。
+        prepareAllSubmissions({ dedicated: true, limit: message.prefetch ? 4 : 0, startAtCurrent: message.prefetch === true });
       })();
       return true;
     }
@@ -644,6 +645,8 @@
       state.convertedKey = getSubmissionKey();
       renderPdf(message.pdfUrl, message.fileName, message.pageCount);
       setStatus("提出物を表示中", "ready");
+      // 採点中の画面を動かさず、別タブで次の3人分だけ低優先度に準備する。
+      safeSendMessage({ type: "cwr-prefetch-next" }).catch(() => undefined);
     }
     return false;
   });
@@ -706,6 +709,19 @@
     const studentId = getStudentIdFromUrl();
     if (studentId) return `u:${studentId}`;
     return [location.href, getStudentLabel()].join("|");
+  }
+
+  // 保存先は表示名ではなく、ClassroomのURLと提出者・Driveファイル番号で決める。
+  // 同姓同名や同じファイル名でも、別の授業・課題・提出者のPDFを取り違えない。
+  function getCacheIdentity(fileInfo = null) {
+    const match = location.pathname.match(/\/c\/([^/]+)\/a\/([^/]+)/);
+    const currentFile = fileInfo || state.activeFile || findSupportedFileInfo() || {};
+    return {
+      courseId: match?.[1] || "unknown-course",
+      assignmentId: match?.[2] || "unknown-assignment",
+      submissionId: getStudentIdFromUrl() || getStudentKey() || "unknown-submission",
+      fileId: currentFile.expectedFileId || currentFile.id || findDisplayedFileId() || "unknown-file"
+    };
   }
 
   function getSubmissionKey(fileInfo = null) {
@@ -1354,7 +1370,7 @@
     return `${base}${notReadyPart}${currentPart}`;
   }
 
-  async function prepareAllSubmissions({ dedicated = false } = {}) {
+  async function prepareAllSubmissions({ dedicated = false, limit = 0, startAtCurrent = false } = {}) {
     if (state.preparing) return;
     if (!await waitForSubmissionView()) {
       throw new Error("提出物を個別に開いてから一括準備を開始してください。");
@@ -1390,10 +1406,12 @@
     const preparedDocumentKeys = new Set();
 
     try {
-      updatePreparation("先頭の提出者へ移動中…", "提出者リストの最初まで戻っています。");
-      for (let attempts = 0; attempts < 1000 && !state.prepareCancelled; attempts += 1) {
-        if (await moveWithRecovery("previous") !== "moved") break;
-        updatePreparation("先頭の提出者へ移動中…", `${attempts + 1}人分戻りました。`);
+      if (!startAtCurrent) {
+        updatePreparation("先頭の提出者へ移動中…", "提出者リストの最初まで戻っています。");
+        for (let attempts = 0; attempts < 1000 && !state.prepareCancelled; attempts += 1) {
+          if (await moveWithRecovery("previous") !== "moved") break;
+          updatePreparation("先頭の提出者へ移動中…", `${attempts + 1}人分戻りました。`);
+        }
       }
 
       updatePreparation("最初の提出物を確認中…", "Classroomのファイルプレビューを待っています。");
@@ -1483,7 +1501,8 @@
                 fileName,
                 expectedName: preparedFile.expectedName || "",
                 expectedFileId: preparedFile.expectedFileId || "",
-                expectedGoogleType: preparedFile.expectedGoogleType || ""
+                expectedGoogleType: preparedFile.expectedGoogleType || "",
+                cacheIdentity: getCacheIdentity(preparedFile)
               });
               // 画面と突き合わせる1件目だけ、前の提出者と同じ結果なら画面更新待ちとみなす。
               const repeatedDocument = onScreen && response?.ok && preparedDocumentKeys.has(response.documentKey);
@@ -1537,6 +1556,7 @@
         }
         if (moved === "end") break;
         forwardMoves += 1;
+        if (limit > 0 && seen.size >= limit) break;
       }
 
       if (!dedicated) {
@@ -1599,6 +1619,7 @@
     const powerpoint = submissionView && isPowerPoint(fileInfo?.fileName || "");
     const openButton = root.querySelector("#cwr-open");
     const officeButton = root.querySelector("#cwr-open-window");
+    const reconvertButton = root.querySelector("#cwr-reconvert");
     const prepareButton = root.querySelector("#cwr-prepare");
     const autoInput = root.querySelector("#cwr-auto");
     if (!submissionView) {
@@ -1606,6 +1627,7 @@
       officeButton.textContent = "提出物を開くと操作できます";
       openButton.disabled = true;
       officeButton.disabled = true;
+      reconvertButton.disabled = true;
       prepareButton.disabled = true;
       autoInput.disabled = true;
       return;
@@ -1624,6 +1646,7 @@
         : "Word別窓で表示";
     openButton.disabled = !fileInfo;
     officeButton.disabled = !fileInfo || googleDocument || googlePresentation;
+    reconvertButton.disabled = !fileInfo;
     const busyPreparing = state.remotePreparing || state.preparing;
     prepareButton.textContent = busyPreparing ? "一括準備を実行中…" : "全員分を一括準備";
     prepareButton.disabled = busyPreparing;
@@ -1640,7 +1663,9 @@
     root.innerHTML = `
       <button id="cwr-open" type="button">Wordで正確に表示</button>
       <button id="cwr-open-window" type="button">Word別窓で表示</button>
+      <button id="cwr-reconvert" type="button">このファイルを再変換</button>
       <button id="cwr-prepare" type="button">全員分を一括準備</button>
+      <button id="cwr-cache" type="button">キャッシュ管理</button>
       <label id="cwr-auto-label">
         <input id="cwr-auto" type="checkbox">
         次の提出物を自動表示
@@ -1665,10 +1690,12 @@
       removeOverlay();
       startOfficeWindow(false);
     });
+    root.querySelector("#cwr-reconvert").addEventListener("click", reconvertCurrentFile);
     root.querySelector("#cwr-prepare").addEventListener("click", () => {
       if (reportContextLostIfNeeded()) return;
       startDedicatedPreparation();
     });
+    root.querySelector("#cwr-cache").addEventListener("click", showCachePanel);
     root.querySelector("#cwr-auto").addEventListener("change", (event) => {
       state.auto = event.target.checked;
       saveSetting({ cwrAuto: state.auto });
@@ -1781,7 +1808,9 @@
         submissionKey: key,
         expectedName: fileInfo.expectedName || "",
         expectedFileId: fileInfo.expectedFileId || "",
-        expectedGoogleType: fileInfo.expectedGoogleType || ""
+        expectedGoogleType: fileInfo.expectedGoogleType || "",
+        cacheIdentity: getCacheIdentity(fileInfo),
+        force: requestedFile?.force === true
       });
       if (!response?.ok) throw new Error(response?.error || "処理を開始できませんでした。");
       if (!response.completed) {
@@ -1825,6 +1854,78 @@
       endDisplayRequest();
       setStatus(error.message || "別ウィンドウを開けませんでした。", "error");
     }
+  }
+
+  async function reconvertCurrentFile() {
+    if (reportContextLostIfNeeded()) return;
+    const fileInfo = findSupportedFileInfo();
+    if (!fileInfo) {
+      setStatus("再変換する提出物を個別に開いてください。", "error");
+      return;
+    }
+    setStatus("このファイルを再変換しています…", "converting");
+    await startConversion(false, { ...fileInfo, force: true });
+  }
+
+  function formatCacheBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return "0 MB";
+    if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+    return `${Math.max(0.1, bytes / 1024 ** 2).toFixed(1)} MB`;
+  }
+
+  function closeCachePanel() {
+    document.getElementById("cwr-cache-panel")?.remove();
+  }
+
+  async function showCachePanel() {
+    if (reportContextLostIfNeeded()) return;
+    setStatus("キャッシュ使用量を確認中…", "working");
+    let summary;
+    try {
+      summary = await safeSendMessage({ type: "cwr-cache-summary" });
+      if (!summary?.ok) throw new Error(summary?.error || "キャッシュ使用量を確認できませんでした。");
+    } catch (error) {
+      setStatus(error.message || "キャッシュ使用量を確認できませんでした。", "error");
+      return;
+    }
+    closeCachePanel();
+    const current = getCacheIdentity();
+    const currentAssignment = (summary.assignments || []).find((item) =>
+      item.courseId === current.courseId && item.assignmentId === current.assignmentId);
+    const panel = document.createElement("section");
+    panel.id = "cwr-cache-panel";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "キャッシュ管理");
+    panel.innerHTML = `
+      <div id="cwr-cache-card">
+        <button id="cwr-cache-close" type="button" aria-label="閉じる">×</button>
+        <h2>キャッシュ管理</h2>
+        <p><strong>${formatCacheBytes(summary.totalBytes)}</strong>・${summary.files}件をこのPCに保持しています。</p>
+        <p>${currentAssignment ? `この課題：${formatCacheBytes(currentAssignment.bytes)}・${currentAssignment.files}件` : "この課題の保存済みPDFはまだありません。"}</p>
+        <p class="cwr-cache-note">通常は自動削除しません。10 GBを超えた場合のみ通知します。</p>
+        <div id="cwr-cache-actions">
+          <button data-cwr-clean="temporary" type="button">破損・一時ファイルを整理</button>
+          <button data-cwr-clean="unused" type="button">1年以上未使用を削除</button>
+          <button data-cwr-clean="assignment" type="button">この課題を削除</button>
+          <button data-cwr-clean="all" type="button" class="cwr-danger">すべて削除…</button>
+        </div>
+      </div>`;
+    document.body.appendChild(panel);
+    panel.querySelector("#cwr-cache-close").addEventListener("click", closeCachePanel);
+    panel.querySelectorAll("[data-cwr-clean]").forEach((button) => button.addEventListener("click", async () => {
+      const mode = button.dataset.cwrClean;
+      const labels = { temporary: "破損・一時ファイルを整理", unused: "1年以上使っていないPDFを削除", assignment: "この課題のPDFを削除", all: "保存済みPDFをすべて削除" };
+      if (!window.confirm(`${labels[mode]}しますか？ この操作は元に戻せません。`)) return;
+      try {
+        const result = await safeSendMessage({ type: "cwr-cache-cleanup", mode, cacheIdentity: current, olderThanDays: mode === "unused" ? 365 : undefined });
+        if (!result?.ok) throw new Error(result?.error || "キャッシュを整理できませんでした。");
+        closeCachePanel();
+        setStatus(`キャッシュを整理しました（${formatCacheBytes(result.totalBytes)}・${result.files}件）。`, "ready");
+      } catch (error) {
+        setStatus(error.message || "キャッシュを整理できませんでした。", "error");
+      }
+    }));
+    setStatus(summary.warning ? "キャッシュが10 GBを超えています。" : "キャッシュを保持しています。", summary.warning ? "working" : "ready");
   }
 
   // 画面の端から表示枠までの余白（px）。上端と右端だけを持ち、左下は常に画面の角。

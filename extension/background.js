@@ -145,6 +145,85 @@ function descriptorKey(descriptor) {
   return [descriptor.fileId || descriptor.downloadUrl || "", descriptor.fileName || ""].join("|");
 }
 
+function cacheIdentityFor(cacheIdentity, descriptor) {
+  const value = cacheIdentity && typeof cacheIdentity === "object" ? cacheIdentity : {};
+  return {
+    courseId: String(value.courseId || ""),
+    assignmentId: String(value.assignmentId || ""),
+    submissionId: String(value.submissionId || ""),
+    fileId: String(descriptor?.fileId || value.fileId || "")
+  };
+}
+
+function cacheHeaders(identity, sourceMetadata = {}, force = false) {
+  return {
+    "X-CWR-Cache-Identity": encodeURIComponent(JSON.stringify(identity)),
+    "X-CWR-Source-Metadata": encodeURIComponent(JSON.stringify(sourceMetadata)),
+    ...(force ? { "X-CWR-Force": "1" } : {})
+  };
+}
+
+function helperResultToConverted(result, fallbackName, mode) {
+  return {
+    ok: true,
+    fileName: result.sourceName || fallbackName,
+    pdfUrl: `${HELPER_BASE}${result.pdfUrl}`,
+    pageCount: result.pageCount || null,
+    mode,
+    cached: result.cached === true,
+    sourceETag: result.sourceETag || "",
+    sourceModifiedTime: result.sourceModifiedTime || "",
+    sourceSize: result.sourceSize || 0,
+    completed: true
+  };
+}
+
+async function probeSourceMetadata(descriptor) {
+  const url = isGoogleNative(descriptor) ? buildGooglePdfExportUrl(descriptor) : buildDownloadUrl(descriptor);
+  try {
+    const response = await fetchWithTimeout(
+      url,
+      { method: "HEAD", credentials: "include", redirect: "follow", cache: "no-store" },
+      30000,
+      "更新日時の確認に時間がかかっています。"
+    );
+    if (!response.ok) return null;
+    const etag = response.headers.get("etag") || "";
+    const lastModified = response.headers.get("last-modified") || "";
+    const sourceSize = Number(response.headers.get("content-length") || 0);
+    return etag || lastModified || sourceSize ? { etag, lastModified, sourceSize } : null;
+  } catch {
+    // DriveがHEADを返さない場合は、既に確認済みのPDFを優先する。
+    return null;
+  }
+}
+
+function cachedPdfMatchesProbe(cached, probe) {
+  if (!probe) return true;
+  if (cached.sourceETag && probe.etag) return cached.sourceETag === probe.etag;
+  if (cached.sourceModifiedTime && probe.lastModified) return cached.sourceModifiedTime === probe.lastModified;
+  if (cached.sourceSize && probe.sourceSize) return cached.sourceSize === probe.sourceSize;
+  return true;
+}
+
+async function findPersistentCachedPdf(identity, descriptor, fallbackName, mode) {
+  const response = await fetchWithTimeout(
+    `${HELPER_BASE}/cache-lookup`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identity })
+    },
+    30000,
+    "保存済みPDFの確認に時間がかかっています。"
+  );
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.ok || !result.cached) return null;
+  const cached = helperResultToConverted(result.cached, fallbackName, mode);
+  const probe = await probeSourceMetadata(descriptor);
+  return cachedPdfMatchesProbe(cached, probe) ? cached : null;
+}
+
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -208,7 +287,7 @@ async function waitForClassroomTab(tabId) {
   throw new Error("準備専用タブの読み込みが完了しませんでした。通信状況を確認してからお試しください。");
 }
 
-async function startBulkPreparation(sourceTabId) {
+async function startBulkPreparation(sourceTabId, { prefetch = false } = {}) {
   const sourceTab = await chrome.tabs.get(sourceTabId);
   if (!sourceTab.url?.startsWith("https://classroom.google.com/")) {
     throw new Error("Classroomの採点画面で実行してください。");
@@ -231,13 +310,13 @@ async function startBulkPreparation(sourceTabId) {
   if (!preparationTab) {
     preparationTab = await chrome.tabs.create({
       url: sourceTab.url,
-      active: true,
+      active: !prefetch,
       index: sourceTab.index + 1,
       windowId: sourceTab.windowId
     });
   } else {
-    preparationTab = await chrome.tabs.update(preparationTab.id, { url: sourceTab.url, active: true });
-    await chrome.windows.update(preparationTab.windowId, { focused: true }).catch(() => undefined);
+    preparationTab = await chrome.tabs.update(preparationTab.id, { url: sourceTab.url, active: !prefetch });
+    if (!prefetch) await chrome.windows.update(preparationTab.windowId, { focused: true }).catch(() => undefined);
   }
 
   preparationState = {
@@ -247,13 +326,14 @@ async function startBulkPreparation(sourceTabId) {
     sourceWindowId: sourceTab.windowId,
     status: "running",
     acknowledged: false,
+    prefetch,
     startedAt: Date.now(),
     lastProgressAt: Date.now()
   };
   await setPreparationState(preparationState);
   try {
     await waitForClassroomTab(preparationTab.id);
-    await sendWhenReady(preparationTab.id, { type: "cwr-run-preparation" });
+    await sendWhenReady(preparationTab.id, { type: "cwr-run-preparation", prefetch });
   } catch (error) {
     await patchPreparationState({ status: "error" });
     await focusTab(sourceTabId, sourceTab.windowId);
@@ -266,7 +346,9 @@ async function startBulkPreparation(sourceTabId) {
 async function relayPreparationProgress(senderTabId, progress) {
   const preparationState = await getPreparationState();
   if (!preparationState || preparationState.tabId !== senderTabId) return { ok: false };
-  await notifyTab(preparationState.sourceTabId, { type: "cwr-prepare-remote-progress", ...progress });
+  if (!preparationState.prefetch) {
+    await notifyTab(preparationState.sourceTabId, { type: "cwr-prepare-remote-progress", ...progress });
+  }
   const finished = progress.status && progress.status !== "running";
   await patchPreparationState({
     lastProgressAt: Date.now(),
@@ -274,7 +356,7 @@ async function relayPreparationProgress(senderTabId, progress) {
     ...(finished ? { status: progress.status } : {})
   });
   // 終わったら採点タブへ自動で戻す。準備専用タブを探す手間をなくす。
-  if (finished) await focusTab(preparationState.sourceTabId, preparationState.sourceWindowId);
+  if (finished && !preparationState.prefetch) await focusTab(preparationState.sourceTabId, preparationState.sourceWindowId);
   return { ok: true };
 }
 
@@ -331,7 +413,7 @@ async function describePreparationRole(tabId) {
     }
     return { role: "preparation" };
   }
-  if (preparationState.sourceTabId === tabId && preparationState.status === "running") {
+  if (preparationState.sourceTabId === tabId && preparationState.status === "running" && !preparationState.prefetch) {
     return { role: "source", progress: preparationState.lastProgress || null };
   }
   return { role: "none" };
@@ -462,17 +544,28 @@ async function fetchOfficeBuffer(descriptor) {
     throw new Error("取得結果がWord／PowerPointファイルではありませんでした。");
   }
   const fileName = /\.(?:docx?|pptx?)$/i.test(expectedName) ? expectedName : `${expectedName}${extension}`;
-  return { buffer, fileName };
+  const sourceHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", buffer))]
+    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return {
+    buffer,
+    fileName,
+    sourceMetadata: {
+      sourceHash,
+      sourceSize: buffer.byteLength,
+      etag: driveResponse.headers.get("etag") || "",
+      lastModified: driveResponse.headers.get("last-modified") || ""
+    }
+  };
 }
 
-async function convertInMemory(tabId, submissionKey, descriptor, { reportStatus = true, showPdf = true } = {}) {
+async function convertInMemory(tabId, submissionKey, descriptor, { reportStatus = true, showPdf = true, cacheIdentity, force = false } = {}) {
   if (reportStatus) await notifyTab(tabId, {
     type: "cwr-status",
     state: "working",
     text: "提出物をメモリ内で取得中…",
     submissionKey
   });
-  const { buffer, fileName } = await fetchOfficeBuffer(descriptor);
+  const { buffer, fileName, sourceMetadata } = await fetchOfficeBuffer(descriptor);
 
   if (reportStatus) await notifyTab(tabId, {
     type: "cwr-status",
@@ -487,7 +580,8 @@ async function convertInMemory(tabId, submissionKey, descriptor, { reportStatus 
       method: "POST",
       headers: {
         "Content-Type": "application/octet-stream",
-        "X-File-Name": encodeURIComponent(fileName)
+        "X-File-Name": encodeURIComponent(fileName),
+        ...cacheHeaders(cacheIdentity, sourceMetadata, force)
       },
       body: buffer
     },
@@ -505,20 +599,12 @@ async function convertInMemory(tabId, submissionKey, descriptor, { reportStatus 
     submissionKey
   });
 
-  const converted = {
-    ok: true,
-    fileName: result.sourceName || fileName,
-    pdfUrl: `${HELPER_BASE}${result.pdfUrl}`,
-    pageCount: result.pageCount || null,
-    mode: "memory",
-    cached: result.cached === true,
-    completed: true
-  };
+  const converted = helperResultToConverted(result, fileName, "memory");
   if (showPdf) await notifyTab(tabId, { type: "cwr-show-pdf", submissionKey, ...converted });
   return converted;
 }
 
-async function convertGoogleToPdf(tabId, submissionKey, descriptor, { reportStatus = true, showPdf = true } = {}) {
+async function convertGoogleToPdf(tabId, submissionKey, descriptor, { reportStatus = true, showPdf = true, cacheIdentity, force = false } = {}) {
   const baseName = descriptor.fileName || (descriptor.googleType === "presentation" ? "Googleスライド" : "Googleドキュメント");
   const displayName = /\.pdf$/i.test(baseName) ? baseName : `${baseName}.pdf`;
   if (reportStatus) await notifyTab(tabId, {
@@ -548,6 +634,8 @@ async function convertGoogleToPdf(tabId, submissionKey, descriptor, { reportStat
   if (buffer.byteLength > 100 * 1024 * 1024) throw new Error("PDFが100MBを超えているため、表示を中止しました。");
   const signature = new TextDecoder("latin1").decode(buffer.slice(0, 5));
   if (signature !== "%PDF-") throw new Error("GoogleからPDF形式で取得できませんでした。");
+  const sourceHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", buffer))]
+    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
 
   let storeResponse;
   try {
@@ -557,7 +645,13 @@ async function convertGoogleToPdf(tabId, submissionKey, descriptor, { reportStat
         method: "POST",
         headers: {
           "Content-Type": "application/pdf",
-          "X-File-Name": encodeURIComponent(displayName)
+          "X-File-Name": encodeURIComponent(displayName),
+          ...cacheHeaders(cacheIdentity, {
+            sourceHash,
+            sourceSize: buffer.byteLength,
+            etag: response.headers.get("etag") || "",
+            lastModified: response.headers.get("last-modified") || ""
+          }, force)
         },
         body: buffer
       },
@@ -575,37 +669,43 @@ async function convertGoogleToPdf(tabId, submissionKey, descriptor, { reportStat
     text: "準備済みPDFを再利用しています。",
     submissionKey
   });
-  const converted = {
-    ok: true,
-    fileName: result.sourceName || displayName,
-    pdfUrl: `${HELPER_BASE}${result.pdfUrl}`,
-    pageCount: result.pageCount || null,
-    mode: "google-pdf",
-    cached: result.cached === true,
-    completed: true
-  };
+  const converted = helperResultToConverted(result, displayName, "google-pdf");
   if (showPdf) await notifyTab(tabId, { type: "cwr-show-pdf", submissionKey, ...converted });
   return converted;
 }
 
-function convertDescriptor(tabId, submissionKey, descriptor, options) {
+async function convertDescriptor(tabId, submissionKey, descriptor, options = {}) {
+  const cacheIdentity = cacheIdentityFor(options.cacheIdentity, descriptor);
+  const mode = isGoogleNative(descriptor) ? "google-pdf" : "memory";
+  const fallbackName = descriptor.fileName || "提出物";
+  if (!options.force) {
+    const cached = await findPersistentCachedPdf(cacheIdentity, descriptor, fallbackName, mode);
+    if (cached) {
+      if (options.reportStatus) await notifyTab(tabId, {
+        type: "cwr-status", state: "ready", text: "保存済みPDFを再利用しています。", submissionKey
+      });
+      if (options.showPdf !== false) await notifyTab(tabId, { type: "cwr-show-pdf", submissionKey, ...cached });
+      return cached;
+    }
+  }
+  const conversionOptions = { ...options, cacheIdentity };
   return isGoogleNative(descriptor)
-    ? convertGoogleToPdf(tabId, submissionKey, descriptor, options)
-    : convertInMemory(tabId, submissionKey, descriptor, options);
+    ? convertGoogleToPdf(tabId, submissionKey, descriptor, conversionOptions)
+    : convertInMemory(tabId, submissionKey, descriptor, conversionOptions);
 }
 
-async function prepareCurrentSubmission(tabId, submissionKey, expectedName, expectedFileId, expectedGoogleType) {
+async function prepareCurrentSubmission(tabId, submissionKey, expectedName, expectedFileId, expectedGoogleType, cacheIdentity) {
   await helperHealth();
   const descriptor = await waitForCurrentDocument(tabId, expectedName, expectedFileId, expectedGoogleType);
   if (!descriptor) throw new Error("この提出者のWord／PowerPoint／Google形式のファイルを見つけられませんでした。");
   const key = descriptorKey(descriptor);
-  const prepared = await getPreparedPdf(key) || await getPreparedPdfById(descriptor.fileId);
+  const prepared = !cacheIdentity && (await getPreparedPdf(key) || await getPreparedPdfById(descriptor.fileId));
   if (prepared) {
     await rememberPreparedPdf(key, submissionKey, prepared, { fileId: descriptor.fileId });
     return { ...prepared, documentKey: key, mode: "prepared", cached: true };
   }
 
-  const result = await convertDescriptor(tabId, submissionKey, descriptor, { reportStatus: true, showPdf: false });
+  const result = await convertDescriptor(tabId, submissionKey, descriptor, { reportStatus: true, showPdf: false, cacheIdentity });
   await rememberPreparedPdf(key, submissionKey, result, { fileId: descriptor.fileId });
   return { ...result, documentKey: key, mode: "prepared", cached: false };
 }
@@ -631,14 +731,14 @@ async function prepareAttachment(tabId, message, { showPdf = false } = {}) {
   const submissionKey = message.submissionKey || "";
   const primary = message.primary === true;
   const key = descriptorKey(descriptor);
-  const prepared = await getPreparedPdf(key) || await getPreparedPdfById(fileId);
+  const prepared = !message.cacheIdentity && (await getPreparedPdf(key) || await getPreparedPdfById(fileId));
   if (prepared) {
     await rememberPreparedPdf(key, submissionKey, prepared, { primary, fileId });
     if (showPdf) await notifyTab(tabId, { type: "cwr-show-pdf", submissionKey, ...prepared });
     return { ...prepared, documentKey: key, mode: "prepared", cached: true };
   }
 
-  const result = await convertDescriptor(tabId, submissionKey, descriptor, { reportStatus: true, showPdf });
+  const result = await convertDescriptor(tabId, submissionKey, descriptor, { reportStatus: true, showPdf, cacheIdentity: message.cacheIdentity });
   await rememberPreparedPdf(key, submissionKey, result, { primary, fileId });
   return { ...result, documentKey: key, mode: "prepared", cached: false };
 }
@@ -719,11 +819,45 @@ async function releasePdf(pdfUrl) {
   return { ok: true };
 }
 
-async function startConversion(tabId, submissionKey, expectedName = "", expectedFileId = "", expectedGoogleType = "") {
+async function cacheSummary() {
+  await helperHealth();
+  const response = await fetchWithTimeout(
+    `${HELPER_BASE}/cache-summary`,
+    { cache: "no-store" },
+    30000,
+    "キャッシュ使用量の確認に時間がかかっています。"
+  );
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.ok) throw new Error(result.error || "キャッシュ使用量を確認できませんでした。");
+  return result;
+}
+
+async function cleanupCache(message) {
+  await helperHealth();
+  const response = await fetchWithTimeout(
+    `${HELPER_BASE}/cache-cleanup`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: message.mode, identity: message.cacheIdentity, olderThanDays: message.olderThanDays })
+    },
+    60000,
+    "キャッシュ整理に時間がかかっています。"
+  );
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.ok) throw new Error(result.error || "キャッシュを整理できませんでした。");
+  preparedPdfs.clear();
+  preparedSubmissions.clear();
+  preparedPdfsById.clear();
+  await chrome.storage.local.remove([PREPARED_KEY, PREPARED_SUBMISSIONS_KEY, PREPARED_IDS_KEY]);
+  return result;
+}
+
+async function startConversion(tabId, submissionKey, expectedName = "", expectedFileId = "", expectedGoogleType = "", cacheIdentity = null, force = false) {
   await helperHealth();
   // ファイル番号が分かっているときは、その番号で引いた準備済みPDFを最優先する。
   // 提出者単位の索引を先に見ると、2件目を選んでいるのに1件目が出てしまう。
-  if (expectedFileId || expectedName) {
+  if (!force && !cacheIdentity && (expectedFileId || expectedName)) {
     const directKey = descriptorKey({ fileId: expectedFileId, fileName: expectedName });
     // ファイル番号が分からないときに名前だけで代替検索すると、同じファイル名で
     // 提出する別の学生の準備済みPDFを取り違える恐れがあるため、ここでは
@@ -744,7 +878,7 @@ async function startConversion(tabId, submissionKey, expectedName = "", expected
   }
 
   // ファイル番号が取れない場合だけ、提出者単位の索引にたよる。
-  if (!expectedFileId) {
+  if (!force && !cacheIdentity && !expectedFileId) {
     const preparedSubmission = await getPreparedSubmission(submissionKey);
     if (preparedSubmission) {
       await notifyTab(tabId, {
@@ -764,7 +898,7 @@ async function startConversion(tabId, submissionKey, expectedName = "", expected
   }
 
   const key = descriptorKey(descriptor);
-  const prepared = await getPreparedPdf(key) || await getPreparedPdfById(descriptor.fileId);
+  const prepared = !force && !cacheIdentity && (await getPreparedPdf(key) || await getPreparedPdfById(descriptor.fileId));
   if (prepared) {
     await rememberPreparedPdf(key, submissionKey, prepared, { fileId: descriptor.fileId });
     await notifyTab(tabId, {
@@ -777,7 +911,7 @@ async function startConversion(tabId, submissionKey, expectedName = "", expected
     return { ...prepared, mode: "prepared" };
   }
 
-  const converted = await convertDescriptor(tabId, submissionKey, descriptor);
+  const converted = await convertDescriptor(tabId, submissionKey, descriptor, { cacheIdentity, force });
   // 採点画面で変換したPDFも索引に残す。次に同じファイルを開いたとき、
   // 変換をやり直さずそのまま再利用できる。
   await rememberPreparedPdf(key, submissionKey, converted, { fileId: descriptor.fileId });
@@ -797,11 +931,12 @@ if (globalThis.__CWR_BACKGROUND_TEST_HOOKS__) {
 }
 
 const messageHandlers = {
-  "cwr-start": (tabId, message) => startConversion(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "", message.expectedGoogleType || ""),
-  "cwr-prepare-one": (tabId, message) => prepareCurrentSubmission(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "", message.expectedGoogleType || ""),
+  "cwr-start": (tabId, message) => startConversion(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "", message.expectedGoogleType || "", message.cacheIdentity, message.force === true),
+  "cwr-prepare-one": (tabId, message) => prepareCurrentSubmission(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "", message.expectedGoogleType || "", message.cacheIdentity),
   "cwr-prepare-attachment": (tabId, message) => prepareAttachment(tabId, message),
   "cwr-open-attachment": (tabId, message) => prepareAttachment(tabId, message, { showPdf: true }),
   "cwr-start-bulk-preparation": (tabId) => startBulkPreparation(tabId),
+  "cwr-prefetch-next": (tabId) => startBulkPreparation(tabId, { prefetch: true }),
   "cwr-prepare-progress": (tabId, message) => relayPreparationProgress(tabId, message.progress || {}),
   "cwr-cancel-bulk-preparation": () => cancelBulkPreparation(),
   "cwr-focus-preparation-tab": () => focusPreparationTab(),
@@ -812,6 +947,8 @@ const messageHandlers = {
   "cwr-open-office": (tabId, message) => startOfficeWindow(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || ""),
   "cwr-close-office": () => closeOfficeWindow(),
   "cwr-release-pdf": (_tabId, message) => releasePdf(message.pdfUrl)
+  ,"cwr-cache-summary": () => cacheSummary()
+  ,"cwr-cache-cleanup": (_tabId, message) => cleanupCache(message)
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

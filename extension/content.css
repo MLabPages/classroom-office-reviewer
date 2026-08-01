@@ -535,3 +535,53 @@
     width: min(360px, calc(100vw - 24px));
   }
 }
+
+#cwr-cache-panel {
+  position: fixed;
+  z-index: 2147483647;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  color: #e8eaed;
+  background: rgba(0, 0, 0, 0.48);
+  font: 14px/1.5 Arial, "Noto Sans JP", sans-serif;
+}
+
+#cwr-cache-card {
+  position: relative;
+  width: min(460px, 100%);
+  padding: 22px;
+  border: 1px solid #5f6368;
+  border-radius: 16px;
+  background: #292a2d;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+}
+
+#cwr-cache-card h2 { margin: 0 32px 12px 0; font-size: 18px; }
+#cwr-cache-card p { margin: 8px 0; }
+#cwr-cache-card strong { color: #8ab4f8; font-size: 18px; }
+#cwr-cache-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  border: 0;
+  color: #e8eaed;
+  background: transparent;
+  font-size: 24px;
+  cursor: pointer;
+}
+.cwr-cache-note { color: #bdc1c6; font-size: 12px; }
+#cwr-cache-actions { display: grid; gap: 8px; margin-top: 16px; }
+#cwr-cache-actions button {
+  border: 1px solid #5f6368;
+  border-radius: 9px;
+  padding: 10px 12px;
+  color: #e8eaed;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+#cwr-cache-actions button:hover, #cwr-cache-actions button:focus-visible { background: #3c4043; outline: 2px solid #8ab4f8; }
+#cwr-cache-actions .cwr-danger { color: #f28b82; }
