@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.8.6";
+const expectedVersion = "0.8.7";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -77,6 +77,14 @@ assert.equal((background.match(/await fetch\(/g) || []).length, 1);
 assert(background.includes("active: !prefetch"));
 assert(background.includes('"cwr-prefetch-next"'));
 assert(content.includes("function startStallWatchdog"));
+assert(content.includes("const BACKGROUND_RETRY_MS = 10000;"));
+assert(content.includes("const BACKGROUND_STALLED_RETRY_MS = 30000;"));
+assert(content.includes("function waitForSubmissionFileWithRecovery"));
+assert(!content.includes("function waitForVisibleTab"));
+assert(content.includes('id="cwr-controls-toggle"'));
+assert(content.includes('id="cwr-controls-drag"'));
+assert(viewerHtml.includes('id="reconvert"'));
+assert(viewer.includes('type: "cwr-reconvert"'));
 // `unload`はChromeで廃止予定。戻すと採点画面に警告が出続ける。
 assert(content.includes('window.addEventListener("pagehide"'));
 assert(!content.includes('addEventListener("unload"'));
