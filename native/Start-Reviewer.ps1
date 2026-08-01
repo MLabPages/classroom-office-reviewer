@@ -1,7 +1,9 @@
 ﻿$ErrorActionPreference = 'Stop'
 $nativeDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir = Split-Path -Parent $nativeDir
-$logsDir = Join-Path $rootDir 'logs'
+$dataBase = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $rootDir }
+$dataRoot = Join-Path $dataBase 'ClassroomReviewer'
+$logsDir = Join-Path $dataRoot 'logs'
 $serverPath = Join-Path $nativeDir 'server.mjs'
 $stdoutPath = Join-Path $logsDir 'reviewer.log'
 $stderrPath = Join-Path $logsDir 'reviewer-error.log'

@@ -1,7 +1,9 @@
 ﻿$ErrorActionPreference = 'Stop'
 $nativeDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir = Split-Path -Parent $nativeDir
-$pidFile = Join-Path $rootDir 'logs\reviewer.pid'
+$dataBase = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $rootDir }
+$dataRoot = Join-Path $dataBase 'ClassroomReviewer'
+$pidFile = Join-Path $dataRoot 'logs\reviewer.pid'
 $healthUri = 'http://127.0.0.1:18765/health'
 $shutdownUri = 'http://127.0.0.1:18765/shutdown'
 

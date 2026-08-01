@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.7.18";
+const expectedVersion = "0.8.0";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -34,6 +34,10 @@ assert.equal((background.match(/chrome\.tabs\.create/g) || []).length, 1);
 assert(!background.includes("chrome.tabs.remove("));
 assert(background.includes("const PREPARATION_TAB_KEY"));
 assert(content.includes('id="cwr-prepare"'));
+assert(content.includes('id="cwr-reconvert"'));
+assert(content.includes('id="cwr-cache"'));
+assert(content.includes("function getCacheIdentity"));
+assert(content.includes('type: "cwr-cache-summary"'));
 assert(content.includes('"cwr-prepare-one"'));
 // 1人が複数ファイルを出した場合、2件目以降も準備する経路が要る。
 assert(content.includes('"cwr-prepare-attachment"'));
@@ -65,9 +69,9 @@ assert(background.includes("async function inspectPreparationTab"));
 assert(background.includes("async function fetchWithTimeout"));
 // 通信はすべて fetchWithTimeout 経由（素の fetch は helper 内の1か所だけ）。
 assert.equal((background.match(/await fetch\(/g) || []).length, 1);
-// 準備専用タブは前面で開く。背面だとChromeが処理を止める。
-// 改行コードに左右されないよう、行をまたいだ正規表現で確かめる。
-assert(/chrome\.tabs\.create\(\{[^}]*active: true/.test(background));
+// 一括準備は前面、次の数件の先読みは背面で開く。
+assert(background.includes("active: !prefetch"));
+assert(background.includes('"cwr-prefetch-next"'));
 assert(content.includes("function startStallWatchdog"));
 // `unload`はChromeで廃止予定。戻すと採点画面に警告が出続ける。
 assert(content.includes('window.addEventListener("pagehide"'));
@@ -92,7 +96,13 @@ assert(viewer.includes('loadPdf(pdfUrl, fileName, params.get("pages")).catch(sho
 assert(/\r?\n}\r?\nloadPdf\(pdfUrl, fileName, params\.get\("pages"\)\)/.test(viewer));
 assert(server.includes(`const port = ${expectedPort};`));
 assert(server.includes("version: appVersion"));
-assert(server.includes("const cacheMaximumPdfs = 600;"));
+assert(server.includes('"ClassroomReviewer"'));
+assert(server.includes("const cacheWarningBytes = 10 * 1024 * 1024 * 1024;"));
+assert(server.includes('url.pathname === "/cache-lookup"'));
+assert(server.includes('url.pathname === "/cache-summary"'));
+assert(server.includes('url.pathname === "/cache-cleanup"'));
+assert(!server.includes("await clearPdfCache();"));
+assert(server.includes("await pruneTemporaryFiles();"));
 assert(server.includes('url.pathname === "/store-pdf-upload"'));
 assert(start.includes("-Encoding UTF8"));
 assert(start.includes(`http://127.0.0.1:${expectedPort}/health`));
