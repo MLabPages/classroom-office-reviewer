@@ -45,6 +45,8 @@
     controlsCollapsed: true,
     controlsPosition: null,
     controlsDraggedAt: 0,
+    preparationPosition: null,
+    preparationDraggedAt: 0,
     wide: false,
     overlayBounds: null,
     activeFile: null,
@@ -134,6 +136,11 @@
     return findFileName("docx?|pptx?");
   }
 
+  // PDFはOffice変換が不要なので、Word／PowerPointとは別に検出する。
+  function findPdfFileName() {
+    return findFileName("pdf");
+  }
+
   function findAnyAttachmentFileName() {
     return findFileName("docx?|pptx?|pdf|xlsx?|csv|txt|rtf|odt|ods|odp|jpe?g|png|gif|webp|zip");
   }
@@ -185,6 +192,16 @@
         expectedFileId: findDisplayedFileId()
       };
     }
+    // 提出物がすでにPDFの場合はOffice変換が不要。そのまま表示・カウント対象にする。
+    const pdfFileName = findPdfFileName();
+    if (pdfFileName) {
+      return {
+        kind: "pdf",
+        fileName: pdfFileName,
+        expectedName: pdfFileName,
+        expectedFileId: findDisplayedFileId()
+      };
+    }
     return null;
   }
 
@@ -201,6 +218,9 @@
       for (const source of labelSourcesOf(current)) {
         const officeName = matchFileName(source, "docx?|pptx?");
         if (officeName) return officeName;
+        // PDFはOffice変換が不要なため、そのまま添付名として拾う。
+        const pdfName = matchFileName(source, "pdf");
+        if (pdfName) return pdfName;
         // 先頭にアイコン用の見えない文字が入ることがあるため、^では固定しない。
         // また、Officeと違って拡張子がなく境界を作れないため、名前が2回続けて
         // 出ていたら（近大ゼミ2026…近大ゼミ2026… のように）前半だけを使う。
@@ -253,13 +273,11 @@
     if (nestedUrl) return nestedUrl;
     const selectionId = menuSelectionIdOf(node);
     if (!selectionId) return "";
-    const menu = node?.closest?.("[role='menu']") || null;
     const candidates = document.querySelectorAll(
       "[data-selection-id], [data-cursor-id], [data-url], [data-file-url], [data-file-id], a[href]"
     );
     for (const candidate of candidates) {
       if (candidate === node) continue;
-      if (menu && candidate.closest?.("[role='menu']") !== menu) continue;
       if (menuSelectionIdOf(candidate) !== selectionId) continue;
       const url = fileUrlOf(candidate);
       if (url) return url;
@@ -284,7 +302,7 @@
     // 画面には別の提出者のメニューが残っていることがある。表示中のファイルが
     // 含まれるメニューが見つかったら、その1つだけを使う。
     const displayedId = findDisplayedFileId() || state.activeFile?.id || "";
-    const displayedName = normalizedFileName(findOfficeFileName() || state.activeFile?.name || "");
+    const displayedName = normalizedFileName(findOfficeFileName() || findPdfFileName() || state.activeFile?.name || "");
     if (!displayedId && !displayedName) return items;
     const groups = new Map();
     for (const node of items) {
@@ -316,9 +334,10 @@
     const googleType = googleTypeOfUrl(url) || googleTypeOfLabel(label);
     const fileName = attachmentNameOf(node, googleType);
     const fileId = parseDriveId(url);
-    if (!fileName || (!googleType && !/\.(?:docx?|pptx?)$/i.test(fileName))) return null;
+    if (!fileName || (!googleType && !/\.(?:docx?|pptx?|pdf)$/i.test(fileName))) return null;
+    const isPdf = !googleType && /\.pdf$/i.test(fileName);
     return {
-      kind: googleType ? (googleType === "document" ? "google-document" : "google-presentation") : "office",
+      kind: googleType ? (googleType === "document" ? "google-document" : "google-presentation") : (isPdf ? "pdf" : "office"),
       fileName,
       expectedName: googleType ? "" : fileName,
       expectedFileId: fileId,
@@ -546,7 +565,7 @@
 
     const authMatch = location.href.match(/\/u\/(\d+)(?:\/|$)/);
     return {
-      fileName: classroomGoogleInfo?.fileName || findOfficeFileName() || (googleType === "document" ? "Googleドキュメント" : googleType === "presentation" ? "Googleスライド" : ""),
+      fileName: classroomGoogleInfo?.fileName || findOfficeFileName() || findPdfFileName() || (googleType === "document" ? "Googleドキュメント" : googleType === "presentation" ? "Googleスライド" : ""),
       fileId,
       downloadUrl,
       googleType,
@@ -995,6 +1014,49 @@
       : "準備専用タブで処理中です。この採点タブはそのまま採点に使えます。";
   }
 
+  function applyPreparationPosition(panel) {
+    if (!panel) return;
+    const position = state.preparationPosition;
+    if (!position || !Number.isFinite(position.xRatio) || !Number.isFinite(position.yRatio)) return;
+    panel.style.right = "auto";
+    panel.style.left = `${Math.round(Math.max(12, Math.min(window.innerWidth - 12, position.xRatio * window.innerWidth)))}px`;
+    panel.style.top = `${Math.round(Math.max(12, Math.min(window.innerHeight - 12, position.yRatio * window.innerHeight)))}px`;
+  }
+
+  function attachPreparationDrag(panel) {
+    const grip = panel.querySelector("#cwr-preparation-drag");
+    if (!grip) return;
+    grip.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      const rect = panel.getBoundingClientRect();
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const left = rect.left;
+      const top = rect.top;
+      grip.setPointerCapture?.(event.pointerId);
+      panel.classList.add("cwr-preparation-dragging");
+      const move = (moveEvent) => {
+        const nextLeft = Math.max(12, Math.min(window.innerWidth - Math.min(rect.width, 48), left + moveEvent.clientX - startX));
+        const nextTop = Math.max(12, Math.min(window.innerHeight - Math.min(rect.height, 48), top + moveEvent.clientY - startY));
+        state.preparationPosition = {
+          xRatio: nextLeft / Math.max(1, window.innerWidth),
+          yRatio: nextTop / Math.max(1, window.innerHeight)
+        };
+        panel.style.right = "auto";
+        panel.style.left = `${Math.round(nextLeft)}px`;
+        panel.style.top = `${Math.round(nextTop)}px`;
+      };
+      const end = () => {
+        panel.classList.remove("cwr-preparation-dragging");
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", end);
+        if (state.preparationPosition) saveSetting({ cwrPreparationPosition: state.preparationPosition });
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", end, { once: true });
+    });
+  }
+
   function ensurePreparationPanel() {
     if (state.preparationPanelHidden) return null;
     const existing = document.getElementById("cwr-preparation");
@@ -1008,6 +1070,7 @@
         <div id="cwr-preparation-header">
           <div id="cwr-preparation-spinner" aria-hidden="true"></div>
           <h2 id="cwr-preparation-title">提出物の一括準備</h2>
+          <button id="cwr-preparation-drag" type="button" title="ドラッグして位置を変える" aria-label="ドラッグして位置を変える">移動</button>
           <button id="cwr-preparation-compact" type="button" aria-pressed="false">小さく表示</button>
         </div>
         <p id="cwr-preparation-count">準備を開始しています…</p>
@@ -1037,6 +1100,8 @@
       renderPreparation();
     });
     document.body.appendChild(panel);
+    applyPreparationPosition(panel);
+    attachPreparationDrag(panel);
     return panel;
   }
 
@@ -1694,7 +1759,7 @@
         total
           ? failedNote || "変換した表示用PDFは、このPC内に24時間保持します。"
           : notReady
-            ? `準備できるWord／PowerPoint／Google形式の提出物がありませんでした。${failedNote}`
+            ? `準備できるWord／PowerPoint／PDF／Google形式の提出物がありませんでした。${failedNote}`
             : "提出者を読み取れませんでした。Classroomの採点画面で提出物を1件開いてから、もう一度お試しください。",
         state.prepareCancelled ? "cancelled" : "done"
       );
@@ -1731,6 +1796,7 @@
     const fileInfo = submissionView ? currentDisplayedFileInfo() : null;
     const googleDocument = fileInfo?.kind === "google-document";
     const googlePresentation = fileInfo?.kind === "google-presentation";
+    const pdfAttachment = fileInfo?.kind === "pdf";
     const powerpoint = submissionView && isPowerPoint(fileInfo?.fileName || "");
     const openButton = root.querySelector("#cwr-open");
     const officeButton = root.querySelector("#cwr-open-window");
@@ -1752,11 +1818,13 @@
     openButton.textContent = "PDFで表示";
     officeButton.textContent = googleDocument || googlePresentation
       ? "Google形式はPDF表示のみ"
+      : pdfAttachment
+        ? "PDFはPDF表示のみ"
       : powerpoint
         ? "PowerPointで発表"
         : "Word別窓で表示";
     openButton.disabled = !fileInfo;
-    officeButton.disabled = !fileInfo || googleDocument || googlePresentation;
+    officeButton.disabled = !fileInfo || googleDocument || googlePresentation || pdfAttachment;
     reconvertButton.disabled = !fileInfo;
     const busyPreparing = state.remotePreparing || state.preparing;
     prepareButton.textContent = busyPreparing ? "一括準備を実行中…" : "全員分を一括準備";
@@ -1770,6 +1838,12 @@
     state.ui.classList.toggle("cwr-controls-collapsed", state.controlsCollapsed);
     const launcher = state.ui.querySelector("#cwr-controls-toggle");
     launcher?.setAttribute("aria-expanded", String(!state.controlsCollapsed));
+    if (launcher) {
+      const compact = state.controlsCollapsed;
+      launcher.textContent = compact ? "CWR" : "最小化";
+      launcher.title = compact ? "操作パネルを開く（ドラッグして移動）" : "操作パネルを最小化";
+      launcher.setAttribute("aria-label", launcher.title);
+    }
     const ratio = state.controlsPosition?.ratio;
     const top = Number.isFinite(ratio) ? Math.max(0.08, Math.min(0.92, ratio)) * window.innerHeight : window.innerHeight / 2;
     state.ui.style.top = `${Math.round(top)}px`;
@@ -1823,7 +1897,7 @@
     root.id = "cwr-controls";
     root.setAttribute("aria-label", "Classroom Office Reviewer");
     root.innerHTML = `
-      <button id="cwr-controls-toggle" type="button" title="操作パネルを開く（ドラッグして移動）" aria-label="操作パネルを開く（ドラッグして移動）" aria-expanded="false">開く</button>
+      <button id="cwr-controls-toggle" type="button" title="操作パネルを開く（ドラッグして移動）" aria-label="操作パネルを開く（ドラッグして移動）" aria-expanded="false">CWR</button>
       <button id="cwr-controls-drag" type="button" title="ドラッグして位置を変える" aria-label="ドラッグして位置を変える">移動</button>
       <button id="cwr-open" type="button">PDFで表示</button>
       <button id="cwr-open-window" type="button">Word別窓で表示</button>
@@ -1976,7 +2050,7 @@
       : null);
     if (!fileInfo) {
       const detail = logCurrentFileContext("表示対象を特定できませんでした");
-      if (!isAutomatic) setStatus(`表示中のWord／PowerPoint／Google形式のファイルを特定できませんでした。表示ファイルID: ${detail.displayedFileId || "取得待ち"}`, "error");
+      if (!isAutomatic) setStatus(`表示中のWord／PowerPoint／PDF／Google形式のファイルを特定できませんでした。表示ファイルID: ${detail.displayedFileId || "取得待ち"}`, "error");
       return;
     }
 
@@ -2048,7 +2122,7 @@
       setStatus("再変換する提出物を個別に開いてください。", "error");
       return;
     }
-    setStatus("このファイルを再変換しています…", "converting");
+    setStatus(fileInfo.kind === "pdf" ? "このファイルを再取得しています…" : "このファイルを再変換しています…", "converting");
     await startConversion(false, { ...fileInfo, force: true });
   }
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.8.8";
+const expectedVersion = "0.8.9";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -108,6 +108,12 @@ assert(content.includes("state.mutationObserver?.disconnect()"));
 assert.equal((content.match(/chrome\.storage\.local\.(?:get|set)\(/g) || []).length, 2);
 assert(content.includes("function becomePreparationTab"));
 assert(content.includes('findFileName("docx?|pptx?|pdf|'));
+// PDFの提出物はOffice変換をせず、直接ダウンロードして表示・カウント対象にする。
+assert(content.includes("function findPdfFileName"));
+assert(content.includes('kind: "pdf"'));
+assert(background.includes("function isPdfDescriptor"));
+assert(background.includes("async function storeExistingPdf"));
+assert(background.includes("if (isPdfDescriptor(descriptor)) return storeExistingPdf"));
 assert(viewer.includes(`pdfUrl.startsWith("http://127.0.0.1:${expectedPort}/file/")`));
 assert(viewerHtml.includes("前の提出物"));
 assert(viewer.includes('loadPdf(pdfUrl, fileName, params.get("pages")).catch(showError);'));

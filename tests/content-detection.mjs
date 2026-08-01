@@ -146,12 +146,14 @@ assert.equal(loadingGoogleHooks.findSupportedFileInfo().expectedFileId, "");
 assert.equal(loadingGoogleHooks.describeDocument().googleType, "");
 assert.deepEqual(JSON.parse(JSON.stringify(loadingGoogleHooks.inspectSubmissionFile())), { waiting: true });
 
+// PDFの提出物はOffice変換が不要なので、そのままsupportedとして扱う。
 const pdfHooks = runDetection({
   nodes: [new MockElement({ attributes: { "aria-label": "PDF: submitted-report.pdf" } })]
 });
-assert.equal(pdfHooks.findSupportedFileInfo(), null);
+assert.equal(pdfHooks.findSupportedFileInfo().kind, "pdf");
+assert.equal(pdfHooks.findSupportedFileInfo().fileName, "submitted-report.pdf");
 assert.equal(pdfHooks.findAnyAttachmentFileName(), "submitted-report.pdf");
-assert.deepEqual(JSON.parse(JSON.stringify(pdfHooks.inspectSubmissionFile())), { unsupported: true });
+assert.deepEqual(JSON.parse(JSON.stringify(pdfHooks.inspectSubmissionFile())).kind, "pdf");
 
 const slidesHooks = runDetection({
   nodes: [new MockElement({ attributes: { "aria-label": "Google スライド: presentation.pptx" } })],
@@ -178,12 +180,16 @@ const multiHooks = runDetection({
   frames: [new MockElement({ src: "https://docs.google.com/file/d/1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/view" })]
 });
 const attachments = multiHooks.findSubmissionAttachments();
-assert.deepEqual(plain(attachments.map((item) => item.fileName)), [firstFile, secondFile]);
+const pdfRecordFile = "提出済みの記録.pdf";
+// PDFはOffice変換が不要なので、そのまま添付一覧・カウント対象に含める。
+assert.deepEqual(plain(attachments.map((item) => item.fileName)), [firstFile, secondFile, pdfRecordFile]);
 assert.equal(attachments[1].expectedFileId, "1BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
 assert.equal(attachments[1].kind, "office");
+assert.equal(attachments[2].kind, "pdf");
+assert.equal(attachments[2].expectedFileId, "1CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC");
 // 表示中の1件は先頭のまま、重複させずに続きを並べる。
 const files = multiHooks.listSubmissionFiles();
-assert.deepEqual(plain(files.map((item) => item.fileName)), [firstFile, secondFile]);
+assert.deepEqual(plain(files.map((item) => item.fileName)), [firstFile, secondFile, pdfRecordFile]);
 
 // Classroomがリンクを出さず、role=menuitemだけでファイルを並べる場合も拾う。
 const menuOnlyHooks = runDetection({
@@ -480,6 +486,17 @@ assert.equal(staleDeliveryHooks.matchesRequestedFile({ submissionKey: "u:ODU4NjY
 assert.equal(staleDeliveryHooks.matchesRequestedFile({ submissionKey: "u:ODU4NjY4MDY5MDE0|1OLDOLDOLDOLDOLDOLDOLDOLDOLDOLD" }), false);
 // ファイル番号を読めない画面では、従来どおり受け入れて表示を止めない。
 assert.equal(staleDeliveryHooks.matchesRequestedFile({ submissionKey: "u:ODU4NjY4MDY5MDE0|" }), true);
+
+// 提出物が最初からPDFの場合も、Wordファイルと同様にPDFで表示・別窓表示の
+// 有効/無効判定に使うため kind: "pdf" を返す。
+const solePdfHooks = runDetection({
+  nodes: [
+    new MockElement({ text: "26_0300 山口 レポート.pdf" }),
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ]
+});
+assert.equal(solePdfHooks.findSupportedFileInfo().kind, "pdf");
+assert.equal(solePdfHooks.inspectSubmissionFile().kind, "pdf");
 
 assert.equal(textHooks.formatDuration(45000), "45秒");
 assert.equal(textHooks.formatDuration(125000), "2分5秒");
