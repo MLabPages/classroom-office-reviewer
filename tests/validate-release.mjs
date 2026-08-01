@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.8.1";
+const expectedVersion = "0.8.2";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -87,6 +87,8 @@ assert(content.includes("if (!matchesRequestedFile(message))"));
 // 古いタブで「Extension context invalidated.」がコンソールへ出る。
 assert(content.includes("function saveSetting"));
 assert(content.includes("function loadSettings"));
+assert(content.includes("function extensionContextLost"));
+assert(content.includes("if (extensionContextLost())"));
 assert.equal((content.match(/chrome\.storage\.local\.(?:get|set)\(/g) || []).length, 2);
 assert(content.includes("function becomePreparationTab"));
 assert(content.includes('findFileName("docx?|pptx?|pdf|'));
