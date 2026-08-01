@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.7.16";
+const expectedVersion = "0.7.17";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -72,6 +72,13 @@ assert(content.includes("function startStallWatchdog"));
 // `unload`はChromeで廃止予定。戻すと採点画面に警告が出続ける。
 assert(content.includes('window.addEventListener("pagehide"'));
 assert(!content.includes('addEventListener("unload"'));
+// 学生切替は、表示中のファイル番号が入れ替わるまで完了と見なさない。
+// ここを戻すと、前の提出物のまま同じPDFが再表示される。
+assert(content.includes("async function waitForSubmissionChange(previousKey, timeoutMs = 20000, previousFileId"));
+assert(content.includes("waitForSubmissionChange(before, 8000, beforeFileId)"));
+// 遅れて届いた前のファイルの変換結果で、新しい表示を上書きしない。
+assert(content.includes("function matchesRequestedFile"));
+assert(content.includes("if (!matchesRequestedFile(message))"));
 assert(content.includes("function becomePreparationTab"));
 assert(content.includes('findFileName("docx?|pptx?|pdf|'));
 assert(viewer.includes(`pdfUrl.startsWith("http://127.0.0.1:${expectedPort}/file/")`));

@@ -545,6 +545,8 @@
       studentDisplayName,
       getStudentLabel,
       getSubmissionKey,
+      matchesRequestedFile,
+      setActiveFile,
       extensionContextLost,
       sameSubmissionStudent,
       getStudentIdFromUrl,
@@ -626,6 +628,14 @@
         endDisplayRequest();
         safeSendMessage({ type: "cwr-release-pdf", pdfUrl: message.pdfUrl }).catch(() => undefined);
         setStatus("提出者が切り替わったため、古い表示を破棄しました。", "idle");
+        return false;
+      }
+      // 同じ提出者でも、切り替えの途中で前のファイルの変換結果が遅れて
+      // 届くことがある。今表示すべきファイル番号と違うPDFをそのまま出すと、
+      // 画面が一瞬点滅して同じ内容に戻ったように見える。番号が食い違う結果は
+      // 受け取らず、あとから届く正しい結果を待つ。
+      if (!matchesRequestedFile(message)) {
+        safeSendMessage({ type: "cwr-release-pdf", pdfUrl: message.pdfUrl }).catch(() => undefined);
         return false;
       }
       endDisplayRequest();
@@ -759,11 +769,26 @@
     return false;
   }
 
-  async function waitForSubmissionChange(previousKey, timeoutMs = 20000) {
+  // 提出者が変わっても、Classroomはしばらく前の提出物を表示したままになる。
+  // 学生の切り替わりだけで次に進むと、まだ残っている前のファイル番号を読み、
+  // 同じPDFをもう一度出してしまう（画面が一瞬点滅するだけで中身が変わらない）。
+  // 表示中のファイル番号が実際に入れ替わるまで待ってから次へ進む。
+  async function waitForSubmissionChange(previousKey, timeoutMs = 20000, previousFileId = "") {
     const startedAt = Date.now();
+    let studentChangedAt = 0;
     while (Date.now() - startedAt < timeoutMs) {
       const currentKey = getStudentKey();
-      if (currentKey && currentKey !== previousKey && (findSupportedFileInfo() || inspectSubmissionFile()?.unsupported)) return true;
+      const studentChanged = Boolean(currentKey) && currentKey !== previousKey;
+      const fileReady = Boolean(findSupportedFileInfo()) || inspectSubmissionFile()?.unsupported === true;
+      if (studentChanged && fileReady) {
+        if (!studentChangedAt) studentChangedAt = Date.now();
+        const displayedFileId = findDisplayedFileId();
+        // 前のファイル番号と違う番号が出たら、切り替えは完了している。
+        if (displayedFileId && displayedFileId !== previousFileId) return true;
+        // 番号を読めない画面では、これまでどおり学生の切替だけで判断する。
+        // ただし前の番号がまだ残っている間は、少しだけ入れ替わりを待つ。
+        if (!previousFileId && !displayedFileId && Date.now() - studentChangedAt > 1500) return true;
+      }
       await wait(150);
     }
     return false;
@@ -1681,6 +1706,16 @@
     state.busyWatchdog = null;
   }
 
+  // 届いたPDFが「今開いているファイル」のものかを、Drive上のファイル番号で確かめる。
+  // 番号を確認できない場合だけ、これまでどおり受け入れる。
+  function matchesRequestedFile(message) {
+    const requestedId = state.activeFile?.id || "";
+    if (!requestedId) return true;
+    const deliveredId = String(message?.submissionKey || "").split("|")[1] || "";
+    if (!deliveredId) return true;
+    return deliveredId === requestedId;
+  }
+
   async function startConversion(isAutomatic, requestedFile = null) {
     if (!state.enabled) return;
     // 自動表示のときだけ、進行中の要求を尊重して二重に走らせない。
@@ -1945,15 +1980,19 @@
       return;
     }
     const before = getStudentKey();
+    const beforeFileId = findDisplayedFileId();
     setStatus(direction === "next" ? "次の提出者へ移動しています…" : "前の提出者へ移動しています…", "working");
     state.fileSwitching = false;
     button.click();
-    if (!await waitForSubmissionChange(before, 8000)) {
+    if (!await waitForSubmissionChange(before, 8000, beforeFileId)) {
       setStatus("提出者を切り替えられませんでした。Classroomを再読み込みしてください。", "error");
       return;
     }
     await waitForSubmissionFile(5000);
     state.activeFile = null;
+    // ここで前の表示情報を残すと、次の一覧を作るときに前のファイルへ
+    // 引き戻されてしまう。表示中の番号を正として作り直す。
+    state.convertedKey = "";
     const nextFiles = listSubmissionFiles();
     // 前へ戻るときは、その提出者の最後のファイルから見るほうが自然につながる。
     const targetIndex = direction === "previous" ? Math.max(0, nextFiles.length - 1) : 0;
