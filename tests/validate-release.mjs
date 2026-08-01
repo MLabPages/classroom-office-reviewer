@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.9.0";
+const expectedVersion = "0.9.1";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
-const [manifestText, background, content, viewer, viewerHtml, server, start, stop] = await Promise.all([
+const [manifestText, background, content, viewer, viewerHtml, server, start, stop, powerPointConverter] = await Promise.all([
   read("extension/manifest.json"),
   read("extension/background.js"),
   read("extension/content.js"),
@@ -13,7 +13,8 @@ const [manifestText, background, content, viewer, viewerHtml, server, start, sto
   read("extension/viewer.html"),
   read("native/server.mjs"),
   read("native/Start-Reviewer.ps1"),
-  read("native/Stop-Reviewer.ps1")
+  read("native/Stop-Reviewer.ps1"),
+  read("native/Convert-PowerPoint.ps1")
 ]);
 
 const manifest = JSON.parse(manifestText);
@@ -139,6 +140,11 @@ assert(server.includes('url.pathname === "/cache-cleanup"'));
 assert(!server.includes("await clearPdfCache();"));
 assert(server.includes("await pruneTemporaryFiles();"));
 assert(server.includes('url.pathname === "/store-pdf-upload"'));
+// PowerPointが .pdf.part.pdf を作らず、補助アプリが確認する名前へ移す。
+assert(powerPointConverter.includes("$powerPointTarget"));
+assert(powerPointConverter.includes("$target.EndsWith('.pdf.part'"));
+assert(powerPointConverter.includes("$presentation.SaveAs($powerPointTarget, 32)"));
+assert(powerPointConverter.includes("Move-Item -LiteralPath $powerPointTarget -Destination $target -Force"));
 assert(start.includes("-Encoding UTF8"));
 assert(start.includes(`http://127.0.0.1:${expectedPort}/health`));
 assert(start.includes("$health.version -eq $expectedVersion"));
