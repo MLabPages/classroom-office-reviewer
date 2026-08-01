@@ -230,6 +230,14 @@
   function submissionFileUrlOf(node) {
     const directUrl = fileUrlOf(node);
     if (directUrl) return directUrl;
+    // 2件目以降は「新しいウィンドウで開く」リンクが選択項目の内側へ
+    // 入ることがある。この形は対応する兄弟要素を持たないため、先に
+    // 自身の子孫からDrive URLを拾う。
+    const nestedLink = node?.querySelector?.(
+      "a[href], [data-href], [data-url], [data-file-url], [data-file-id]"
+    );
+    const nestedUrl = fileUrlOf(nestedLink);
+    if (nestedUrl) return nestedUrl;
     const selectionId = menuSelectionIdOf(node);
     if (!selectionId) return "";
     const menu = node?.closest?.("[role='menu']") || null;
@@ -312,7 +320,10 @@
     const seen = new Set();
     const linkNodes = [...document.querySelectorAll("a[href]")].filter((node) =>
       typeof node.matches === "function" ? node.matches("a[href]") : Boolean(node.href));
-    const nodes = [...linkNodes, ...findSubmissionFileMenuItems()];
+    // Classroomのファイル選択欄の順番を先に採用する。2件目の内側にある
+    // Driveリンクを先に並べると、一覧が「2件目→1件目」に逆転し、
+    // 現在の1件目が末尾扱いになって右ボタンが効かなくなる。
+    const nodes = [...findSubmissionFileMenuItems(), ...linkNodes];
     for (const node of nodes) {
       const url = fileUrlOf(node);
       const isMenuItem = node.getAttribute?.("role") === "menuitem";
@@ -529,6 +540,7 @@
       findSubmissionAttachments,
       listSubmissionFiles,
       findSubmissionFileMenuItems,
+      findSubmissionFileMenuItem,
       normalizedFileName,
       studentDisplayName,
       getStudentLabel,
