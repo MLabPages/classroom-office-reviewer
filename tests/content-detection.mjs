@@ -155,6 +155,46 @@ assert.equal(pdfHooks.findSupportedFileInfo().fileName, "submitted-report.pdf");
 assert.equal(pdfHooks.findAnyAttachmentFileName(), "submitted-report.pdf");
 assert.deepEqual(JSON.parse(JSON.stringify(pdfHooks.inspectSubmissionFile())).kind, "pdf");
 
+// WordとPDFを同じ提出物に添付し、PDFのmenuitemを選択中にしても、
+// メニュー先頭のWordへ誤って切り替えない。実際のClassroomでは選択中の
+// menuitemが tabindex="0" になり、表示中iframeのIDを現在ファイルへ結び付ける。
+const selectedPdfId = "1PDFPDFPDFPDFPDFPDFPDFPDFPDFPDF";
+const selectedPdfWithWordHooks = runDetection({
+  nodes: [
+    new MockElement({
+      text: "Microsoft Word: report.docx",
+      attributes: { role: "menuitem", tabindex: "-1" }
+    }),
+    new MockElement({
+      text: "PDF: submitted-report.pdf",
+      attributes: { role: "menuitem", tabindex: "0" }
+    })
+  ],
+  frames: [new MockElement({ src: `https://docs.google.com/file/d/${selectedPdfId}/grading` })]
+});
+assert.equal(selectedPdfWithWordHooks.findSupportedFileInfo().kind, "pdf");
+assert.equal(selectedPdfWithWordHooks.findSupportedFileInfo().fileName, "submitted-report.pdf");
+assert.equal(selectedPdfWithWordHooks.findSupportedFileInfo().expectedFileId, selectedPdfId);
+assert.equal(selectedPdfWithWordHooks.describeDocument().fileName, "submitted-report.pdf");
+
+// Wordを選択中の場合は、同じ添付欄にPDFがあってもWordの処理を維持する。
+const selectedWordId = "1WORDWORDWORDWORDWORDWORDWORDWORDWORD";
+const selectedWordWithPdfHooks = runDetection({
+  nodes: [
+    new MockElement({
+      text: "Microsoft Word: report.docx",
+      attributes: { role: "menuitem", tabindex: "0" }
+    }),
+    new MockElement({
+      text: "PDF: submitted-report.pdf",
+      attributes: { role: "menuitem", tabindex: "-1" }
+    })
+  ],
+  frames: [new MockElement({ src: `https://docs.google.com/file/d/${selectedWordId}/grading` })]
+});
+assert.equal(selectedWordWithPdfHooks.findSupportedFileInfo().kind, "office");
+assert.equal(selectedWordWithPdfHooks.findSupportedFileInfo().fileName, "report.docx");
+
 const slidesHooks = runDetection({
   nodes: [new MockElement({ attributes: { "aria-label": "Google スライド: presentation.pptx" } })],
   frames: [new MockElement({ src: `https://docs.google.com/presentation/u/5/d/${googleFileId}/edit` })]
