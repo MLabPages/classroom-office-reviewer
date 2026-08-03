@@ -52,6 +52,8 @@
     .submission-item:hover, .submission-item:focus-visible { background: #3c4043; outline: 2px solid #8ab4f8; outline-offset: 1px; }
     .submission-item[data-active="true"] { border-color: #8ab4f8; background: rgba(138,180,248,.14); }
     .submission-item[data-status="unavailable"], .submission-item[data-status="failed"] { border-left-color: #fdd663; }
+    .submission-item[data-status="link"], .submission-item[data-status="no-attachment"] { border-left: 3px solid #fdd663; }
+    .submission-item[data-status="no-attachment"] .submission-item-type { color: #fdd663; }
     .submission-item-student { overflow: hidden; color: #8ab4f8; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
     .submission-item-file { overflow-wrap: anywhere; font-size: 13px; line-height: 1.35; }
     .submission-item-type { color: #9aa0a6; font-size: 11px; }
@@ -64,6 +66,12 @@
     .pdf-page canvas { display: block; }
     #message { align-self: center; max-width: 520px; padding: 24px; text-align: center; }
     #message[data-kind="error"] { color: #f28b82; }
+    #message[data-kind="notice"] { display: grid; gap: 10px; justify-items: center; }
+    .notice-title { margin: 0; font-size: 16px; font-weight: 700; }
+    .notice-body { margin: 0; color: #bdc1c6; font-size: 13px; line-height: 1.7; text-align: left; }
+    .notice-link { display: inline-block; margin-top: 4px; border: 1px solid #8ab4f8; border-radius: 999px; padding: 9px 18px; color: #d2e3fc; text-decoration: none; }
+    .notice-link:hover, .notice-link:focus-visible { background: #3c4043; outline: 2px solid #8ab4f8; }
+    .notice-url { margin: 0; overflow-wrap: anywhere; color: #9aa0a6; font-size: 11px; }
     html:fullscreen header { display: none; }
     html:fullscreen main { inset: 0; background: #111; }
     html:fullscreen #submission-panel { top: 0; }

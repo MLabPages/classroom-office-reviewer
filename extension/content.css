@@ -436,6 +436,16 @@
   background: rgba(217, 48, 37, 0.12);
 }
 
+.cwr-preparation-ledger-row[data-status="link"],
+.cwr-preparation-ledger-row[data-status="no-attachment"] {
+  background: rgba(253, 214, 99, 0.1);
+}
+
+.cwr-preparation-ledger-note {
+  flex: 0 0 auto;
+  color: #fdd663;
+}
+
 .cwr-preparation-ledger-seq {
   flex: 0 0 auto;
   color: #9aa0a6;
