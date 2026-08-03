@@ -18,6 +18,14 @@
   // 表示要求の返事が返らないまま放置されると、次へ・前への操作が黙って
   // 効かなくなる。変換は長くても数十秒なので、これを過ぎたら操作を戻す。
   const DISPLAY_REQUEST_TIMEOUT_MS = 45000;
+  // 「添付ファイルはありません」が描き直しの一瞬だけ出ることがある。
+  // この時間だけ続けて見えたときに「添付なし」として確定する。
+  const NO_ATTACHMENT_CONFIRM_MS = 1500;
+  // 提出物の表示待ちを打ち切るまでの再試行回数。ここを超えたら、その提出者は
+  // 一覧に記録して次へ進む。無期限に待つと一括準備全体が止まってしまう。
+  const MAX_FILE_WAIT_RETRIES = 3;
+  // 「添付ファイルはありません」の確認結果を一瞬だけ覚えておくための入れ物。
+  const noAttachmentProbe = { checkedAt: 0, result: false };
   const state = {
     enabled: true,
     busy: false,
@@ -33,6 +41,8 @@
     convertedKey: "",
     displayedPdfUrl: "",
     viewerStatus: null,
+    // 変換して表示できない提出（共有リンク・添付なし）を出しているときの内容。
+    viewerNotice: null,
     timer: null,
     preparationTimer: null,
     progressTicker: null,
@@ -152,6 +162,94 @@
 
   function findAnyAttachmentFileName() {
     return findFileName("docx?|pptx?|pdf|xlsx?|csv|txt|rtf|odt|ods|odp|jpe?g|png|gif|webp|zip");
+  }
+
+  // Classroom自身が「添付ファイルはありません」（英語版では"No attachments"）と
+  // 表示している状態を検出する。これは「まだ描画中」ではなく、Classroomが
+  // 添付なしと確定表示しているサインなので、ここが見えたら再試行を続ける
+  // 必要はない。ただしテキストのみの提出や実際に未提出などの区別は
+  // つかないため、呼び出し側では「未提出」と断定せず「添付ファイルなし」
+  // として扱う。
+  function findNoAttachmentMessage() {
+    // 提出者を切り替えるたびに全要素の文字を読むと重くなる。文字を持つ末端の
+    // 要素だけに絞り、短時間は前回の判定を使い回して通常の処理速度を保つ。
+    const now = Date.now();
+    if (now - noAttachmentProbe.checkedAt < 250) return noAttachmentProbe.result;
+    let found = false;
+    for (const node of document.querySelectorAll("div, span, p")) {
+      if (node.children && node.children.length > 0) continue;
+      if (!visible(node)) continue;
+      const text = textOf(node);
+      if (text.length > 40) continue;
+      if (text === "添付ファイルはありません" || /^no attachments\.?$/i.test(text)) {
+        found = true;
+        break;
+      }
+    }
+    noAttachmentProbe.checkedAt = now;
+    noAttachmentProbe.result = found;
+    return found;
+  }
+
+  // 共有リンクの提出は、Classroomでは「ファイル」ではなくURLとして届く。
+  // Word/PowerPointらしい名前が付いていてもDrive上に実体が無いため、
+  // 取得しようとすると失敗し、前の学生の表示が残ってしまう。
+  const DOCUMENT_LINK_HOSTS = /(?:1drv\.ms|onedrive\.live\.com|sharepoint\.com|officeapps\.live\.com|office\.com|dropbox\.com|box\.com|icloud\.com|notion\.so|canva\.com|scribd\.com)/i;
+  const IGNORED_LINK_URLS = /(?:classroom\.google\.com|accounts\.google\.com|support\.google\.com|myaccount\.google\.com|policies\.google\.com|google\.com\/(?:search|url|intl))/i;
+
+  function isDriveUrl(value) {
+    return /(?:drive|docs)\.google\.com/i.test(value || "");
+  }
+
+  // リンク添付に読める名前が付いていないときは、URLから短い見出しを作る。
+  function linkLabelOf(url) {
+    try {
+      const parsed = new URL(url);
+      const tail = decodeURIComponent(parsed.pathname).split("/").filter(Boolean).pop() || "";
+      return tail ? `${parsed.hostname}/${tail}`.slice(0, 120) : parsed.hostname;
+    } catch {
+      return String(url || "").slice(0, 120);
+    }
+  }
+
+  // Classroomの採点画面には案内用のリンクも並ぶ。提出物として扱ってよい
+  // リンクだけを通し、無関係なリンクを提出物として数えない。
+  function isLikelySubmittedLink(node, url) {
+    if (!/^https?:\/\//i.test(url) || isDriveUrl(url) || IGNORED_LINK_URLS.test(url)) return false;
+    if (!visible(node)) return false;
+    if (DOCUMENT_LINK_HOSTS.test(url)) return true;
+    if (/\.(?:docx?|pptx?|pdf|xlsx?)(?:$|[?#])/i.test(url)) return true;
+    return /\.(?:docx?|pptx?|pdf|xlsx?)$/i.test(attachmentNameOf(node, "") || "");
+  }
+
+  // 共有リンクの提出は、変換して表示することができない。名前とURLだけを
+  // 持たせ、あとで一覧とビューアーが「リンク提出」として扱えるようにする。
+  function linkAttachmentInfoOf(node, url) {
+    if (!url) return null;
+    const label = attachmentNameOf(node, "") || textOf(node) || "";
+    return {
+      kind: "link",
+      fileName: (label || linkLabelOf(url)).slice(0, 160),
+      expectedName: "",
+      expectedFileId: "",
+      expectedGoogleType: "",
+      sourceUrl: url
+    };
+  }
+
+  // 画面に出ている「提出物として扱ってよいリンク」だけを集める。
+  function findSubmittedLinks() {
+    const links = [];
+    const seen = new Set();
+    for (const node of document.querySelectorAll("a[href]")) {
+      const url = fileUrlOf(node);
+      if (!isLikelySubmittedLink(node, url)) continue;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      const info = linkAttachmentInfoOf(node, url);
+      if (info) links.push(info);
+    }
+    return links;
   }
 
   function findGoogleFileInfo() {
@@ -405,12 +503,18 @@
       // 前の提出者のまま固まる。リンクの見た目ではなく、Driveの
       // ファイルを指しているかどうかで判断する。
       if (!isMenuItem && !/(?:drive|docs)\.google\.com/i.test(url) && !visible(node)) continue;
-      if (!/(?:drive|docs)\.google\.com/i.test(url) && !isMenuItem) continue;
-      const attachment = attachmentInfoOf(node);
+      // Drive上のファイルでも選択欄の項目でもないが、Word/PowerPointなどを
+      // 指す共有リンクとして提出されていることがある。これを捨てると
+      // 「提出物なし」と誤って扱ってしまうため、リンクとして取り込む。
+      const sharedLink = !isMenuItem && !isDriveUrl(url) && isLikelySubmittedLink(node, url);
+      if (!isDriveUrl(url) && !isMenuItem && !sharedLink) continue;
+      const attachment = sharedLink ? linkAttachmentInfoOf(node, url) : attachmentInfoOf(node);
       if (!attachment) continue;
       const identity = attachment.expectedFileId
         ? `id:${attachment.expectedFileId}`
-        : `name:${attachment.fileName.trim().toLowerCase()}`;
+        : (attachment.kind === "link"
+          ? `url:${(attachment.sourceUrl || "").trim().toLowerCase()}`
+          : `name:${attachment.fileName.trim().toLowerCase()}`);
       const duplicate = seen.has(identity) || attachments.some((item) => sameFile(item, attachment));
       if (duplicate) continue;
       seen.add(identity);
@@ -421,6 +525,12 @@
 
   function sameFile(left, right) {
     if (!left || !right) return false;
+    // 共有リンクの提出はファイル番号を持たないため、URLで見分ける。
+    // 名前だけで比べると、似た名前の別リンクを同じものとして落としてしまう。
+    if (left.kind === "link" || right.kind === "link") {
+      if (left.kind !== right.kind) return false;
+      return Boolean(left.sourceUrl) && left.sourceUrl === right.sourceUrl;
+    }
     if (left.expectedFileId && right.expectedFileId) return left.expectedFileId === right.expectedFileId;
     // 表示位置によって選択欄の名前が途中で切られることがあるため、
     // 完全一致だけで比べると同じファイルを別物として重複計上してしまう。
@@ -464,6 +574,13 @@
     const selectedAttachment = displayedId
       ? findSubmissionAttachments().find((file) => file.expectedFileId === displayedId)
       : null;
+    // Drive上のファイルが1つも表示されていないのに、共有リンクだけが
+    // 置かれている提出物がある。名前がWordらしくてもファイルとして扱わず、
+    // リンクとして返す。ここを誤ると取得に失敗して前の表示が残る。
+    if (!displayedId && !selectedAttachment) {
+      const submittedLinks = findSubmittedLinks();
+      if (submittedLinks.length) return { ...submittedLinks[0] };
+    }
     const current = selectedAttachment || detected;
     if (!current) return null;
     return {
@@ -475,8 +592,21 @@
   function inspectSubmissionFile() {
     const supportedFile = findSupportedFileInfo();
     if (supportedFile?.kind?.startsWith("google-") && !supportedFile.expectedFileId) return { waiting: true };
+    // 共有リンクの提出は「レポート.docx」のような名前が付いていることが多く、
+    // 名前だけを見るとWordファイルに見える。しかしDrive上に実体が無いため、
+    // ファイルとして扱うと取得に失敗し、前の学生の表示が残ってしまう。
+    // Drive上のファイル番号を確認できないときだけ、リンクとして扱う。
+    const submittedLinks = findSubmittedLinks();
+    const looksLikeDriveFile = Boolean(supportedFile?.expectedFileId) || Boolean(findDisplayedFileId());
+    if (submittedLinks.length && !looksLikeDriveFile) {
+      return { ...submittedLinks[0], linkOnly: true };
+    }
     if (supportedFile) return supportedFile;
     if (findAnyAttachmentFileName()) return { unsupported: true };
+    // Classroomが「添付ファイルはありません」を確定表示しているなら、
+    // これ以上待っても添付は出てこない。次の提出者へ進めてよい合図として
+    // 区別できる状態を返す（＝再試行ループの対象から外す）。
+    if (findNoAttachmentMessage()) return { noAttachment: true };
     return null;
   }
 
@@ -620,6 +750,10 @@
     Object.assign(globalThis.__CWR_TEST_HOOKS__, {
       findOfficeFileName,
       findAnyAttachmentFileName,
+      findNoAttachmentMessage,
+      findSubmittedLinks,
+      isLikelySubmittedLink,
+      linkAttachmentInfoOf,
       findGoogleFileInfo,
       findSupportedFileInfo,
       inspectSubmissionFile,
@@ -837,6 +971,8 @@
     if (file.kind === "office") return /\.pptx?$/i.test(file.fileName || "") ? "PowerPoint" : "Word";
     if (file.kind === "google-document") return "Googleドキュメント";
     if (file.kind === "google-presentation") return "Googleスライド";
+    if (file.kind === "link") return "共有リンク";
+    if (file.kind === "no-attachment") return "添付ファイルなし";
     const extension = (file.fileName || "").match(/\.([a-z0-9]+)$/i)?.[1];
     return extension ? extension.toUpperCase() : "不明";
   }
@@ -861,7 +997,14 @@
 
   function submissionCatalogKey(file = {}) {
     const student = String(file.studentKey || file.studentId || (file.studentSeq ? `seq:${file.studentSeq}` : file.studentName || "unknown-student"));
-    const identity = file.expectedFileId || file.fileId || normalizedFileName(file.fileName || "") || "unknown-file";
+    // 共有リンクはファイル番号を持たないため、URLで見分ける。名前で見分けると、
+    // 同じ提出者の複数リンクが1件にまとまってしまう。
+    const identity = file.expectedFileId
+      || file.fileId
+      || (file.kind === "link" && file.sourceUrl ? `url:${file.sourceUrl}` : "")
+      || (file.kind === "no-attachment" ? "no-attachment" : "")
+      || normalizedFileName(file.fileName || "")
+      || "unknown-file";
     return `${student}|${identity}`;
   }
 
@@ -920,7 +1063,10 @@
         studentName: raw.studentName || raw.studentLabel || "",
         fileName: raw.fileName || "提出物",
         kind: raw.kind || "unknown",
-        status: raw.status || (raw.kind === "unknown" ? "unsupported" : "available"),
+        status: raw.status
+          || (raw.kind === "link" ? "link" : "")
+          || (raw.kind === "no-attachment" ? "no-attachment" : "")
+          || (raw.kind === "unknown" ? "unsupported" : "available"),
         sourceUrl: raw.sourceUrl || raw.fileUrl || "",
         cachedPdfUrl: localPdfUrl(raw.cachedPdfUrl || raw.pdfUrl),
         pageCount: raw.pageCount || null
@@ -1070,7 +1216,8 @@
     while (Date.now() - startedAt < timeoutMs) {
       const currentKey = getStudentKey();
       const studentChanged = Boolean(currentKey) && currentKey !== previousKey;
-      const fileReady = Boolean(findSupportedFileInfo()) || inspectSubmissionFile()?.unsupported === true;
+      const fileState = inspectSubmissionFile();
+      const fileReady = Boolean(findSupportedFileInfo()) || fileState?.unsupported === true || fileState?.noAttachment === true;
       if (studentChanged && fileReady) {
         if (!studentChangedAt) studentChangedAt = Date.now();
         const displayedFileId = findDisplayedFileId();
@@ -1201,12 +1348,23 @@
 
   async function waitForSubmissionFile(timeoutMs = 20000) {
     const startedAt = Date.now();
+    let noAttachmentSince = 0;
     while (Date.now() - startedAt < timeoutMs) {
       const fileState = inspectSubmissionFile();
-      if (fileState && !fileState.waiting) return fileState;
+      if (fileState && !fileState.waiting) {
+        // 提出物が見つかったときは、これまでどおり即座に返す。
+        if (!fileState.noAttachment) return fileState;
+        // 「添付ファイルはありません」は、Classroomが描き直している
+        // 一瞬だけ出ることがある。すぐ確定させると、提出済みの学生を
+        // 添付なしと誤判定してしまうため、少しだけ確認し直す。
+        if (!noAttachmentSince) noAttachmentSince = Date.now();
+        if (Date.now() - noAttachmentSince >= NO_ATTACHMENT_CONFIRM_MS) return fileState;
+      } else {
+        noAttachmentSince = 0;
+      }
       await wait(250);
     }
-    return null;
+    return inspectSubmissionFile()?.noAttachment ? { noAttachment: true } : null;
   }
 
   function formatDuration(milliseconds) {
@@ -1442,7 +1600,7 @@
       const entry = entries[index];
       const row = document.createElement("div");
       row.className = "cwr-preparation-ledger-row";
-      row.dataset.status = entry.status === "ok" ? "ok" : "failed";
+      row.dataset.status = ["ok", "link", "no-attachment"].includes(entry.status) ? entry.status : "failed";
 
       const seq = document.createElement("span");
       seq.className = "cwr-preparation-ledger-seq";
@@ -1468,6 +1626,27 @@
         link.className = "cwr-preparation-ledger-link";
         link.textContent = entry.cached ? "PDFを開く（再利用）" : "PDFを開く";
         row.append(link);
+      } else if (entry.status === "link") {
+        // 共有リンクは取り込めないが、その場で開けるようにしておく。
+        if (entry.sourceUrl) {
+          const link = document.createElement("a");
+          link.href = entry.sourceUrl;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.className = "cwr-preparation-ledger-link";
+          link.textContent = "共有リンクを開く";
+          row.append(link);
+        } else {
+          const note = document.createElement("span");
+          note.className = "cwr-preparation-ledger-note";
+          note.textContent = "共有リンクの提出";
+          row.append(note);
+        }
+      } else if (entry.status === "no-attachment") {
+        const note = document.createElement("span");
+        note.className = "cwr-preparation-ledger-note";
+        note.textContent = "添付ファイルを確認できず";
+        row.append(note);
       } else {
         const failed = document.createElement("span");
         failed.className = "cwr-preparation-ledger-failed";
@@ -1748,6 +1927,17 @@
         return fileInfo;
       }
       retries += 1;
+      // 待ち続けても提出物が出てこない提出者がいる。無期限に再試行すると
+      // 一括準備がそこで止まってしまうため、上限を決めて次へ進める。
+      // 通常の提出物は1回目の確認で見つかるので、ここは速度に影響しない。
+      if (retries > MAX_FILE_WAIT_RETRIES) {
+        setPreparationProgress({
+          delayed: false,
+          stalled: false,
+          detailText: "提出物を確認できませんでした。一覧に記録して次の提出者へ進みます。"
+        });
+        return null;
+      }
       const stalled = retries > BACKGROUND_RETRY_BEFORE_STALLED;
       setPreparationProgress({
         delayed: !stalled && document.hidden,
@@ -1803,6 +1993,8 @@
     let cachedCount = 0;
     let skippedCount = 0;
     let failedCount = 0;
+    let linkCount = 0;
+    let noAttachmentCount = 0;
     let forwardMoves = 0;
     const failedNames = [];
     const seen = new Set();
@@ -1841,7 +2033,9 @@
         seen.add(studentKey);
 
         // 1人が複数ファイルを出していることがあるので、全部まとめて準備する。
-        const files = fileInfo && !fileInfo.unsupported ? listSubmissionFiles(fileInfo) : [];
+        const files = fileInfo && !fileInfo.unsupported && !fileInfo.noAttachment
+          ? listSubmissionFiles(fileInfo.linkOnly ? undefined : fileInfo)
+          : [];
         if (files.length) {
           const displayedIndex = Math.max(0, activeFileIndex(files));
           // 学生名だけで見分けがつかないことがあるため、提出者ごと・ファイルごとの
@@ -1877,6 +2071,18 @@
           };
           for (const [fileIndex, file] of files.entries()) {
             if (state.prepareCancelled) break;
+            // 共有リンクの提出は取り込めない。失敗として数えず、一覧には
+            // 「共有リンク」として残し、あとからリンクを開けるようにする。
+            if (file.kind === "link") {
+              linkCount += 1;
+              addLedgerEntry(fileIndex, file, { status: "link" });
+              setPreparationProgress({
+                countText: preparationCountText(preparedCount + cachedCount, skippedCount + failedCount, sequence),
+                detailText: `${file.fileName} は共有リンクの提出です。`,
+                fileName: file.fileName
+              });
+              continue;
+            }
             // 画面に出ている1件はそのまま使い、それ以外は番号があれば
             // 画面を切り替えずに取得する。番号が無いときだけ選択欄を操作する。
             const onScreen = fileIndex === displayedIndex;
@@ -1948,6 +2154,35 @@
           }
         } else {
           skippedCount += 1;
+          // 添付が1件も無い提出者も一覧に残す。ここを飛ばすと、確認が
+          // 必要な提出者だけが一覧から消えてしまう。
+          let emptyStudentLabel = studentDisplayName(getStudentLabel());
+          if (!emptyStudentLabel) {
+            await wait(300);
+            emptyStudentLabel = studentDisplayName(getStudentLabel());
+          }
+          noAttachmentCount += 1;
+          setPreparationProgress({
+            detailText: "添付ファイルを確認できませんでした。一覧に記録して次へ進みます。",
+            ledger: [...progress.ledger, {
+              seq: progress.ledger.length + 1,
+              studentSeq: sequence,
+              studentLabel: emptyStudentLabel,
+              studentName: emptyStudentLabel,
+              studentKey: getStudentKey(),
+              fileSeq: 1,
+              fileCount: 1,
+              fileName: "添付ファイルを確認できません",
+              kind: "no-attachment",
+              expectedName: "",
+              expectedFileId: "",
+              expectedGoogleType: "",
+              sourceUrl: "",
+              status: "no-attachment",
+              cached: false,
+              pdfUrl: ""
+            }]
+          });
         }
 
         setPreparationProgress({
@@ -1978,7 +2213,8 @@
       const notReady = skippedCount + failedCount;
       const summary = [
         `${total}件を準備しました`,
-        skippedCount ? `対象外 ${skippedCount}件` : "",
+        linkCount ? `共有リンク ${linkCount}件` : "",
+        noAttachmentCount ? `添付なし ${noAttachmentCount}件` : "",
         failedCount ? `準備できず ${failedCount}件` : ""
       ].filter(Boolean).join("・");
       const failedNote = failedCount
@@ -2253,6 +2489,53 @@
     state.busyWatchdog = null;
   }
 
+  // 変換して表示できない提出かどうかを判定し、ビューアーに出す内容を作る。
+  // 「未提出」とは断定できないため、確認できた事実だけを言葉にする。
+  function noticeForSubmission(fileInfo) {
+    if (fileInfo?.kind === "no-attachment") {
+      return {
+        kind: "no-attachment",
+        fileName: "添付ファイルなし",
+        url: "",
+        title: "添付ファイルを確認できません",
+        body: "Classroomがこの提出者の添付ファイルを表示していません。未提出のほか、本文だけの提出や提出物の取り消しなども考えられます。Classroomの提出状況を確認してください。",
+        status: "添付ファイルを確認できませんでした。"
+      };
+    }
+    if (fileInfo?.kind === "link") {
+      return {
+        kind: "link",
+        fileName: fileInfo.fileName || "共有リンクの提出",
+        url: fileInfo.sourceUrl || "",
+        title: "共有リンクで提出されています",
+        body: "このリンク先はGoogle Classroom外にあるため、拡張機能では内容を取り込めません。リンクを開いて内容を確認してください。",
+        status: "共有リンクの提出です。リンクを開いて確認してください。"
+      };
+    }
+    const linkOnly = !fileInfo ? findSubmittedLinks() : [];
+    if (linkOnly.length) {
+      return {
+        kind: "link",
+        fileName: linkOnly[0].fileName || "共有リンクの提出",
+        url: linkOnly[0].sourceUrl || "",
+        title: "共有リンクで提出されています",
+        body: "このリンク先はGoogle Classroom外にあるため、拡張機能では内容を取り込めません。リンクを開いて内容を確認してください。",
+        status: "共有リンクの提出です。リンクを開いて確認してください。"
+      };
+    }
+    if (!fileInfo && findNoAttachmentMessage()) {
+      return {
+        kind: "no-attachment",
+        fileName: "添付ファイルなし",
+        url: "",
+        title: "添付ファイルを確認できません",
+        body: "Classroomがこの提出者の添付ファイルを表示していません。未提出のほか、本文だけの提出や提出物の取り消しなども考えられます。Classroomの提出状況を確認してください。",
+        status: "添付ファイルを確認できませんでした。"
+      };
+    }
+    return null;
+  }
+
   // 届いたPDFが「今開いているファイル」のものかを、Drive上のファイル番号で確かめる。
   // 番号を確認できない場合だけ、これまでどおり受け入れる。
   function matchesRequestedFile(message) {
@@ -2279,6 +2562,19 @@
     const fileInfo = requestedFile || detectedFileInfo || (state.activeFile?.name
       ? { kind: "office", fileName: state.activeFile.name, expectedName: state.activeFile.name, expectedFileId: state.activeFile.id }
       : null);
+    // 共有リンクの提出と添付なしは、変換して表示できるファイルが無い。
+    // ここで打ち切らないと取得に失敗し、前の学生のPDFが残ったままになる。
+    const notice = noticeForSubmission(fileInfo);
+    if (notice) {
+      endDisplayRequest();
+      setActiveFile(fileInfo || null);
+      state.catalogActiveKey = "";
+      state.currentKey = getSubmissionKey(fileInfo || undefined);
+      state.convertedKey = state.currentKey;
+      showViewerNotice(notice);
+      setStatus(notice.status, "idle");
+      return true;
+    }
     if (!fileInfo) {
       const detail = logCurrentFileContext("表示対象を特定できませんでした");
       if (!isAutomatic) setStatus(`表示中のWord／PowerPoint／PDF／Google形式のファイルを特定できませんでした。表示ファイルID: ${detail.displayedFileId || "取得待ち"}`, "error");
@@ -2592,7 +2888,8 @@
         studentName: entry.studentName || "",
         fileName: entry.fileName || "提出物",
         fileType: fileTypeLabel(entry),
-        status: entry.status || "available"
+        status: entry.status || "available",
+        sourceUrl: entry.kind === "link" ? (entry.sourceUrl || "") : ""
       })),
       activeSubmissionKey
     }, "*");
@@ -2706,6 +3003,18 @@
 
   async function showCatalogSubmission(entry) {
     if (!entry) return;
+    // 共有リンクと添付なしは変換できないので、一覧から選ばれたらその場で
+    // 内容を切り替える。ここを通さないと前の学生の表示が残ってしまう。
+    const notice = noticeForSubmission(entry);
+    if (notice) {
+      setActiveFile(entry);
+      state.catalogActiveKey = submissionCatalogKey({ ...entry, studentKey: getStudentKey() });
+      state.currentKey = getSubmissionKey(entry);
+      state.convertedKey = state.currentKey;
+      showViewerNotice(notice);
+      setStatus(notice.status, "idle");
+      return;
+    }
     const files = listSubmissionFiles();
     const index = files.findIndex((file) => catalogFileMatches(file, entry));
     if (index >= 0) {
@@ -2897,13 +3206,34 @@
     state.overlay?.remove();
     state.overlay = null;
     state.displayedPdfUrl = "";
+    state.viewerNotice = null;
     state.ui?.classList.remove("cwr-hidden");
+  }
+
+  // 変換して表示できない提出（共有リンク・添付なし）でも、前の学生の
+  // PDFを残さない。ビューアーの中身を差し替え、リンクならそのまま開ける
+  // ようにする。ビューアーがまだ無いときは、無理に開かず状況表示だけ行う。
+  function showViewerNotice(notice) {
+    state.viewerNotice = notice;
+    state.displayedPdfUrl = "";
+    const iframe = state.overlay?.querySelector("iframe");
+    if (!iframe || !document.body.contains(state.overlay)) return false;
+    state.pendingOverlay?.remove();
+    state.pendingOverlay = null;
+    iframe.title = `${notice.fileName || "提出物"} の内容`;
+    iframe.contentWindow?.postMessage({ type: "cwr-show-notice", ...notice }, "*");
+    const bounds = findPreviewBounds();
+    state.overlay.style.top = `${bounds.top}px`;
+    state.overlay.style.right = `${bounds.right}px`;
+    sendViewerControls();
+    return true;
   }
 
   function renderPdf(pdfUrl, fileName, pageCount) {
     if (!contextAvailable()) return;
     state.pendingOverlay?.remove();
     state.pendingOverlay = null;
+    state.viewerNotice = null;
 
     const existingIframe = state.overlay?.querySelector("iframe");
     if (existingIframe && document.body.contains(state.overlay)) {
@@ -3050,7 +3380,11 @@
       // Classroom上で利用者が同じ学生の別ファイルを選んだ場合は、
       // 自動表示の設定にかかわらず、その明示操作に表示を追従させる。
       // 学生を前後に移動したときだけは、従来どおり自動表示の設定を尊重する。
-      if (state.enabled && hadPrevious && (state.auto || fileChangedWithinStudent) && isSubmissionView() && currentDisplayedFileInfo()) {
+      // 共有リンクや添付なしの提出には、表示中のファイルが存在しない。
+      // これも切替対象に含めないと、前の学生のPDFが残ったままになる。
+      const hasDisplayableSubmission = Boolean(currentDisplayedFileInfo())
+        || Boolean(noticeForSubmission(currentDisplayedFileInfo()));
+      if (state.enabled && hadPrevious && (state.auto || fileChangedWithinStudent) && isSubmissionView() && hasDisplayableSubmission) {
         setTimeout(() => {
           if (state.mode === "office" && currentDisplayedFileInfo()?.kind === "office") startOfficeWindow(true);
           else startConversion(true);

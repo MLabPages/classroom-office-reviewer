@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 const content = await readFile(new URL("../extension/content.js", import.meta.url), "utf8");
 
 class MockElement {
-  constructor({ text = "", attributes = {}, src = "", href = "", rect = { width: 600, height: 60, top: 60 }, hidden = false } = {}) {
+  constructor({ text = "", attributes = {}, src = "", href = "", rect = { width: 600, height: 60, top: 60 }, hidden = false, children = [] } = {}) {
     this.textContent = text;
     this.attributes = attributes;
     this.src = src;
@@ -13,6 +13,7 @@ class MockElement {
     this.rect = rect;
     this.hidden = hidden;
     this.parentElement = null;
+    this.children = children;
   }
 
   getAttribute(name) {
@@ -567,5 +568,80 @@ assert.equal(textHooks.formatDuration(125000), "2分5秒");
 assert.equal(textHooks.preparationCountText(0, 0, 1), "準備中…（1人目を処理中）");
 assert.equal(textHooks.preparationCountText(3, 2, 6), "3件を準備しました・未準備 2件（6人目を処理中）");
 assert.equal(textHooks.preparationCountText(4, 0, 0), "4件を準備しました");
+
+// 添付が1件も無い提出者では、Classroomが「添付ファイルはありません」を
+// 確定表示する。これを読み取れないと、出てこないファイルを待ち続けて
+// 一括準備がその提出者で止まってしまう。
+const noAttachmentHooks = runDetection({
+  nodes: [
+    new MockElement({ text: "添付ファイルはありません" }),
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ]
+});
+assert.equal(noAttachmentHooks.findNoAttachmentMessage(), true);
+assert.deepEqual(plain(noAttachmentHooks.inspectSubmissionFile()), { noAttachment: true });
+// 断定を避けた表現を使う。「未提出」とは言い切らない。
+assert.equal(noAttachmentHooks.fileTypeLabel({ kind: "no-attachment" }), "添付ファイルなし");
+
+// 通常の提出物が表示されている画面では、添付なしと誤判定しない。
+assert.equal(solePdfHooks.findNoAttachmentMessage(), false);
+
+// Word/PowerPointを共有リンクで提出する学生がいる。Drive上に実体が無いため
+// 取得できず、そのままでは前の学生の表示が残ってしまう。リンクとして拾う。
+const oneDriveUrl = "https://1drv.ms/w/s!AbCdEfGhIjKlMnOp";
+const sharedLinkHooks = runDetection({
+  nodes: [
+    new MockElement({ text: "製品戦略論2026＿中間レポート.docx", href: oneDriveUrl }),
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ]
+});
+const sharedLinks = sharedLinkHooks.findSubmittedLinks();
+assert.equal(sharedLinks.length, 1);
+assert.equal(sharedLinks[0].kind, "link");
+assert.equal(sharedLinks[0].sourceUrl, oneDriveUrl);
+assert.equal(sharedLinks[0].fileName, "製品戦略論2026＿中間レポート.docx");
+// 共有リンクだけの提出でも、待ち続けずに確定させる。
+assert.equal(sharedLinkHooks.inspectSubmissionFile().linkOnly, true);
+assert.equal(sharedLinkHooks.fileTypeLabel({ kind: "link" }), "共有リンク");
+
+// Classroom自身の案内リンクや、Drive上の本物の添付は共有リンク扱いしない。
+assert.equal(
+  sharedLinkHooks.isLikelySubmittedLink(
+    new MockElement({ text: "ヘルプ", href: "https://support.google.com/edu/classroom" }),
+    "https://support.google.com/edu/classroom"
+  ),
+  false
+);
+assert.equal(
+  sharedLinkHooks.isLikelySubmittedLink(
+    new MockElement({ text: "レポート.docx", href: "https://drive.google.com/file/d/1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/view" }),
+    "https://drive.google.com/file/d/1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/view"
+  ),
+  false
+);
+
+// 共有リンクはファイル番号を持たない。URLで見分けないと、同じ提出者の
+// 複数リンクが1件にまとまってしまう。
+assert.notEqual(
+  sharedLinkHooks.submissionCatalogKey({ studentKey: "u:student", kind: "link", sourceUrl: oneDriveUrl, fileName: "レポート.docx" }),
+  sharedLinkHooks.submissionCatalogKey({ studentKey: "u:student", kind: "link", sourceUrl: "https://1drv.ms/w/s!ZZZZ", fileName: "レポート.docx" })
+);
+
+// 共有リンクの提出は、表示対象としてもリンクとして返す。ここでWordファイルと
+// 判定してしまうと、取得に失敗して前の学生のPDFが残ったままになる。
+assert.equal(sharedLinkHooks.currentDisplayedFileInfo().kind, "link");
+assert.equal(sharedLinkHooks.currentDisplayedFileInfo().sourceUrl, oneDriveUrl);
+
+// Drive上に実体があるふつうの提出は、これまでどおりファイルとして扱う。
+const driveFileId = "1REALREALREALREALREALREALREAL";
+const normalWordHooks = runDetection({
+  nodes: [
+    new MockElement({ text: "Microsoft Word: 26_0100 田中 レポート.docx" }),
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ],
+  frames: [new MockElement({ src: `https://drive.google.com/file/d/${driveFileId}/view` })]
+});
+assert.equal(normalWordHooks.currentDisplayedFileInfo().kind, "office");
+assert.equal(normalWordHooks.inspectSubmissionFile().kind, "office");
 
 console.log("Content detection handles Word duplicates, native Google documents, PDF submissions, multiple attachments, and progress wording.");

@@ -61,6 +61,46 @@ function showError(error) {
   window.parent.postMessage({ type: "cwr-viewer-error" }, "*");
 }
 
+// 変換して表示できない提出（共有リンク・添付なし）を、前の学生の内容を
+// 残さずに表示する。リンクはそのまま開けるようにしておく。
+function showNotice(notice) {
+  renderGeneration += 1;
+  pdfDocument = null;
+  zoom = 1;
+  nameElement.textContent = notice.fileName || "提出物";
+  metaElement.textContent = notice.kind === "link" ? "共有リンクの提出" : "添付ファイルなし";
+  zoomOutButton.disabled = true;
+  zoomInButton.disabled = true;
+
+  const message = document.createElement("div");
+  message.id = "message";
+  message.dataset.kind = "notice";
+
+  const title = document.createElement("p");
+  title.className = "notice-title";
+  title.textContent = notice.title || "";
+  const body = document.createElement("p");
+  body.className = "notice-body";
+  body.textContent = notice.body || "";
+  message.append(title, body);
+
+  if (notice.url) {
+    const link = document.createElement("a");
+    link.className = "notice-link";
+    link.href = notice.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "リンクを開く";
+    const address = document.createElement("p");
+    address.className = "notice-url";
+    address.textContent = notice.url;
+    message.append(link, address);
+  }
+
+  pagesElement.replaceChildren(message);
+  window.parent.postMessage({ type: "cwr-viewer-ready" }, "*");
+}
+
 function send(message) {
   window.parent.postMessage(message, "*");
 }
@@ -82,6 +122,17 @@ function setSubmissionPanelOpen(open) {
   submissionsToggle.setAttribute("aria-expanded", String(submissionPanelOpen));
   submissionsToggle.title = submissionPanelOpen ? "提出物一覧を閉じる" : "提出物一覧を表示";
   submissionsToggle.setAttribute("aria-label", submissionsToggle.title);
+}
+
+// 一覧の2行目に出す説明。断定できないものは「確認できず」と表現する。
+function describeSubmissionStatus(entry) {
+  const type = entry.fileType || "形式不明";
+  if (entry.status === "link") return `${type}・クリックでリンクを開きます`;
+  if (entry.status === "no-attachment") return "添付ファイルを確認できません（要確認）";
+  if (entry.status === "unavailable" || entry.status === "failed") {
+    return `${type}・準備できていない可能性があります`;
+  }
+  return type;
 }
 
 function renderSubmissionList(entries = submissionEntries, selectedKey = activeSubmissionKey) {
@@ -123,9 +174,7 @@ function renderSubmissionList(entries = submissionEntries, selectedKey = activeS
     file.textContent = entry.fileName || "提出物";
     const type = document.createElement("span");
     type.className = "submission-item-type";
-    type.textContent = entry.status === "unavailable" || entry.status === "failed"
-      ? `${entry.fileType || "不明"}・準備できていない可能性があります`
-      : (entry.fileType || "形式不明");
+    type.textContent = describeSubmissionStatus(entry);
     item.append(student, file, type);
     item.addEventListener("click", () => {
       send({ type: "cwr-select-submission", catalogKey: entry.catalogKey });
@@ -198,6 +247,10 @@ document.addEventListener("keydown", (event) => {
 window.addEventListener("message", (event) => {
   if (event.data?.type === "cwr-load-pdf") {
     loadPdf(event.data.pdfUrl, event.data.fileName, event.data.pageCount).catch(showError);
+    return;
+  }
+  if (event.data?.type === "cwr-show-notice") {
+    showNotice(event.data);
     return;
   }
   if (event.data?.type === "cwr-viewer-controls") {
