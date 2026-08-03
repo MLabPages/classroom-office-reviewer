@@ -83,6 +83,12 @@ assert.equal(
   `https://docs.google.com/presentation/d/${googleId}/export/pdf?authuser=5`
 );
 
+// Classroomの選択状態が遅れてPDFがOffice経路へ来ても、実データの形式を優先する。
+const pdfBuffer = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37]).buffer;
+assert.equal(hooks.isPdfBuffer(pdfBuffer), true);
+assert.equal(hooks.pdfFileName("report.docx"), "report.pdf");
+assert.equal(hooks.pdfFileName("report.pdf"), "report.pdf");
+
 responses.set(0, {
   fileName: "report.docx",
   fileId: "word-file-id-123456789012345",

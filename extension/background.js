@@ -515,6 +515,23 @@ function detectOfficeFormat(buffer, expectedName = "") {
   return "";
 }
 
+function isPdfBuffer(buffer) {
+  const bytes = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 5));
+  return bytes.length === 5
+    && bytes[0] === 0x25
+    && bytes[1] === 0x50
+    && bytes[2] === 0x44
+    && bytes[3] === 0x46
+    && bytes[4] === 0x2d;
+}
+
+function pdfFileName(fileName = "") {
+  const trimmed = fileName.trim();
+  if (/\.pdf$/i.test(trimmed)) return trimmed;
+  const withoutOfficeExtension = trimmed.replace(/\.(?:docx?|pptx?)$/i, "");
+  return `${withoutOfficeExtension || "提出物"}.pdf`;
+}
+
 async function fetchOfficeBuffer(descriptor) {
   const expectedName = descriptor.fileName || "Office提出物";
   let driveResponse;
@@ -545,22 +562,27 @@ async function fetchOfficeBuffer(descriptor) {
     throw new Error("提出物が100MBを超えているため、メモリ内変換を中止しました。");
   }
 
+  const sourceMetadata = {
+    sourceHash: [...new Uint8Array(await crypto.subtle.digest("SHA-256", buffer))]
+      .map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+    sourceSize: buffer.byteLength,
+    etag: driveResponse.headers.get("etag") || "",
+    lastModified: driveResponse.headers.get("last-modified") || ""
+  };
+  // Classroomの選択表示が一瞬遅れて、PDFなのにWordの名前が背景側へ届くことがある。
+  // 実データがPDFなら変換を試みず、そのままPDF表示の経路へ渡す。
+  if (isPdfBuffer(buffer)) {
+    return { buffer, fileName: pdfFileName(expectedName), sourceMetadata, isPdf: true };
+  }
   const extension = detectOfficeFormat(buffer, expectedName);
   if (!extension) {
     throw new Error("取得結果がWord／PowerPointファイルではありませんでした。");
   }
   const fileName = /\.(?:docx?|pptx?)$/i.test(expectedName) ? expectedName : `${expectedName}${extension}`;
-  const sourceHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", buffer))]
-    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
   return {
     buffer,
     fileName,
-    sourceMetadata: {
-      sourceHash,
-      sourceSize: buffer.byteLength,
-      etag: driveResponse.headers.get("etag") || "",
-      lastModified: driveResponse.headers.get("last-modified") || ""
-    }
+    sourceMetadata
   };
 }
 
@@ -571,7 +593,14 @@ async function convertInMemory(tabId, submissionKey, descriptor, { reportStatus 
     text: "提出物をメモリ内で取得中…",
     submissionKey
   });
-  const { buffer, fileName, sourceMetadata } = await fetchOfficeBuffer(descriptor);
+  const documentData = await fetchOfficeBuffer(descriptor);
+  if (documentData.isPdf) {
+    return storeExistingPdf(tabId, submissionKey, {
+      ...descriptor,
+      fileName: documentData.fileName
+    }, { reportStatus, showPdf, cacheIdentity, force, sourceData: documentData });
+  }
+  const { buffer, fileName, sourceMetadata } = documentData;
 
   if (reportStatus) await notifyTab(tabId, {
     type: "cwr-status",
@@ -682,7 +711,7 @@ async function convertGoogleToPdf(tabId, submissionKey, descriptor, { reportStat
 
 // 提出物がすでにPDFの場合は、Officeでの変換や書き出しをせず、
 // Driveからそのままダウンロードして表示用として保存するだけにする。
-async function storeExistingPdf(tabId, submissionKey, descriptor, { reportStatus = true, showPdf = true, cacheIdentity, force = false } = {}) {
+async function storeExistingPdf(tabId, submissionKey, descriptor, { reportStatus = true, showPdf = true, cacheIdentity, force = false, sourceData = null } = {}) {
   const displayName = /\.pdf$/i.test(descriptor.fileName || "") ? descriptor.fileName : `${descriptor.fileName || "提出物"}.pdf`;
   if (reportStatus) await notifyTab(tabId, {
     type: "cwr-status",
@@ -691,28 +720,38 @@ async function storeExistingPdf(tabId, submissionKey, descriptor, { reportStatus
     submissionKey
   });
 
-  let driveResponse;
-  try {
-    driveResponse = await fetchWithTimeout(
-      buildDownloadUrl(descriptor),
-      { credentials: "include", redirect: "follow", cache: "no-store" },
-      120000,
-      "Google Driveからの取得に2分以上かかったため中止しました。"
-    );
-  } catch (error) {
-    if (/2分以上/.test(error.message)) throw error;
-    throw new Error("Google DriveからPDFを取得できませんでした。");
+  let buffer = sourceData?.buffer || null;
+  let sourceMetadata = sourceData?.sourceMetadata || null;
+  let driveResponse = null;
+  if (!buffer) {
+    try {
+      driveResponse = await fetchWithTimeout(
+        buildDownloadUrl(descriptor),
+        { credentials: "include", redirect: "follow", cache: "no-store" },
+        120000,
+        "Google Driveからの取得に2分以上かかったため中止しました。"
+      );
+    } catch (error) {
+      if (/2分以上/.test(error.message)) throw error;
+      throw new Error("Google DriveからPDFを取得できませんでした。");
+    }
+    const contentType = (driveResponse.headers.get("content-type") || "").toLowerCase();
+    if (!driveResponse.ok || contentType.includes("text/html")) {
+      throw new Error("Google DriveからPDFを取得できませんでした。");
+    }
+    buffer = await driveResponse.arrayBuffer();
   }
-  const contentType = (driveResponse.headers.get("content-type") || "").toLowerCase();
-  if (!driveResponse.ok || contentType.includes("text/html")) {
-    throw new Error("Google DriveからPDFを取得できませんでした。");
-  }
-  const buffer = await driveResponse.arrayBuffer();
   if (buffer.byteLength > 100 * 1024 * 1024) throw new Error("PDFが100MBを超えているため、表示を中止しました。");
-  const signature = new TextDecoder("latin1").decode(buffer.slice(0, 5));
-  if (signature !== "%PDF-") throw new Error("取得結果がPDF形式ではありませんでした。");
-  const sourceHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", buffer))]
-    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  if (!isPdfBuffer(buffer)) throw new Error("取得結果がPDF形式ではありませんでした。");
+  if (!sourceMetadata) {
+    sourceMetadata = {
+      sourceHash: [...new Uint8Array(await crypto.subtle.digest("SHA-256", buffer))]
+        .map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+      sourceSize: buffer.byteLength,
+      etag: driveResponse?.headers.get("etag") || "",
+      lastModified: driveResponse?.headers.get("last-modified") || ""
+    };
+  }
 
   let storeResponse;
   try {
@@ -724,11 +763,8 @@ async function storeExistingPdf(tabId, submissionKey, descriptor, { reportStatus
           "Content-Type": "application/pdf",
           "X-File-Name": encodeURIComponent(displayName),
           ...cacheHeaders(cacheIdentity, {
-            sourceHash,
-            sourceSize: buffer.byteLength,
-            etag: driveResponse.headers.get("etag") || "",
-            lastModified: driveResponse.headers.get("last-modified") || ""
-          }, force)
+          ...sourceMetadata
+        }, force)
         },
         body: buffer
       },
@@ -997,6 +1033,8 @@ if (globalThis.__CWR_BACKGROUND_TEST_HOOKS__) {
     buildGooglePdfExportUrl,
     findCurrentDocument,
     isGoogleNative,
+    isPdfBuffer,
+    pdfFileName,
     getPreparedPdf,
     getPreparedPdfById,
     getPreparedSubmission,
