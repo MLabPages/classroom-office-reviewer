@@ -1,13 +1,15 @@
-# Classroom Office Reviewer
+# Classroom Office Reviewer（CRW）
 
-Google Classroomの採点画面を離れずに、Word／PowerPoint／Google形式の提出物をPDF表示する、Windows版Chrome拡張です。
+Google Classroomの採点画面内で、Word／PowerPoint／Googleドキュメント／Googleスライドの提出物を、できるだけ元のレイアウトを保ったPDFとして連続表示するWindows向けChrome拡張です。
+
+Word／PowerPointはPC上のMicrosoft OfficeでPDFに変換し、Googleドキュメント／GoogleスライドはGoogle側のPDF書き出しを取得します。いずれも拡張機能内のPDFビューアーで表示するため、Googleの編集画面をそのまま埋め込んで表示する方式ではありません。
 
 - 学生を「前へ・次へ」で切り替えながら連続確認（次の変換中も前の表示を維持）
 - 1人が複数ファイルを提出していても、すべて準備して切り替え表示
 - ビューアー内の提出物一覧（学生名・ファイル名検索、選択、スクロール）
 - 同じ課題で過去に読み込んだ提出物と保存済みPDFの一覧復元
-- Word／PowerPoint本体による高忠実度PDF表示
-- Googleドキュメント／GoogleスライドのPDF表示
+- Word／PowerPoint本体でPDF化し、レイアウトをできるだけ保って表示
+- Googleドキュメント／GoogleスライドをGoogle側でPDF書き出しし、同じビューアーで表示
 - Word別ウィンドウ、PowerPointスライドショー
 - PDF全画面発表とキーボードページ送り
 - 提出物を外部サーバーやAIへ送信しないローカル処理
