@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.9.3";
+const expectedVersion = "0.9.4";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -19,6 +19,7 @@ const [manifestText, background, content, viewer, viewerHtml, server, start, sto
 
 const manifest = JSON.parse(manifestText);
 assert.equal(manifest.version, expectedVersion);
+assert.equal(typeof manifest.key, "string");
 assert(manifest.host_permissions.includes(`http://127.0.0.1:${expectedPort}/*`));
 assert(background.includes(`const HELPER_BASE = "http://127.0.0.1:${expectedPort}";`));
 assert(background.includes(`127\\.0\\.0\\.1:${expectedPort}`));
@@ -141,6 +142,8 @@ assert(server.includes('url.pathname === "/cache-cleanup"'));
 assert(!server.includes("await clearPdfCache();"));
 assert(server.includes("await pruneTemporaryFiles();"));
 assert(server.includes('url.pathname === "/store-pdf-upload"'));
+assert(server.includes('allowedExtensionId = extensionIdFromManifestKey(manifest.key)'));
+assert(server.includes('return isAllowedOrigin(origin, allowedExtensionId);'));
 // PowerPointが .pdf.part.pdf を作らず、補助アプリが確認する名前へ移す。
 assert(powerPointConverter.includes("$powerPointTarget"));
 assert(powerPointConverter.includes("$target.EndsWith('.pdf.part'"));
@@ -156,5 +159,6 @@ assert(stop.includes(`http://127.0.0.1:${expectedPort}/shutdown`));
 
 await import("./content-detection.mjs");
 await import("./background-routing.mjs");
+await import("./native-origin.mjs");
 
 console.log(`Release settings are consistent for v${expectedVersion} on port ${expectedPort}.`);
