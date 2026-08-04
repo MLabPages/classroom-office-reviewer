@@ -2993,9 +2993,9 @@
           <label><input type="radio" name="cwr-zip-file-name" value="without-original"> <span>学生の識別名＋課題名<small>例：26_0001 学生A（Student A）_課題名.docx</small></span></label>
         </fieldset>
         <div id="cwr-zip-roster-wrap">
-          <label for="cwr-zip-roster">名簿CSV（学籍番号,氏名）</label>
-          <textarea id="cwr-zip-roster" rows="4" placeholder="学籍番号,氏名&#10;2610170001,学生A&#10;2610170002,学生B"></textarea>
-          <p class="cwr-zip-note">正式な学籍番号から「26_0001」の形を作り、Classroom表示名の先頭番号と氏名の両方が一意に一致した場合だけ使います。入力内容は保存しません。照合できない学生は表示名で保存し、提出物一覧.csvに警告を残します。</p>
+          <label for="cwr-zip-roster">名簿CSV（学籍番号。氏名列は任意）</label>
+          <textarea id="cwr-zip-roster" rows="4" placeholder="学籍番号&#10;2610170001&#10;2610170002"></textarea>
+          <p class="cwr-zip-note">正式な学籍番号から省略番号（例：26_0001）を作り、表示名の先頭番号と一意に一致した場合に使用します。氏名列は任意です。入力内容は保存しません。照合できない学生は表示名で保存し、一覧に警告を残します。</p>
         </div>
         <div id="cwr-zip-actions">
           <button id="cwr-zip-start" type="button">ZIPを作成してダウンロード</button>
