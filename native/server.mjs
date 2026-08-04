@@ -7,6 +7,7 @@ import { execFile, spawn } from "node:child_process";
 import readline from "node:readline";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { allowedOrigin as isAllowedOrigin, extensionIdFromManifestKey } from "./extension-origin.mjs";
 
 const execFileAsync = promisify(execFile);
 const nativeDir = path.dirname(fileURLToPath(import.meta.url));
@@ -28,6 +29,7 @@ const port = 18765;
 const serviceSessionId = crypto.randomUUID();
 const manifestPath = path.join(rootDir, "extension", "manifest.json");
 let appVersion = "unknown";
+let allowedExtensionId = "";
 const cacheWarningBytes = 10 * 1024 * 1024 * 1024;
 const staleTemporaryAgeMs = 24 * 60 * 60 * 1000;
 let queue = Promise.resolve();
@@ -44,7 +46,9 @@ let shuttingDown = false;
 const pdfIndex = new Map();
 
 try {
-  appVersion = JSON.parse(await fsp.readFile(manifestPath, "utf8")).version || appVersion;
+  const manifest = JSON.parse(await fsp.readFile(manifestPath, "utf8"));
+  appVersion = manifest.version || appVersion;
+  allowedExtensionId = extensionIdFromManifestKey(manifest.key);
 } catch {
   // Health still responds when the source manifest cannot be read.
 }
@@ -62,12 +66,12 @@ function log(message) {
 }
 
 function allowedOrigin(origin) {
-  return !origin || origin.startsWith("chrome-extension://");
+  return isAllowedOrigin(origin, allowedExtensionId);
 }
 
 function setCors(req, res) {
   const origin = req.headers.origin || "";
-  if (origin.startsWith("chrome-extension://")) {
+  if (origin && allowedOrigin(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
   }
