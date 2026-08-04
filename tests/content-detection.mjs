@@ -854,6 +854,7 @@ assert.match(content, /<legend>学生の識別名<\/legend>/);
 assert.match(content, /表示名をそのまま使う/);
 assert.match(content, /<legend>ファイル名の構成<\/legend>/);
 assert.match(content, /cwrZipFileNameStyle/);
-assert.match(content, /名簿CSV（学籍番号,氏名）/);
+assert.match(content, /名簿CSV（学籍番号。氏名列は任意）/);
+assert.match(content, /氏名列は任意です。入力内容は保存しません。/);
 
 console.log("Content detection handles Word duplicates, native Google documents, PDF submissions, multiple attachments, progress wording, and bulk ZIP collection.");
