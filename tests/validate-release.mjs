@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.9.4";
+const expectedVersion = "0.9.5";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
-const [manifestText, background, content, viewer, viewerHtml, server, start, stop, powerPointConverter] = await Promise.all([
+const [manifestText, background, content, viewer, viewerHtml, server, start, stop, powerPointConverter, bulkZip, bulkZipCore, bulkZipHtml, zipWriter] = await Promise.all([
   read("extension/manifest.json"),
   read("extension/background.js"),
   read("extension/content.js"),
@@ -14,7 +14,11 @@ const [manifestText, background, content, viewer, viewerHtml, server, start, sto
   read("native/server.mjs"),
   read("native/Start-Reviewer.ps1"),
   read("native/Stop-Reviewer.ps1"),
-  read("native/Convert-PowerPoint.ps1")
+  read("native/Convert-PowerPoint.ps1"),
+  read("extension/bulk-zip.js"),
+  read("extension/bulk-zip-core.js"),
+  read("extension/bulk-zip.html"),
+  read("extension/zip-writer.js")
 ]);
 
 const manifest = JSON.parse(manifestText);
@@ -157,8 +161,49 @@ assert(start.includes('-ArgumentList @("`"$serverPath`"")'));
 assert(stop.includes(`http://127.0.0.1:${expectedPort}/health`));
 assert(stop.includes(`http://127.0.0.1:${expectedPort}/shutdown`));
 
+// 提出物のZIP一括ダウンロード。追加の権限を使わず、取得とZIP作成は
+// 拡張機能のオリジンのページ（bulk-zip.html）だけで行う。
+assert(content.includes('id="cwr-zip"'));
+assert(content.includes("function showZipDialog"));
+assert(content.includes("function collectZipSubmissions"));
+assert(content.includes("function readClassroomRoster"));
+assert(content.includes("function downloadZipBlob"));
+assert(content.includes('chrome.runtime.getURL("bulk-zip.html")'));
+// ZIP作成中は一括準備と同時に走らせない。多重実行も防ぐ。
+assert(content.includes("if (zipRun.running) return;"));
+assert(content.includes("if (zipRun.collecting) return;"));
+// 未提出の提出者では提出物の表示を待たずに次へ進む。
+assert(content.includes("ZIP_SUBMITTED_STATUS"));
+assert(manifest.web_accessible_resources[0].resources.includes("bulk-zip.html"));
+assert(manifest.web_accessible_resources[0].resources.includes("bulk-zip.js"));
+assert(manifest.web_accessible_resources[0].resources.includes("bulk-zip-core.js"));
+assert(manifest.web_accessible_resources[0].resources.includes("zip-writer.js"));
+// 追加の権限は使わない。保存はページ側のリンク操作で行う。
+assert(!content.includes("chrome.downloads"));
+assert(!bulkZip.includes("chrome.downloads"));
+assert.deepEqual(manifest.permissions, ["storage", "tabs", "webNavigation"]);
+// 取得先はDriveとGoogleドキュメントだけ。外部のCDNやライブラリは読み込まない。
+assert(bulkZipHtml.includes('<script type="module" src="bulk-zip.js"></script>'));
+assert(!/https?:\/\/(?!drive|docs|classroom)/.test(bulkZipHtml));
+assert(bulkZip.includes('const PARENT_ORIGIN = "https://classroom.google.com";'));
+assert(bulkZip.includes("event.origin !== PARENT_ORIGIN"));
+assert(bulkZip.includes("credentials: \"include\""));
+// Google形式は変換ファイルと原本リンクの両方を残す。
+assert(bulkZipCore.includes('role: "google-original"'));
+assert(bulkZipCore.includes("[InternetShortcut]"));
+assert(bulkZipCore.includes("function extractStudentNumber"));
+assert(bulkZipCore.includes("function uniqueEntryPath"));
+assert(bulkZipCore.includes("提出物一覧") === false, "CSVの名前はbulk-zip.js側で決める");
+assert(bulkZip.includes("提出物一覧.csv"));
+assert(bulkZip.includes("提出物一覧.json"));
+// ZIPはブラウザ標準の機能だけで作る（外部ライブラリを増やさない）。
+assert(zipWriter.includes('new CompressionStream("deflate-raw")'));
+assert(zipWriter.includes("0x0800"));
+
 await import("./content-detection.mjs");
 await import("./background-routing.mjs");
 await import("./native-origin.mjs");
+await import("./submission-list.mjs");
+await import("./bulk-zip.mjs");
 
 console.log(`Release settings are consistent for v${expectedVersion} on port ${expectedPort}.`);

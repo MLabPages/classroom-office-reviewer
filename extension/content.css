@@ -735,3 +735,224 @@
 }
 #cwr-cache-actions button:hover, #cwr-cache-actions button:focus-visible { background: #3c4043; outline: 2px solid #8ab4f8; }
 #cwr-cache-actions .cwr-danger { color: #f28b82; }
+
+/* 提出物のZIP一括ダウンロード */
+#cwr-zip {
+  border: 0;
+  border-radius: 999px;
+  grid-column: 1 / -1;
+  padding: 9px 15px;
+  color: #fff;
+  background: #188038;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#cwr-zip:hover,
+#cwr-zip:focus-visible {
+  background: #146c30;
+  outline: 2px solid #a8dab5;
+  outline-offset: 2px;
+}
+
+#cwr-zip:disabled {
+  color: #bdc1c6;
+  background: #3c4043;
+  cursor: default;
+}
+
+#cwr-zip-frame {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  border: 0;
+  visibility: hidden;
+}
+
+#cwr-zip-dialog {
+  position: fixed;
+  z-index: 2147483647;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  color: #e8eaed;
+  background: rgba(0, 0, 0, 0.48);
+  font: 14px/1.6 Arial, "Noto Sans JP", sans-serif;
+}
+
+#cwr-zip-card {
+  position: relative;
+  width: min(520px, 100%);
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid #5f6368;
+  border-radius: 16px;
+  background: #292a2d;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+}
+
+#cwr-zip-card h2 { margin: 0 32px 10px 0; font-size: 18px; }
+#cwr-zip-card strong { color: #8ab4f8; }
+.cwr-zip-note { margin: 6px 0 0; color: #bdc1c6; font-size: 12px; line-height: 1.6; }
+
+#cwr-zip-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  border: 0;
+  color: #e8eaed;
+  background: transparent;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.cwr-zip-group {
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border: 1px solid #5f6368;
+  border-radius: 12px;
+}
+
+.cwr-zip-group legend { padding: 0 6px; color: #8ab4f8; font-size: 13px; font-weight: 700; }
+
+.cwr-zip-group label {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  min-height: 36px;
+  padding: 6px 4px;
+  cursor: pointer;
+}
+
+.cwr-zip-group input[type="radio"] { margin-top: 4px; accent-color: #8ab4f8; }
+.cwr-zip-group label span { display: grid; gap: 2px; }
+.cwr-zip-group label small { color: #bdc1c6; font-size: 12px; line-height: 1.35; }
+
+#cwr-zip-roster-wrap { margin-top: 16px; }
+#cwr-zip-roster-wrap[hidden] { display: none; }
+#cwr-zip-roster-wrap label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 700; }
+
+#cwr-zip-roster {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #5f6368;
+  border-radius: 10px;
+  color: #e8eaed;
+  background: #202124;
+  font: 13px/1.5 Arial, "Noto Sans JP", sans-serif;
+  resize: vertical;
+}
+
+#cwr-zip-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+
+#cwr-zip-actions button {
+  flex: 1 1 auto;
+  min-height: 42px;
+  border: 1px solid #5f6368;
+  border-radius: 10px;
+  padding: 10px 14px;
+  color: #e8eaed;
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#cwr-zip-start { border-color: transparent; color: #fff; background: #188038; }
+#cwr-zip-start:hover, #cwr-zip-start:focus-visible { background: #146c30; outline: 2px solid #a8dab5; }
+#cwr-zip-cancel-dialog:hover, #cwr-zip-cancel-dialog:focus-visible { background: #3c4043; outline: 2px solid #8ab4f8; }
+
+#cwr-zip-panel {
+  position: fixed;
+  z-index: 2147483645;
+  right: 16px;
+  bottom: 16px;
+  width: min(360px, calc(100vw - 32px));
+  color: #e8eaed;
+  font: 13px/1.6 Arial, "Noto Sans JP", sans-serif;
+}
+
+#cwr-zip-panel-card {
+  padding: 14px 16px;
+  border: 1px solid #5f6368;
+  border-radius: 14px;
+  background: rgba(41, 42, 45, 0.98);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+#cwr-zip-title { margin: 0 0 6px; font-size: 15px; }
+#cwr-zip-count { margin: 0 0 8px; color: #8ab4f8; font-weight: 700; }
+#cwr-zip-count[hidden] { display: none; }
+#cwr-zip-detail { margin: 0; color: #bdc1c6; overflow-wrap: anywhere; }
+
+#cwr-zip-bar {
+  height: 4px;
+  margin: 0 0 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #3c4043;
+}
+
+#cwr-zip-bar[hidden] { display: none; }
+
+#cwr-zip-bar > span {
+  display: block;
+  width: 40%;
+  height: 100%;
+  border-radius: 999px;
+  background: #81c995;
+  animation: cwr-zip-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes cwr-zip-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+#cwr-zip-summary { margin-top: 10px; }
+#cwr-zip-summary[hidden], #cwr-zip-failures[hidden] { display: none; }
+#cwr-zip-summary p { margin: 2px 0; }
+
+#cwr-zip-failures {
+  max-height: 148px;
+  margin-top: 10px;
+  padding-top: 8px;
+  overflow: auto;
+  border-top: 1px solid #5f6368;
+}
+
+.cwr-zip-failure-heading { margin: 0 0 4px; color: #f28b82; font-weight: 700; }
+.cwr-zip-failure { margin: 2px 0; color: #bdc1c6; font-size: 12px; overflow-wrap: anywhere; }
+
+#cwr-zip-panel-actions { display: flex; gap: 8px; margin-top: 12px; }
+
+#cwr-zip-panel-actions button {
+  flex: 1 1 auto;
+  min-height: 36px;
+  border: 1px solid #5f6368;
+  border-radius: 9px;
+  padding: 8px 10px;
+  color: #e8eaed;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+#cwr-zip-panel-actions button[hidden] { display: none; }
+#cwr-zip-panel-actions button:hover,
+#cwr-zip-panel-actions button:focus-visible { background: #3c4043; outline: 2px solid #8ab4f8; }
+#cwr-zip-retry { border-color: #81c995; color: #ceead6; }
+
+#cwr-zip-panel[data-phase="error"] #cwr-zip-title { color: #f28b82; }
+#cwr-zip-panel[data-phase="done"] #cwr-zip-title { color: #81c995; }
+
+@media (max-width: 520px) {
+  #cwr-zip-panel { right: 8px; bottom: 8px; width: calc(100vw - 16px); }
+  #cwr-zip-actions button { flex: 1 1 100%; }
+}

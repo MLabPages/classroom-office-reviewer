@@ -76,6 +76,8 @@ function runDetection({ nodes = [], frames = [], href, runtimeId = "test-extensi
     __CWR_TEST_HOOKS__: hooks,
     chrome: { runtime: runtimeId ? { id: runtimeId } : {}, storage },
     Element: MockElement,
+    // ClassroomはURLで提出者を base64 で表す。ブラウザと同じ変換を用意する。
+    atob,
     document,
     getComputedStyle: (element) => (element?.hidden
       ? { display: "none", visibility: "hidden" }
@@ -583,6 +585,105 @@ assert.deepEqual(plain(noAttachmentHooks.inspectSubmissionFile()), { noAttachmen
 // 断定を避けた表現を使う。「未提出」とは言い切らない。
 assert.equal(noAttachmentHooks.fileTypeLabel({ kind: "no-attachment" }), "添付ファイルなし");
 
+// 未提出画面では添付欄や前後ボタンが描画途中で消えることがある。ZIP巡回は
+// その場合でもURLの学生IDで処理済み登録を続け、添付なしを終了扱いにしない。
+const noAttachmentWithoutNavigationHooks = runDetection({
+  href: "https://classroom.google.com/u/5/g/tg/course/work#u=ODU4NjY4MDY5MDE0&t=f",
+  nodes: [new MockElement({ text: "添付ファイルはありません" })]
+});
+assert.equal(noAttachmentWithoutNavigationHooks.getStudentKey(), "");
+assert.equal(noAttachmentWithoutNavigationHooks.zipStudentKey(), "u:ODU4NjY4MDY5MDE0");
+assert.equal(noAttachmentWithoutNavigationHooks.navigationStudentKey(), "u:ODU4NjY4MDY5MDE0");
+assert.equal(noAttachmentWithoutNavigationHooks.submissionStateKind({ noAttachment: true }), "no-attachment");
+assert.equal(noAttachmentWithoutNavigationHooks.submissionStateKind({ kind: "office" }), "attachment");
+assert.equal(noAttachmentWithoutNavigationHooks.submissionStateKind({ waiting: true }), "");
+
+// 学生の識別情報の変化を先に確認する。ファイルIDが無いことだけでは切替成功にしない。
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: false,
+    fileState: { noAttachment: true },
+    previousFileId: "previous-drive-file",
+    noAttachmentForMs: 2000
+  }),
+  false,
+  "学生が変わっていない添付なし表示は切替完了にしない"
+);
+// 提出済み -> 未提出：前の学生だけがファイルIDを持つ場合。
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: { noAttachment: true },
+    previousFileId: "previous-drive-file",
+    noAttachmentForMs: 1500
+  }),
+  true,
+  "提出済み学生から未提出者へ移るときは、新しいファイルIDが無くても切替完了にする"
+);
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: { noAttachment: true },
+    previousFileId: "previous-drive-file",
+    noAttachmentForMs: 1499
+  }),
+  false,
+  "添付なし表示は短時間の描画途中では確定しない"
+);
+// 未提出 -> 提出済み：学生IDの変化後、新しいファイルIDが補助情報として得られる。
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: { kind: "office" },
+    previousFileId: "",
+    displayedFileId: "new-drive-file"
+  }),
+  true
+);
+// 未提出 -> 未提出：どちらにもファイルIDが無くても、学生IDの変化と状態確定で進む。
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: { noAttachment: true },
+    noAttachmentForMs: 1500
+  }),
+  true
+);
+// 提出済み -> 添付なし提出：提出状態は巡回側で「提出済み」のまま保持し、
+// 切替判定だけを添付なし状態で完了できる。
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: { noAttachment: true },
+    previousFileId: "previous-drive-file",
+    noAttachmentForMs: 1500
+  }),
+  true
+);
+assert.deepEqual(plain(noAttachmentWithoutNavigationHooks.zipCollectionCompletion({
+  rosterTotal: 18, collectedCount: 18, stopReason: "end"
+})), { complete: true, message: "" });
+assert.equal(
+  noAttachmentWithoutNavigationHooks.zipCollectionCompletion({ rosterTotal: 18, collectedCount: 7, stopReason: "end" }).complete,
+  false,
+  "総人数未達は、次へボタンが末尾でも正常終了にしない"
+);
+assert.equal(
+  noAttachmentWithoutNavigationHooks.zipCollectionCompletion({ rosterTotal: 18, collectedCount: 7, stopReason: "stuck" }).complete,
+  false,
+  "学生切替待機のタイムアウトを正常終了にしない"
+);
+assert.equal(
+  noAttachmentWithoutNavigationHooks.zipCollectionCompletion({ rosterTotal: 18, collectedCount: 7, stopReason: "missing" }).complete,
+  false,
+  "次へボタンの取得失敗を正常終了にしない"
+);
+assert.equal(
+  noAttachmentWithoutNavigationHooks.zipCollectionCompletion({ rosterTotal: 18, collectedCount: 7, stopReason: "duplicate-student" }).complete,
+  false,
+  "処理済み学生の重複を正常終了にしない"
+);
+
 // 通常の提出物が表示されている画面では、添付なしと誤判定しない。
 assert.equal(solePdfHooks.findNoAttachmentMessage(), false);
 
@@ -644,4 +745,115 @@ const normalWordHooks = runDetection({
 assert.equal(normalWordHooks.currentDisplayedFileInfo().kind, "office");
 assert.equal(normalWordHooks.inspectSubmissionFile().kind, "office");
 
-console.log("Content detection handles Word duplicates, native Google documents, PDF submissions, multiple attachments, and progress wording.");
+// ---------------------------------------------------------------
+// ZIP一括ダウンロード：提出者一覧と提出状態の読み取り
+// ---------------------------------------------------------------
+// Classroomの提出者切替欄は、閉じている間も全員分の項目をDOMに持っている。
+// ここから「未提出の学生」まで含めた一覧を作れないと、未提出者の表示を
+// 待ち続けて一括処理が止まってしまう。
+const rosterHooks = runDetection({
+  nodes: [
+    new MockElement({ text: "26_0243 安田（Yasuda）提出済み", attributes: { "aria-checked": "true", "data-value": "858685482900" } }),
+    new MockElement({ text: "26_0244 吾郷（Ago）未提出", attributes: { "aria-checked": "false", "data-value": "858670518078" } }),
+    new MockElement({ text: "26_0247 前田（Maeda）割り当て済み", attributes: { "aria-checked": "false", "data-value": "858669315782" } }),
+    new MockElement({ text: "26_0248 山中（Yamanaka）下書き", attributes: { "aria-checked": "false", "data-value": "858670812792" } }),
+    // 並べ替えなどの項目は data-value を持っていても提出者ではない。
+    new MockElement({ text: "ステータスで並べ替え", attributes: { "aria-checked": "true", "data-value": "sort:1" } }),
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ]
+});
+const roster = plain(rosterHooks.readClassroomRoster());
+assert.deepEqual(roster, [
+  { studentId: "858685482900", studentName: "26_0243 安田（Yasuda）", status: "提出済み" },
+  { studentId: "858670518078", studentName: "26_0244 吾郷（Ago）", status: "未提出" },
+  // 「割り当て済み」はClassroomの言い方の違いで、実質は未提出。
+  { studentId: "858669315782", studentName: "26_0247 前田（Maeda）", status: "未提出" },
+  { studentId: "858670812792", studentName: "26_0248 山中（Yamanaka）", status: "下書き" }
+]);
+assert.equal(rosterHooks.zipStatusOf("26_0243 安田（Yasuda）提出済み"), "提出済み");
+assert.equal(rosterHooks.zipStudentName("26_0243 安田（Yasuda）提出済み"), "26_0243 安田（Yasuda）");
+// ClassroomはURLでは base64、一覧では10進で同じ提出者を表す。
+assert.equal(rosterHooks.zipDecodeStudentId("ODU4Njg1NDgyOTAw"), "858685482900");
+assert.equal(rosterHooks.zipDecodeStudentId("not-base64!"), "");
+
+// 添付カードの名前は aria-label から読み取る（実画面の形に合わせる）。
+const attachmentNode = new MockElement({
+  attributes: { "aria-label": "添付ファイル: Microsoft Word: マーケティング.docx" }
+});
+assert.equal(rosterHooks.zipAttachmentLabel(attachmentNode), "マーケティング.docx");
+const sheetNode = new MockElement({
+  attributes: { "aria-label": "添付ファイル: Google スプレッドシート: 集計表" }
+});
+assert.equal(rosterHooks.zipAttachmentLabel(sheetNode), "集計表");
+
+// 採点表示では扱わないGoogleスプレッドシートなども、ZIP用には拾う。
+const sheetId = "1SHEETSHEETSHEETSHEETSHEETSHEET";
+const extraHooks = runDetection({
+  nodes: [
+    new MockElement({
+      href: `https://docs.google.com/spreadsheets/d/${sheetId}/edit`,
+      attributes: { "aria-label": "添付ファイル: Google スプレッドシート: 集計表" }
+    }),
+    new MockElement({
+      href: "https://docs.google.com/forms/d/e/1FAIpQLSfFORMfFORMfFORMfFORMfFORMfFORM/viewform",
+      attributes: { "aria-label": "添付ファイル: Google フォーム: アンケート" }
+    }),
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ]
+});
+const extras = extraHooks.collectExtraGoogleAttachments();
+assert.equal(extras.length, 2);
+assert.deepEqual(plain(extras[0]), {
+  kind: "google-spreadsheet",
+  googleType: "spreadsheet",
+  fileId: sheetId,
+  fileName: "集計表",
+  sourceUrl: `https://docs.google.com/spreadsheets/d/${sheetId}/edit`
+});
+// フォームは取り込めないので、開くためのリンクとして残す。
+assert.equal(extras[1].kind, "link");
+assert.equal(extras[1].fileName, "アンケート");
+
+// 名簿CSVの照合：省略番号と氏名の完全一致が1件だけの場合に限る。
+const rosterCsv = [
+  "学籍番号,氏名",
+  "2610170001,学生A",
+  "2610170002,学生B",
+  "2600000001,学生C"
+].join("\n");
+assert.equal(rosterHooks.zipAbbreviatedNumber("2610170001"), "26_0001");
+assert.equal(rosterHooks.zipRosterNameKey(" 学生Ａ （Student A） "), "学生a");
+assert.equal(rosterHooks.parseRosterCsv(rosterCsv).length, 3);
+const rosterMatched = rosterHooks.applyRosterStudentNumbers([
+  { studentKey: "u:1", studentName: "26_0001 学生A（Student A）" },
+  { studentKey: "u:2", studentName: "26_0002 学生B" },
+  { studentKey: "u:3", studentName: "26_0001 学生D" }
+], rosterCsv);
+assert.equal(rosterMatched[0].studentNumber, "2610170001");
+assert.equal(rosterMatched[1].studentNumber, "2610170002");
+assert.equal(rosterMatched[2].studentNumber, undefined, "姓だけや部分一致で正式な学籍番号を推測しない");
+assert.match(rosterMatched[2].rosterWarning, /複数/);
+
+// A列だけでも、省略番号が一意なら正式な学籍番号を使う。CSVの並び順は関係ない。
+const numberOnlyRoster = ["学籍番号", "2610170397", "2610170395", "2610170396"].join("\n");
+const numberOnlyMatched = rosterHooks.applyRosterStudentNumbers([
+  { studentKey: "u:4", studentName: "26_0395 学生A" },
+  { studentKey: "u:5", studentName: "26_0396 学生B" }
+], numberOnlyRoster);
+assert.equal(numberOnlyMatched[0].studentNumber, "2610170395");
+assert.equal(numberOnlyMatched[1].studentNumber, "2610170396");
+const duplicateNumberOnly = rosterHooks.applyRosterStudentNumbers(
+  [{ studentKey: "u:6", studentName: "26_0001 学生A" }],
+  ["学籍番号", "2610170001", "2600000001"].join("\n")
+);
+assert.equal(duplicateNumberOnly[0].studentNumber, undefined);
+assert.match(duplicateNumberOnly[0].rosterWarning, /複数/);
+
+// ZIP設定画面は識別名とファイル名構成を分け、次回復元用の保存キーを使う。
+assert.match(content, /<legend>学生の識別名<\/legend>/);
+assert.match(content, /表示名をそのまま使う/);
+assert.match(content, /<legend>ファイル名の構成<\/legend>/);
+assert.match(content, /cwrZipFileNameStyle/);
+assert.match(content, /名簿CSV（学籍番号,氏名）/);
+
+console.log("Content detection handles Word duplicates, native Google documents, PDF submissions, multiple attachments, progress wording, and bulk ZIP collection.");

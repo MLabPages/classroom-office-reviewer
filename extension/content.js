@@ -26,6 +26,20 @@
   const MAX_FILE_WAIT_RETRIES = 3;
   // 「添付ファイルはありません」の確認結果を一瞬だけ覚えておくための入れ物。
   const noAttachmentProbe = { checkedAt: 0, result: false };
+  // 一括ZIPダウンロードで使う語句。提出者切替欄の表記から提出状態を読み取る。
+  const ZIP_STATUS_WORDS = [
+    "提出済み", "遅れて提出", "提出期限後に提出", "返却済み", "採点済み", "下書き", "割り当て済み", "未提出",
+    "Turned in", "Done late", "Returned", "Graded", "Draft", "Assigned", "Missing"
+  ];
+  // 提出物を探しに行く価値がある状態。未提出の学生で待たないための判断に使う。
+  const ZIP_SUBMITTED_STATUS = /提出済み|遅れて提出|提出期限後に提出|返却済み|採点済み|下書き|Turned in|Done late|Returned|Graded|Draft/;
+  const ZIP_GOOGLE_URL = /docs\.google\.com\/(document|spreadsheets|presentation|drawings|forms)\/d\/(?:e\/)?([a-zA-Z0-9_-]{20,})/i;
+  const ZIP_GOOGLE_TYPES = {
+    document: "document",
+    spreadsheets: "spreadsheet",
+    presentation: "presentation",
+    drawings: "drawing"
+  };
   const state = {
     enabled: true,
     busy: false,
@@ -778,10 +792,30 @@
       loadSettings,
       extensionContextLost,
       sameSubmissionStudent,
+      submissionStateKind,
+      submissionChangeReady,
       getStudentIdFromUrl,
+      getStudentKey,
+      navigationStudentKey,
+      zipStudentKey,
+      zipCollectionCompletion,
       dedupeDoubledLabel,
       fileTypeLabel,
-      submissionCatalogKey
+      submissionCatalogKey,
+      zipStudentName,
+      zipStatusOf,
+      zipDecodeStudentId,
+      readClassroomRoster,
+      zipAttachmentLabel,
+      collectExtraGoogleAttachments,
+      zipFilesForCurrentStudent,
+      splitRosterCsvLine,
+      zipRosterNameKey,
+      zipAbbreviatedNumber,
+      zipDisplayIdentity,
+      parseRosterCsv,
+      applyRosterStudentNumbers,
+      zipAssignmentName
     });
     return;
   }
@@ -940,6 +974,45 @@
     const studentId = getStudentIdFromUrl();
     if (studentId) return `u:${studentId}`;
     return [location.href, getStudentLabel()].join("|");
+  }
+
+  // 学生切替の判定では、画面の矢印が描画途中でもURLの学生IDを優先する。
+  // URLにIDが無い画面だけ、通常レビューと同じ判定へ戻す。
+  function navigationStudentKey() {
+    const studentId = getStudentIdFromUrl();
+    return studentId ? `u:${studentId}` : getStudentKey();
+  }
+
+  // ZIP巡回では、未提出者の画面で前後ボタンや添付欄が一時的に消えても、URLに
+  // 出ている提出者IDを優先して処理を続ける。通常表示用の getStudentKey() は
+  // 採点画面かどうかも確認するため、そのまま使う。
+  function zipStudentKey() {
+    return navigationStudentKey();
+  }
+
+  // 正常終了は、実際に「次へ」ボタンが無効だった場合だけにする。途中で画面が
+  // 読めなくなった場合や同じ学生へ戻った場合を添付なし・末尾と混同しない。
+  function zipCollectionCompletion({ rosterTotal = 0, collectedCount = 0, stopReason = "" } = {}) {
+    if (stopReason === "end") {
+      if (rosterTotal > 0 && collectedCount < rosterTotal) {
+        return {
+          complete: false,
+          message: `Classroomは最終学生を示しましたが、${rosterTotal}名中${collectedCount}名しか確認できませんでした。途中停止としてZIP作成を中止しました。`
+        };
+      }
+      return { complete: true, message: "" };
+    }
+    const reason = {
+      "student-key-missing": "現在の学生を識別できませんでした",
+      "duplicate-student": "同じ学生を再び検出しました",
+      missing: "次へボタンを取得できませんでした",
+      stuck: "学生切替の画面更新を確認できませんでした",
+      "context-lost": "拡張機能の画面連携が切れました"
+    }[stopReason] || "巡回を完了できませんでした";
+    return {
+      complete: false,
+      message: `${reason}。${rosterTotal ? `${rosterTotal}名中${collectedCount}名` : `${collectedCount}名`}まで確認したため、途中停止としてZIP作成を中止しました。`
+    };
   }
 
   // 保存先は表示名ではなく、ClassroomのURLと提出者・Driveファイル番号で決める。
@@ -1207,25 +1280,59 @@
   }
 
   // 提出者が変わっても、Classroomはしばらく前の提出物を表示したままになる。
-  // 学生の切り替わりだけで次に進むと、まだ残っている前のファイル番号を読み、
-  // 同じPDFをもう一度出してしまう（画面が一瞬点滅するだけで中身が変わらない）。
-  // 表示中のファイル番号が実際に入れ替わるまで待ってから次へ進む。
+  // 学生IDの変化後に提出状態が安定するまで待ち、ファイルIDが取れる場合だけ
+  // 前の提出物が残っていないことの補助確認に使う。
+  function submissionStateKind(fileState = null) {
+    if (!fileState || fileState.waiting) return "";
+    return fileState.noAttachment === true ? "no-attachment" : "attachment";
+  }
+
+  // 学生が変わったことと、その学生の提出状態が安定したことを切替完了の軸にする。
+  // ファイルIDは、古い提出物が残ったままの誤読を防ぐ補助情報としてだけ使う。
+  function submissionChangeReady({
+    studentChanged = false,
+    fileState = null,
+    previousFileId = "",
+    displayedFileId = "",
+    studentChangedForMs = 0,
+    noAttachmentForMs = 0
+  } = {}) {
+    if (!studentChanged) return false;
+    const stateKind = submissionStateKind(fileState);
+    if (!stateKind) return false;
+    if (stateKind === "no-attachment") return noAttachmentForMs >= NO_ATTACHMENT_CONFIRM_MS;
+    if (displayedFileId && displayedFileId !== previousFileId) return true;
+    if (displayedFileId && previousFileId && displayedFileId === previousFileId) return false;
+    return studentChangedForMs >= NO_ATTACHMENT_CONFIRM_MS;
+  }
+
   async function waitForSubmissionChange(previousKey, timeoutMs = 20000, previousFileId = "") {
     const startedAt = Date.now();
     let studentChangedAt = 0;
+    let noAttachmentSince = 0;
     while (Date.now() - startedAt < timeoutMs) {
-      const currentKey = getStudentKey();
+      const currentKey = navigationStudentKey();
       const studentChanged = Boolean(currentKey) && currentKey !== previousKey;
       const fileState = inspectSubmissionFile();
-      const fileReady = Boolean(findSupportedFileInfo()) || fileState?.unsupported === true || fileState?.noAttachment === true;
-      if (studentChanged && fileReady) {
+      if (studentChanged) {
         if (!studentChangedAt) studentChangedAt = Date.now();
+        // 未提出者には新しいDriveファイルIDが存在しない。直前の提出済み学生の
+        // ファイルIDと違うことを待つと必ずタイムアウトするため、「添付なし」の
+        // 表示が一定時間続いた時点で学生切替は完了したものとして次へ進める。
+        if (fileState?.noAttachment === true) {
+          if (!noAttachmentSince) noAttachmentSince = Date.now();
+        } else {
+          noAttachmentSince = 0;
+        }
         const displayedFileId = findDisplayedFileId();
-        // 前のファイル番号と違う番号が出たら、切り替えは完了している。
-        if (displayedFileId && displayedFileId !== previousFileId) return true;
-        // 番号を読めない画面では、これまでどおり学生の切替だけで判断する。
-        // ただし前の番号がまだ残っている間は、少しだけ入れ替わりを待つ。
-        if (!previousFileId && !displayedFileId && Date.now() - studentChangedAt > 1500) return true;
+        if (submissionChangeReady({
+          studentChanged,
+          fileState,
+          previousFileId,
+          displayedFileId,
+          studentChangedForMs: Date.now() - studentChangedAt,
+          noAttachmentForMs: noAttachmentSince ? Date.now() - noAttachmentSince : 0
+        })) return true;
       }
       await wait(150);
     }
@@ -2248,6 +2355,782 @@
     }
   }
 
+  // ============================================================
+  // 提出物のZIP一括ダウンロード
+  // 採点用の変換・表示とは別経路にする。ここで集めるのは「画面に出ている
+  // 提出物の情報」だけで、取得とZIP作成は拡張機能側のページ（bulk-zip.html）
+  // が行う。採点中の表示処理には手を入れない。
+  // ============================================================
+  const zipRun = {
+    running: false,
+    collecting: false,
+    cancelled: false,
+    phase: "idle",
+    frame: null,
+    framePromise: null,
+    jobId: "",
+    layout: "flat",
+    tokenRule: "name-number",
+    fileNameStyle: "with-original",
+    rosterText: "",
+    students: [],
+    assignmentName: "",
+    failures: [],
+    summary: null,
+    startedAt: 0,
+    counts: { studentsDone: 0, studentsTotal: 0, filesDone: 0, filesFailed: 0, filesTotal: 0 },
+    detail: "",
+    title: "提出物の一括ダウンロード"
+  };
+
+  function zipStudentName(label) {
+    let text = String(label || "");
+    for (const word of ZIP_STATUS_WORDS) text = text.split(word).join(" ");
+    return text.replace(/\s+/g, " ").trim();
+  }
+
+  function zipStatusOf(label) {
+    const text = String(label || "");
+    const found = ZIP_STATUS_WORDS.find((word) => text.endsWith(word))
+      || ZIP_STATUS_WORDS.find((word) => text.includes(word));
+    if (!found) return "";
+    if (["割り当て済み", "Assigned", "Missing", "未提出"].includes(found)) return "未提出";
+    return found;
+  }
+
+  // Classroomは提出者をURLでは base64、一覧では10進の番号で表す。
+  // 同じ提出者だと確かめるため、10進へそろえてから比べる。
+  function zipDecodeStudentId(value) {
+    const text = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+    if (!text) return "";
+    try {
+      const decoded = atob(text.padEnd(Math.ceil(text.length / 4) * 4, "="));
+      return /^\d{4,}$/.test(decoded) ? decoded : "";
+    } catch {
+      return "";
+    }
+  }
+
+  // 提出者の切替欄から、クラス全員と提出状態を読み取る。未提出の学生も
+  // ここで分かるので、提出物の表示を待たずに次へ進める。
+  function readClassroomRoster() {
+    const roster = new Map();
+    for (const node of document.querySelectorAll("[data-value]")) {
+      const id = node.getAttribute("data-value") || "";
+      if (!/^\d{6,}$/.test(id)) continue;
+      if (node.getAttribute("aria-checked") === null && node.getAttribute("aria-selected") === null) continue;
+      const label = textOf(node);
+      if (!label || label.length > 220) continue;
+      const name = zipStudentName(label);
+      if (!name) continue;
+      const entry = { studentId: id, studentName: name, status: zipStatusOf(label) || "提出済み" };
+      const previous = roster.get(id);
+      if (!previous || (!previous.status && entry.status)) roster.set(id, entry);
+    }
+    return [...roster.values()];
+  }
+
+  // 添付カードに出ている名前を読む。Classroomは
+  // 「添付ファイル: Microsoft Word: レポート.docx」のような形で持っている。
+  function zipAttachmentLabel(node) {
+    let current = node;
+    for (let depth = 0; depth < 4 && current; depth += 1) {
+      const title = current.getAttribute?.("title");
+      if (title && title.length <= 160 && !/新しいウィンドウ|new window/i.test(title)) return title.trim();
+      for (const source of labelSourcesOf(current)) {
+        const attachment = String(source || "").match(/添付ファイル\s*[:：]\s*(?:[^:：]{1,40}\s*[:：]\s*)?(.{1,160})$/);
+        if (attachment) return dedupeDoubledLabel(attachment[1].trim());
+        const google = String(source || "").match(/Google\s*(?:ドキュメント|スプレッドシート|スライド|図形描画|フォーム|Docs?|Sheets?|Slides?|Drawings?|Forms?)\s*[:：]\s*(.{1,160})$/i);
+        if (google) return dedupeDoubledLabel(google[1].trim());
+      }
+      current = current.parentElement;
+    }
+    return "";
+  }
+
+  // 採点表示では扱わないGoogle形式（スプレッドシート・図形描画・フォーム）は、
+  // ここでZIP用にだけ拾う。既存の判定には手を入れない。
+  function collectExtraGoogleAttachments() {
+    const found = [];
+    for (const node of document.querySelectorAll("a[href], [role='menuitem']")) {
+      const url = fileUrlOf(node) || node.getAttribute?.("href") || "";
+      const match = String(url).match(ZIP_GOOGLE_URL);
+      if (!match) continue;
+      const googleType = ZIP_GOOGLE_TYPES[match[1].toLowerCase()] || "";
+      const label = zipAttachmentLabel(node) || textOf(node);
+      if (!googleType) {
+        // Googleフォームなどは取り込めない。開くためのURLとして残す。
+        found.push({ kind: "link", fileName: (label || "Googleフォーム").slice(0, 160), sourceUrl: url });
+        continue;
+      }
+      // ドキュメントとスライドは既存の判定で拾えるため、ここでは補助に留める。
+      found.push({
+        kind: `google-${googleType}`,
+        googleType,
+        fileId: match[2],
+        fileName: (label || `Google${googleType}`).slice(0, 160),
+        sourceUrl: url
+      });
+    }
+    return found;
+  }
+
+  function zipFileIdentity(file) {
+    if (file.fileId) return `id:${file.fileId}`;
+    if (file.sourceUrl) return `url:${String(file.sourceUrl).trim().toLowerCase()}`;
+    return `name:${normalizedFileName(file.fileName)}`;
+  }
+
+  // いま表示している提出者の添付を、ZIP用の形へそろえる。
+  function zipFilesForCurrentStudent() {
+    const files = [];
+    const seen = new Set();
+    const add = (file) => {
+      if (!file || (!file.fileId && !file.sourceUrl)) return;
+      const identity = zipFileIdentity(file);
+      if (seen.has(identity)) return;
+      seen.add(identity);
+      files.push(file);
+    };
+    for (const file of listSubmissionFiles()) {
+      if (file.kind === "no-attachment") continue;
+      add({
+        kind: file.kind || "",
+        fileName: file.fileName || "提出物",
+        fileId: file.expectedFileId || "",
+        googleType: file.expectedGoogleType || "",
+        sourceUrl: file.sourceUrl || sourceUrlForFile(file) || ""
+      });
+    }
+    for (const extra of collectExtraGoogleAttachments()) add(extra);
+    return files;
+  }
+
+  function setZipProgress(patch = {}) {
+    // counts は一部だけ渡すことがある。Object.assign より先に前の値と混ぜて
+    // おかないと、渡さなかった項目（総人数など）が消えてしまう。
+    const counts = patch.counts ? { ...zipRun.counts, ...patch.counts } : zipRun.counts;
+    Object.assign(zipRun, patch);
+    zipRun.counts = counts;
+    renderZipPanel();
+  }
+
+  async function zipMoveNext() {
+    let transition = null;
+    for (let attempt = 0; attempt < 4 && !zipRun.cancelled && contextAvailable(); attempt += 1) {
+      const result = await moveSubmission("next", transition);
+      if (result.status === "moved" || result.status === "end") return result.status;
+      transition = result.transition || null;
+      setZipProgress({ detail: `Classroomの画面更新を待っています（${attempt + 1}回目の再確認）。` });
+      await wait(BACKGROUND_RETRY_MS);
+    }
+    return "stuck";
+  }
+
+  async function zipMovePrevious() {
+    const result = await moveSubmission("previous", null);
+    return result.status;
+  }
+
+  // Classroomを先頭から順にたどり、提出者ごとの添付情報を集める。
+  // 取得やZIP作成はここでは行わない。
+  async function collectZipSubmissions() {
+    const roster = readClassroomRoster();
+    const rosterById = new Map(roster.map((entry) => [entry.studentId, entry]));
+    const collected = [];
+    const seenKeys = new Set();
+    const startStudentKey = getStudentKey();
+    let forwardMoves = 0;
+    let stopReason = "";
+
+    setZipProgress({
+      phase: "collect",
+      counts: { studentsDone: 0, studentsTotal: roster.length, filesDone: 0, filesFailed: 0, filesTotal: 0 },
+      detail: "先頭の提出者へ移動しています…"
+    });
+    for (let attempts = 0; attempts < 1000 && !zipRun.cancelled; attempts += 1) {
+      if (await zipMovePrevious() !== "moved") break;
+      setZipProgress({ detail: `先頭の提出者へ移動しています（${attempts + 1}人分）…` });
+    }
+
+    while (!zipRun.cancelled && contextAvailable()) {
+      const studentKey = zipStudentKey();
+      if (!studentKey) {
+        stopReason = "student-key-missing";
+        break;
+      }
+      if (seenKeys.has(studentKey)) {
+        stopReason = "duplicate-student";
+        break;
+      }
+      seenKeys.add(studentKey);
+      const decimalId = zipDecodeStudentId(getStudentIdFromUrl());
+      const rosterEntry = rosterById.get(decimalId) || null;
+      const label = getStudentLabel();
+      const studentName = rosterEntry?.studentName || zipStudentName(label) || `提出者${seenKeys.size}`;
+      const status = rosterEntry?.status || zipStatusOf(label) || "";
+
+      setZipProgress({
+        counts: { studentsDone: seenKeys.size - 1, studentsTotal: Math.max(roster.length, seenKeys.size) },
+        detail: `${studentName} の提出物を確認しています…`
+      });
+
+      let files = [];
+      // 未提出と分かっている提出者では、表示を待たずに次へ進む。ここで
+      // 待つと、未提出者の多いクラスで一括処理が何分も止まってしまう。
+      if (!status || ZIP_SUBMITTED_STATUS.test(status)) {
+        const fileState = await waitForSubmissionFile(status ? 12000 : 8000);
+        if (fileState && !fileState.unsupported && !fileState.noAttachment) {
+          files = zipFilesForCurrentStudent();
+        } else if (fileState?.unsupported) {
+          files = zipFilesForCurrentStudent();
+        }
+      }
+
+      collected.push({
+        studentKey,
+        studentId: decimalId,
+        studentName,
+        status: status || (files.length ? "提出済み" : "未提出"),
+        email: "",
+        files
+      });
+      setZipProgress({
+        counts: { studentsDone: seenKeys.size, filesTotal: collected.reduce((total, student) => total + student.files.length, 0) },
+        detail: files.length
+          ? `${studentName}：${files.length}件の提出物を確認しました。`
+          : `${studentName}：対象の提出物はありません。`
+      });
+
+      if (zipRun.cancelled) break;
+      const moved = await zipMoveNext();
+      if (moved !== "moved") {
+        stopReason = moved;
+        break;
+      }
+      forwardMoves += 1;
+    }
+
+    if (!zipRun.cancelled && !stopReason && !contextAvailable()) stopReason = "context-lost";
+
+    // 採点していた提出者の位置へ戻す。ここを省くと、一括処理のあとに
+    // まったく違う提出者が開いたままになる。移動した回数ではなく、実際に
+    // 元の提出者へ戻れたかどうかで判断する（1回でも取りこぼすとずれるため）。
+    if (forwardMoves > 0 && startStudentKey) {
+      setZipProgress({ detail: "元の提出者へ戻しています…" });
+      for (let index = 0; index <= forwardMoves + 2; index += 1) {
+        if (getStudentKey() === startStudentKey) break;
+        if (await zipMovePrevious() !== "moved") break;
+      }
+    }
+    return {
+      collected,
+      roster,
+      completion: zipCollectionCompletion({
+        rosterTotal: roster.length,
+        collectedCount: collected.length,
+        stopReason: zipRun.cancelled ? "cancelled" : stopReason
+      })
+    };
+  }
+
+  function ensureZipFrame() {
+    if (zipRun.frame && document.body.contains(zipRun.frame)) return zipRun.framePromise;
+    const frame = document.createElement("iframe");
+    frame.id = "cwr-zip-frame";
+    frame.setAttribute("aria-hidden", "true");
+    frame.setAttribute("tabindex", "-1");
+    frame.title = "提出物のZIP作成";
+    frame.src = chrome.runtime.getURL("bulk-zip.html");
+    zipRun.framePromise = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("ZIP作成用のページを読み込めませんでした。Classroomを再読み込みしてください。")), 15000);
+      const onReady = (event) => {
+        if (event.source !== frame.contentWindow || event.data?.type !== "cwr-zip-ready") return;
+        clearTimeout(timer);
+        window.removeEventListener("message", onReady);
+        resolve(frame);
+      };
+      window.addEventListener("message", onReady);
+    });
+    document.body.appendChild(frame);
+    zipRun.frame = frame;
+    return zipRun.framePromise;
+  }
+
+  // 取得が終わったら作業用フレームは片付ける。採点中のページに、使い終えた
+  // 隠しフレームを残さない。再試行のときは作り直す。
+  function releaseZipFrame() {
+    zipRun.frame?.remove();
+    zipRun.frame = null;
+    zipRun.framePromise = null;
+  }
+
+  function zipFrameOrigin() {
+    try {
+      return new URL(chrome.runtime.getURL("bulk-zip.html")).origin;
+    } catch {
+      return "*";
+    }
+  }
+
+  function postToZipFrame(message) {
+    zipRun.frame?.contentWindow?.postMessage(message, zipFrameOrigin());
+  }
+
+  function splitRosterCsvLine(line) {
+    const columns = [];
+    let value = "";
+    let quoted = false;
+    for (let index = 0; index < line.length; index += 1) {
+      const character = line[index];
+      if (character === '"') {
+        if (quoted && line[index + 1] === '"') {
+          value += '"';
+          index += 1;
+        } else {
+          quoted = !quoted;
+        }
+      } else if (character === "," && !quoted) {
+        columns.push(value.trim());
+        value = "";
+      } else {
+        value += character;
+      }
+    }
+    columns.push(value.trim());
+    return columns;
+  }
+
+  // 姓名間の空白、全半角、括弧内のローマ字表記をそろえ、完全一致だけに使う。
+  // 姓だけ・部分一致では照合しない。
+  function zipRosterNameKey(value) {
+    return String(value || "")
+      .normalize("NFKC")
+      .replace(/[（(][^）)]*[）)]/g, "")
+      .replace(/[\s　]+/g, "")
+      .toLocaleLowerCase();
+  }
+
+  function zipAbbreviatedNumber(studentNumber) {
+    const number = String(studentNumber || "").normalize("NFKC").replace(/[\s　]+/g, "");
+    if (!/^\d{6,15}$/.test(number)) return "";
+    return `${number.slice(0, 2)}_${number.slice(-4)}`;
+  }
+
+  function zipDisplayIdentity(studentName) {
+    const normalized = String(studentName || "").normalize("NFKC").replace(/[\s　]+/g, " ").trim();
+    const matched = normalized.match(/^(\d{2}_\d{4,})\s+(.+)$/);
+    return {
+      abbreviatedNumber: matched?.[1] || "",
+      nameKey: zipRosterNameKey(matched?.[2] || normalized)
+    };
+  }
+
+  // 基本形式は「学籍番号,氏名」。Classroomの並び順へ合わせる必要はない。
+  function parseRosterCsv(text) {
+    const roster = [];
+    for (const line of String(text || "").split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const [studentNumber, studentName = ""] = splitRosterCsvLine(line);
+      const number = String(studentNumber || "").normalize("NFKC").replace(/[\s　]+/g, "");
+      const nameKey = zipRosterNameKey(studentName);
+      const abbreviatedNumber = zipAbbreviatedNumber(number);
+      if (!abbreviatedNumber) continue;
+      roster.push({ studentNumber: number, studentName: String(studentName || "").trim(), abbreviatedNumber, nameKey });
+    }
+    return roster;
+  }
+
+  function applyRosterStudentNumbers(students, rosterText) {
+    const roster = parseRosterCsv(rosterText);
+    return students.map((student) => {
+      const identity = zipDisplayIdentity(student.studentName);
+      const candidates = roster.filter((entry) => entry.abbreviatedNumber === identity.abbreviatedNumber);
+      if (candidates.length === 1) return { ...student, studentNumber: candidates[0].studentNumber };
+      const matched = identity.nameKey
+        ? candidates.filter((entry) => entry.nameKey && entry.nameKey === identity.nameKey)
+        : [];
+      if (matched.length === 1) return { ...student, studentNumber: matched[0].studentNumber };
+      const rosterWarning = !roster.length
+        ? "名簿CSVを読み取れないため、表示名を代替として使いました。"
+        : candidates.length > 1
+          ? "名簿CSVで同じ省略番号に複数の学籍番号があるため、表示名を代替として使いました。"
+          : "名簿CSVと省略番号を照合できないため、表示名を代替として使いました。";
+      return { ...student, rosterWarning };
+    });
+  }
+
+  function downloadZipBlob(blob, fileName) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.rel = "noopener";
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    // 取り消しが早すぎると保存が始まらないことがあるため、少し待って片付ける。
+    setTimeout(() => {
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    }, 60000);
+  }
+
+  function handleZipFrameMessage(event) {
+    if (!zipRun.frame || event.source !== zipRun.frame.contentWindow) return;
+    const message = event.data;
+    if (!message || typeof message !== "object" || !String(message.type || "").startsWith("cwr-zip-")) return;
+    if (message.jobId && zipRun.jobId && message.jobId !== zipRun.jobId) return;
+
+    if (message.type === "cwr-zip-progress") {
+      setZipProgress({
+        phase: message.phase === "packing" ? "packing" : "download",
+        counts: {
+          studentsDone: message.studentsDone ?? zipRun.counts.studentsDone,
+          studentsTotal: message.studentsTotal ?? zipRun.counts.studentsTotal,
+          filesDone: message.filesDone ?? 0,
+          filesFailed: message.filesFailed ?? 0,
+          filesTotal: message.filesTotal ?? zipRun.counts.filesTotal
+        },
+        detail: message.currentLabel || zipRun.detail
+      });
+      return;
+    }
+    if (message.type === "cwr-zip-done") {
+      zipRun.running = false;
+      zipRun.failures = Array.isArray(message.failures) ? message.failures : [];
+      zipRun.summary = message.summary || null;
+      downloadZipBlob(message.blob, message.fileName || "提出物.zip");
+      releaseZipFrame();
+      setZipProgress({
+        phase: "done",
+        title: message.retried ? "失敗した項目の再取得が終わりました" : "ZIPのダウンロードを開始しました",
+        detail: `${message.fileName} をダウンロードフォルダーへ保存します。`
+      });
+      setStatus(`提出物ZIP（${message.fileName}）を作成しました。`, "ready");
+      updateUiLabels();
+      return;
+    }
+    if (message.type === "cwr-zip-cancelled") {
+      zipRun.running = false;
+      releaseZipFrame();
+      setZipProgress({ phase: "cancelled", title: "一括ダウンロードを中止しました", detail: "作成中のZIPは保存していません。" });
+      updateUiLabels();
+      return;
+    }
+    if (message.type === "cwr-zip-error") {
+      zipRun.running = false;
+      releaseZipFrame();
+      setZipProgress({ phase: "error", title: "ZIPを作成できませんでした", detail: message.message || "処理中にエラーが発生しました。" });
+      setStatus(message.message || "ZIPを作成できませんでした。", "error");
+      updateUiLabels();
+    }
+  }
+
+  async function startZipDownload({ layout, tokenRule, fileNameStyle, rosterText }) {
+    if (zipRun.running) return;
+    if (reportContextLostIfNeeded()) return;
+    if (state.preparing || state.remotePreparing) {
+      setStatus("一括準備の実行中はZIPを作成できません。準備の完了後にお試しください。", "error");
+      return;
+    }
+    if (!isSubmissionView()) {
+      setStatus("提出物を個別に開いてから、ZIPの一括ダウンロードを実行してください。", "error");
+      return;
+    }
+    zipRun.running = true;
+    zipRun.cancelled = false;
+    zipRun.collecting = true;
+    zipRun.layout = layout;
+    zipRun.tokenRule = tokenRule;
+    zipRun.fileNameStyle = fileNameStyle;
+    zipRun.rosterText = rosterText || "";
+    zipRun.failures = [];
+    zipRun.summary = null;
+    zipRun.startedAt = Date.now();
+    zipRun.jobId = `zip-${Date.now()}`;
+    zipRun.assignmentName = zipAssignmentName();
+    endDisplayRequest();
+    removeOverlay();
+    setZipProgress({ phase: "collect", title: "提出物を一括ダウンロード", detail: "提出者の一覧を確認しています…" });
+    updateUiLabels();
+
+    try {
+      const { collected, completion } = await collectZipSubmissions();
+      zipRun.collecting = false;
+      if (zipRun.cancelled) {
+        zipRun.running = false;
+        releaseZipFrame();
+        setZipProgress({ phase: "cancelled", title: "一括ダウンロードを中止しました", detail: "提出物の確認を途中で止めました。" });
+        updateUiLabels();
+        return;
+      }
+      if (!collected.length) {
+        throw new Error("提出者を読み取れませんでした。Classroomの採点画面で提出物を1件開いてから、もう一度お試しください。");
+      }
+      if (!completion?.complete) throw new Error(completion?.message || "提出者の巡回が途中で止まったため、ZIP作成を中止しました。");
+      zipRun.students = applyRosterStudentNumbers(collected, zipRun.rosterText);
+      // 取得用のフレームは、Classroomの確認が終わってから読み込む。
+      await ensureZipFrame();
+      setZipProgress({ phase: "download", detail: "提出物の取得を開始しています…" });
+      postToZipFrame({
+        type: "cwr-zip-run",
+        jobId: zipRun.jobId,
+        assignmentName: zipRun.assignmentName,
+        layout: zipRun.layout,
+        tokenRule: zipRun.tokenRule,
+        fileNameStyle: zipRun.fileNameStyle,
+        authuser: zipAuthUser(),
+        students: zipRun.students
+      });
+    } catch (error) {
+      zipRun.running = false;
+      zipRun.collecting = false;
+      releaseZipFrame();
+      setZipProgress({
+        phase: "error",
+        title: "ZIPを作成できませんでした",
+        detail: error?.message || "処理中にエラーが発生しました。"
+      });
+      setStatus(error?.message || "ZIPを作成できませんでした。", "error");
+      updateUiLabels();
+    }
+  }
+
+  function retryFailedZipItems() {
+    if (zipRun.running || !zipRun.failures.length || !zipRun.students.length) return;
+    zipRun.running = true;
+    zipRun.cancelled = false;
+    zipRun.jobId = `zip-${Date.now()}`;
+    setZipProgress({ phase: "download", title: "失敗した項目を再取得しています", detail: "取得できなかった提出物だけをもう一度取得します。" });
+    updateUiLabels();
+    postToZipFrame({
+      type: "cwr-zip-run",
+      jobId: zipRun.jobId,
+      assignmentName: zipRun.assignmentName,
+      layout: zipRun.layout,
+      tokenRule: zipRun.tokenRule,
+      fileNameStyle: zipRun.fileNameStyle,
+      authuser: zipAuthUser(),
+      students: zipRun.students,
+      onlyKeys: zipRun.failures.map((failure) => failure.key)
+    });
+  }
+
+  function cancelZipDownload() {
+    if (!zipRun.running) {
+      closeZipPanel();
+      return;
+    }
+    zipRun.cancelled = true;
+    setZipProgress({ detail: "中止しています。現在の取得が終わり次第停止します。" });
+    postToZipFrame({ type: "cwr-zip-cancel", jobId: zipRun.jobId });
+    // 取得側が応答しなくても、画面が「処理中」のまま残らないようにする。
+    setTimeout(() => {
+      if (!zipRun.running) return;
+      zipRun.running = false;
+      zipRun.collecting = false;
+      setZipProgress({ phase: "cancelled", title: "一括ダウンロードを中止しました", detail: "作成中のZIPは保存していません。" });
+      updateUiLabels();
+    }, 20000);
+  }
+
+  // 課題名は採点画面の見出し（＝タブの題名）から取る。読めないときも
+  // ZIPを作れるよう、既定の名前へ落とす。
+  function zipAssignmentName() {
+    const title = (document.title || "").replace(/\s*[-–—]\s*Classroom\s*$/i, "").trim();
+    if (title && title.length <= 120) return title;
+    const heading = [...document.querySelectorAll("h1, [role='heading']")]
+      .map((node) => textOf(node))
+      .find((text) => text && text.length <= 120);
+    return heading || "提出物";
+  }
+
+  function zipAuthUser() {
+    const match = location.href.match(/\/u\/(\d+)(?:\/|$)/);
+    return match ? Number(match[1]) : 0;
+  }
+
+  function closeZipPanel() {
+    document.getElementById("cwr-zip-panel")?.remove();
+  }
+
+  function closeZipDialog() {
+    document.getElementById("cwr-zip-dialog")?.remove();
+  }
+
+  function showZipDialog() {
+    if (reportContextLostIfNeeded()) return;
+    if (zipRun.running) {
+      renderZipPanel();
+      return;
+    }
+    closeZipDialog();
+    const dialog = document.createElement("section");
+    dialog.id = "cwr-zip-dialog";
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-label", "提出物を一括ダウンロード");
+    dialog.innerHTML = `
+      <div id="cwr-zip-card">
+        <button id="cwr-zip-close" type="button" aria-label="閉じる">×</button>
+        <h2>提出物を一括ダウンロード</h2>
+        <p class="cwr-zip-note">この課題の提出物をまとめて1つのZIPにして保存します。課題名：<strong id="cwr-zip-assignment"></strong></p>
+        <fieldset class="cwr-zip-group">
+          <legend>整理方法</legend>
+          <label><input type="radio" name="cwr-zip-layout" value="flat"> 全員のファイルを同じフォルダに保存</label>
+          <label><input type="radio" name="cwr-zip-layout" value="per-student"> 学生ごとのフォルダに分けて保存</label>
+        </fieldset>
+        <fieldset class="cwr-zip-group">
+          <legend>学生の識別名</legend>
+          <label><input type="radio" name="cwr-zip-rule" value="name-number"> <span>表示名の先頭番号を使う<small>例：26_0001</small></span></label>
+          <label><input type="radio" name="cwr-zip-rule" value="display-name"> <span>表示名をそのまま使う<small>例：26_0001 学生A（Student A）</small></span></label>
+          <label><input type="radio" name="cwr-zip-rule" value="roster-number"> <span>名簿と照合して正式な学籍番号を使う<small>例：2610170001</small></span></label>
+        </fieldset>
+        <fieldset class="cwr-zip-group">
+          <legend>ファイル名の構成</legend>
+          <label><input type="radio" name="cwr-zip-file-name" value="with-original"> <span>学生の識別名＋課題名＋元のファイル名<small>例：26_0001 学生A（Student A）_課題名_提出ファイル.docx</small></span></label>
+          <label><input type="radio" name="cwr-zip-file-name" value="without-original"> <span>学生の識別名＋課題名<small>例：26_0001 学生A（Student A）_課題名.docx</small></span></label>
+        </fieldset>
+        <div id="cwr-zip-roster-wrap">
+          <label for="cwr-zip-roster">名簿CSV（学籍番号,氏名）</label>
+          <textarea id="cwr-zip-roster" rows="4" placeholder="学籍番号,氏名&#10;2610170001,学生A&#10;2610170002,学生B"></textarea>
+          <p class="cwr-zip-note">正式な学籍番号から「26_0001」の形を作り、Classroom表示名の先頭番号と氏名の両方が一意に一致した場合だけ使います。入力内容は保存しません。照合できない学生は表示名で保存し、提出物一覧.csvに警告を残します。</p>
+        </div>
+        <div id="cwr-zip-actions">
+          <button id="cwr-zip-start" type="button">ZIPを作成してダウンロード</button>
+          <button id="cwr-zip-cancel-dialog" type="button">閉じる</button>
+        </div>
+      </div>`;
+    document.body.appendChild(dialog);
+    dialog.querySelector("#cwr-zip-assignment").textContent = zipAssignmentName();
+    const applyRosterVisibility = () => {
+      const rule = dialog.querySelector("input[name='cwr-zip-rule']:checked")?.value || "name-number";
+      dialog.querySelector("#cwr-zip-roster-wrap").hidden = rule !== "roster-number";
+    };
+    dialog.querySelector("#cwr-zip-close").addEventListener("click", closeZipDialog);
+    dialog.querySelector("#cwr-zip-cancel-dialog").addEventListener("click", closeZipDialog);
+    dialog.querySelectorAll("input[name='cwr-zip-rule']").forEach((input) =>
+      input.addEventListener("change", applyRosterVisibility));
+    dialog.querySelector("#cwr-zip-start").addEventListener("click", () => {
+      const layout = dialog.querySelector("input[name='cwr-zip-layout']:checked")?.value || "flat";
+      const tokenRule = dialog.querySelector("input[name='cwr-zip-rule']:checked")?.value || "name-number";
+      const fileNameStyle = dialog.querySelector("input[name='cwr-zip-file-name']:checked")?.value || "with-original";
+      const rosterText = dialog.querySelector("#cwr-zip-roster").value;
+      // 次回も同じ設定から始められるようにする。毎回変更できる。
+      saveSetting({ cwrZipLayout: layout, cwrZipTokenRule: tokenRule, cwrZipFileNameStyle: fileNameStyle });
+      closeZipDialog();
+      startZipDownload({ layout, tokenRule, fileNameStyle, rosterText });
+    });
+
+    const layoutInput = dialog.querySelector(`input[name='cwr-zip-layout'][value='${zipRun.layout}']`)
+      || dialog.querySelector("input[name='cwr-zip-layout']");
+    layoutInput.checked = true;
+    const ruleInput = dialog.querySelector(`input[name='cwr-zip-rule'][value='${zipRun.tokenRule}']`)
+      || dialog.querySelector("input[name='cwr-zip-rule'][value='name-number']");
+    ruleInput.checked = true;
+    const fileNameInput = dialog.querySelector(`input[name='cwr-zip-file-name'][value='${zipRun.fileNameStyle}']`)
+      || dialog.querySelector("input[name='cwr-zip-file-name'][value='with-original']");
+    fileNameInput.checked = true;
+    applyRosterVisibility();
+    dialog.querySelector("#cwr-zip-start").focus();
+  }
+
+  function zipCountText() {
+    const { studentsDone, studentsTotal, filesDone, filesFailed } = zipRun.counts;
+    if (zipRun.phase === "collect") {
+      return studentsTotal
+        ? `${studentsTotal}名中 ${studentsDone}名を確認`
+        : `${studentsDone}名を確認`;
+    }
+    const files = `取得済み ${filesDone}ファイル`;
+    const failed = filesFailed ? `・失敗 ${filesFailed}ファイル` : "";
+    return `${studentsTotal}名中 ${studentsDone}名を処理中／${files}${failed}`;
+  }
+
+  function zipSummaryLines() {
+    const summary = zipRun.summary;
+    if (!summary) return [];
+    return [
+      `提出者：${summary.submitted}名`,
+      `取得成功：${summary.succeededStudents}名・${summary.files}ファイル`,
+      `未提出：${summary.notSubmitted}名`,
+      `取得失敗：${summary.failedStudents}名・${summary.failedFiles}ファイル`
+    ];
+  }
+
+  function renderZipPanel() {
+    if (zipRun.phase === "idle") return;
+    let panel = document.getElementById("cwr-zip-panel");
+    if (!panel) {
+      panel = document.createElement("section");
+      panel.id = "cwr-zip-panel";
+      panel.setAttribute("role", "status");
+      panel.setAttribute("aria-live", "polite");
+      panel.innerHTML = `
+        <div id="cwr-zip-panel-card">
+          <h2 id="cwr-zip-title">提出物を一括ダウンロード</h2>
+          <p id="cwr-zip-count"></p>
+          <div id="cwr-zip-bar" aria-hidden="true"><span></span></div>
+          <p id="cwr-zip-detail"></p>
+          <div id="cwr-zip-summary" hidden></div>
+          <div id="cwr-zip-failures" hidden></div>
+          <div id="cwr-zip-panel-actions">
+            <button id="cwr-zip-retry" type="button" hidden>失敗した項目だけ再取得</button>
+            <button id="cwr-zip-stop" type="button">中止</button>
+          </div>
+        </div>`;
+      document.body.appendChild(panel);
+      panel.querySelector("#cwr-zip-stop").addEventListener("click", cancelZipDownload);
+      panel.querySelector("#cwr-zip-retry").addEventListener("click", retryFailedZipItems);
+    }
+    const finished = ["done", "error", "cancelled"].includes(zipRun.phase);
+    panel.dataset.phase = zipRun.phase;
+    panel.querySelector("#cwr-zip-title").textContent = zipRun.title;
+    panel.querySelector("#cwr-zip-count").textContent = finished ? "" : zipCountText();
+    panel.querySelector("#cwr-zip-count").hidden = finished;
+    panel.querySelector("#cwr-zip-bar").hidden = finished;
+    panel.querySelector("#cwr-zip-detail").textContent = zipRun.detail;
+
+    const summaryBox = panel.querySelector("#cwr-zip-summary");
+    const lines = finished ? zipSummaryLines() : [];
+    summaryBox.hidden = lines.length === 0;
+    summaryBox.textContent = "";
+    for (const line of lines) {
+      const row = document.createElement("p");
+      row.textContent = line;
+      summaryBox.appendChild(row);
+    }
+
+    const failureBox = panel.querySelector("#cwr-zip-failures");
+    failureBox.textContent = "";
+    const showFailures = finished && zipRun.failures.length > 0;
+    failureBox.hidden = !showFailures;
+    if (showFailures) {
+      const heading = document.createElement("p");
+      heading.className = "cwr-zip-failure-heading";
+      heading.textContent = `取得できなかった提出物（${zipRun.failures.length}件）`;
+      failureBox.appendChild(heading);
+      for (const failure of zipRun.failures.slice(0, 12)) {
+        const row = document.createElement("p");
+        row.className = "cwr-zip-failure";
+        row.textContent = `${failure.studentName || "提出者不明"}：${failure.fileName || "提出物"} — ${failure.note || "取得に失敗しました。"}`;
+        failureBox.appendChild(row);
+      }
+      if (zipRun.failures.length > 12) {
+        const more = document.createElement("p");
+        more.className = "cwr-zip-failure";
+        more.textContent = `ほか ${zipRun.failures.length - 12}件。詳しくはZIP内の「提出物一覧.csv」をご覧ください。`;
+        failureBox.appendChild(more);
+      }
+    }
+
+    const retryButton = panel.querySelector("#cwr-zip-retry");
+    retryButton.hidden = !(finished && zipRun.failures.length > 0 && zipRun.students.length > 0);
+    const stopButton = panel.querySelector("#cwr-zip-stop");
+    stopButton.textContent = finished ? "閉じる" : "中止";
+  }
+
   function isPowerPoint(fileName = findOfficeFileName()) {
     return /\.pptx?$/i.test(fileName);
   }
@@ -2269,6 +3152,7 @@
     const officeButton = root.querySelector("#cwr-open-window");
     const reconvertButton = root.querySelector("#cwr-reconvert");
     const prepareButton = root.querySelector("#cwr-prepare");
+    const zipButton = root.querySelector("#cwr-zip");
     const showPreparationButton = root.querySelector("#cwr-show-preparation");
     const autoInput = root.querySelector("#cwr-auto");
     if (!submissionView) {
@@ -2278,6 +3162,7 @@
       officeButton.disabled = true;
       reconvertButton.disabled = true;
       prepareButton.disabled = true;
+      zipButton.disabled = true;
       showPreparationButton.hidden = !state.preparationPanelHidden;
       autoInput.disabled = true;
       return;
@@ -2295,7 +3180,9 @@
     reconvertButton.disabled = !fileInfo;
     const busyPreparing = state.remotePreparing || state.preparing;
     prepareButton.textContent = busyPreparing ? "一括準備を実行中…" : "全員分を一括準備";
-    prepareButton.disabled = busyPreparing;
+    prepareButton.disabled = busyPreparing || zipRun.running;
+    zipButton.textContent = zipRun.running ? "ZIPを作成中…" : "提出物をZIPで一括ダウンロード";
+    zipButton.disabled = busyPreparing || zipRun.running;
     showPreparationButton.hidden = !state.preparationPanelHidden;
     autoInput.disabled = false;
   }
@@ -2370,6 +3257,7 @@
       <button id="cwr-open-window" type="button">Word別窓で表示</button>
       <button id="cwr-reconvert" type="button">このファイルを再変換</button>
       <button id="cwr-prepare" type="button">全員分を一括準備</button>
+      <button id="cwr-zip" type="button">提出物をZIPで一括ダウンロード</button>
       <button id="cwr-show-preparation" type="button" hidden>準備状況を表示</button>
       <button id="cwr-cache" type="button">キャッシュ管理</button>
       <label id="cwr-auto-label">
@@ -2406,6 +3294,7 @@
       if (reportContextLostIfNeeded()) return;
       startDedicatedPreparation();
     });
+    root.querySelector("#cwr-zip").addEventListener("click", showZipDialog);
     root.querySelector("#cwr-show-preparation").addEventListener("click", showPreparationPanel);
     root.querySelector("#cwr-cache").addEventListener("click", showCachePanel);
     root.querySelector("#cwr-auto").addEventListener("change", (event) => {
@@ -2417,10 +3306,16 @@
     root.querySelector("#cwr-toggle").addEventListener("click", () => setEnabled(!state.enabled));
     updateUiLabels();
     applyControlsLayout();
-    loadSettings(["cwrAuto", "cwrMode", "cwrEnabled", "cwrControlsCollapsed", "cwrControlsPositionV2"]).then(({
-      cwrAuto, cwrMode, cwrEnabled, cwrControlsCollapsed, cwrControlsPositionV2
+    loadSettings(["cwrAuto", "cwrMode", "cwrEnabled", "cwrControlsCollapsed", "cwrControlsPositionV2", "cwrZipLayout", "cwrZipTokenRule", "cwrZipFileNameStyle"]).then(({
+      cwrAuto, cwrMode, cwrEnabled, cwrControlsCollapsed, cwrControlsPositionV2, cwrZipLayout, cwrZipTokenRule, cwrZipFileNameStyle
     }) => {
       if (!contextAvailable()) return;
+      // 前回選んだ整理方法と学籍番号の決め方を初期値にする。毎回変更できる。
+      zipRun.layout = cwrZipLayout === "per-student" ? "per-student" : "flat";
+      zipRun.tokenRule = ["name-number", "display-name", "roster-number"].includes(cwrZipTokenRule)
+        ? cwrZipTokenRule
+        : cwrZipTokenRule === "email" ? "roster-number" : "name-number";
+      zipRun.fileNameStyle = cwrZipFileNameStyle === "without-original" ? "without-original" : "with-original";
       state.auto = state.isPreparationTab ? false : Boolean(cwrAuto);
       state.mode = ["word", "office"].includes(cwrMode) ? "office" : "pdf";
       state.enabled = cwrEnabled !== false;
@@ -3334,6 +4229,9 @@
     if (event.data?.type === "cwr-select-submission") selectSubmissionFromCatalog(String(event.data.catalogKey || ""));
   });
 
+  // ZIP作成用ページ（拡張機能のオリジン）からの進捗・完了だけを受け取る。
+  window.addEventListener("message", handleZipFrameMessage);
+
   function handlePossibleSubmissionChange() {
     clearTimeout(state.timer);
     state.timer = setTimeout(() => {
@@ -3342,6 +4240,8 @@
       if (state.isPreparationTab && state.preparing) return;
       // 同じ提出者の別ファイルを選択中は、学生切替として扱わない。
       if (state.fileSwitching) return;
+      // ZIP用に提出者をたどっている間は、変換や自動表示を走らせない。
+      if (zipRun.collecting) return;
       makeUi();
       const submissionView = isSubmissionView();
       if (!submissionView) {
