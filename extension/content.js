@@ -69,6 +69,7 @@
     preparationCompact: true,
     preparationPanelHidden: false,
     preparationLedgerExpanded: false,
+    preparationVisibilityWaiters: [],
     controlsCollapsed: true,
     controlsPosition: null,
     controlsDraggedAt: 0,
@@ -102,6 +103,7 @@
     startedAt: 0,
     delayed: false,
     stalled: false,
+    paused: false,
     remote: false,
     ledger: []
   };
@@ -794,6 +796,8 @@
       sameSubmissionStudent,
       submissionStateKind,
       submissionChangeReady,
+      preparationDocumentState,
+      preparationDocumentVisible,
       getStudentIdFromUrl,
       getStudentKey,
       navigationStudentKey,
@@ -850,6 +854,7 @@
         current: 0,
         startedAt: Date.now(),
         stalled: false,
+        paused: false,
         cancelRequested: false
       });
       (async () => {
@@ -911,7 +916,11 @@
       rememberDisplayedPdf(message.pdfUrl, message.fileName, message.pageCount);
       setStatus("提出物を表示中", "ready");
       // 採点中の画面を動かさず、別タブで次の3人分だけ低優先度に準備する。
-      safeSendMessage({ type: "cwr-prefetch-next" }).catch(() => undefined);
+      // 一括準備中は同じ学生切替・待機処理を二重に走らせない。完了または
+      // 中止後の次回表示から、通常どおり先読みを再開する。
+      if (!state.preparing && !state.remotePreparing) {
+        safeSendMessage({ type: "cwr-prefetch-next" }).catch(() => undefined);
+      }
     }
     return false;
   });
@@ -1272,7 +1281,12 @@
 
   async function waitForSubmissionView(timeoutMs = 15000) {
     const startedAt = Date.now();
-    while (Date.now() - startedAt < timeoutMs) {
+    let pausedMilliseconds = 0;
+    while (Date.now() - startedAt - pausedMilliseconds < timeoutMs) {
+      const pauseStartedAt = Date.now();
+      if (!await waitForPreparationVisibility()) return false;
+      pausedMilliseconds += Date.now() - pauseStartedAt;
+      if (Date.now() - startedAt - pausedMilliseconds >= timeoutMs) return false;
       if (isSubmissionView()) return true;
       await wait(250);
     }
@@ -1308,9 +1322,14 @@
 
   async function waitForSubmissionChange(previousKey, timeoutMs = 20000, previousFileId = "") {
     const startedAt = Date.now();
+    let pausedMilliseconds = 0;
     let studentChangedAt = 0;
     let noAttachmentSince = 0;
-    while (Date.now() - startedAt < timeoutMs) {
+    while (Date.now() - startedAt - pausedMilliseconds < timeoutMs) {
+      const pauseStartedAt = Date.now();
+      if (!await waitForPreparationVisibility()) return false;
+      pausedMilliseconds += Date.now() - pauseStartedAt;
+      if (Date.now() - startedAt - pausedMilliseconds >= timeoutMs) return false;
       const currentKey = navigationStudentKey();
       const studentChanged = Boolean(currentKey) && currentKey !== previousKey;
       const fileState = inspectSubmissionFile();
@@ -1380,6 +1399,7 @@
     clearInterval(state.watchdogTimer);
     clearInterval(state.contextWatcher);
     state.mutationObserver?.disconnect();
+    resolvePreparationVisibilityWaiters(false);
     return false;
   }
 
@@ -1445,7 +1465,12 @@
 
   async function waitForSubmissionButton(direction, timeoutMs = SUBMISSION_BUTTON_WAIT_MS) {
     const startedAt = Date.now();
-    while (Date.now() - startedAt < timeoutMs) {
+    let pausedMilliseconds = 0;
+    while (Date.now() - startedAt - pausedMilliseconds < timeoutMs) {
+      const pauseStartedAt = Date.now();
+      if (!await waitForPreparationVisibility()) return null;
+      pausedMilliseconds += Date.now() - pauseStartedAt;
+      if (Date.now() - startedAt - pausedMilliseconds >= timeoutMs) return null;
       const button = findSubmissionButton(direction);
       if (button) return button;
       await wait(250);
@@ -1455,8 +1480,13 @@
 
   async function waitForSubmissionFile(timeoutMs = 20000) {
     const startedAt = Date.now();
+    let pausedMilliseconds = 0;
     let noAttachmentSince = 0;
-    while (Date.now() - startedAt < timeoutMs) {
+    while (Date.now() - startedAt - pausedMilliseconds < timeoutMs) {
+      const pauseStartedAt = Date.now();
+      if (!await waitForPreparationVisibility()) return null;
+      pausedMilliseconds += Date.now() - pauseStartedAt;
+      if (Date.now() - startedAt - pausedMilliseconds >= timeoutMs) return null;
       const fileState = inspectSubmissionFile();
       if (fileState && !fileState.waiting) {
         // 提出物が見つかったときは、これまでどおり即座に返す。
@@ -1485,6 +1515,68 @@
     return ["done", "cancelled", "error"].includes(progress.phase);
   }
 
+  const PREPARATION_BACKGROUND_PAUSE_MESSAGE = "Classroomタブがバックグラウンドのため一時停止しています。Classroomタブを表示すると自動的に再開します。";
+
+  function preparationDocumentState() {
+    return {
+      visibilityState: document.visibilityState,
+      hidden: document.hidden === true,
+      hasFocus: typeof document.hasFocus === "function" ? document.hasFocus() : false
+    };
+  }
+
+  function preparationDocumentVisible() {
+    const visibility = preparationDocumentState();
+    // hasFocus() は別ウィンドウを前面にしただけでも false になるため、
+    // Classroomタブ自体が背景化した判定には使わない。復帰通知には使う。
+    return visibility.visibilityState === "visible" && !visibility.hidden;
+  }
+
+  function resolvePreparationVisibilityWaiters(value) {
+    const waiters = state.preparationVisibilityWaiters.splice(0);
+    for (const resolve of waiters) resolve(value);
+  }
+
+  function pausePreparationForBackground() {
+    if (!state.isPreparationTab || isPreparationFinished() || preparationDocumentVisible()) return;
+    setPreparationProgress({
+      paused: true,
+      delayed: false,
+      stalled: false,
+      detailText: PREPARATION_BACKGROUND_PAUSE_MESSAGE
+    });
+  }
+
+  function waitForPreparationVisibility() {
+    if (!state.isPreparationTab || isPreparationFinished() || preparationDocumentVisible()) {
+      return Promise.resolve(true);
+    }
+    pausePreparationForBackground();
+    return new Promise((resolve) => {
+      state.preparationVisibilityWaiters.push(resolve);
+      if (state.prepareCancelled || state.contextInvalidated) resolvePreparationVisibilityWaiters(false);
+    });
+  }
+
+  function resumePreparationAfterForeground() {
+    if (!state.isPreparationTab || isPreparationFinished() || !preparationDocumentVisible()) return;
+    if (progress.paused) {
+      setPreparationProgress({
+        paused: false,
+        delayed: false,
+        stalled: false,
+        detailText: "Classroomの画面を再確認しています。"
+      });
+    }
+    resolvePreparationVisibilityWaiters(true);
+  }
+
+  function handlePreparationVisibilityEvent() {
+    if (!state.isPreparationTab || isPreparationFinished()) return;
+    if (preparationDocumentVisible()) resumePreparationAfterForeground();
+    else pausePreparationForBackground();
+  }
+
   function preparationNote() {
     if (isPreparationFinished()) {
       return state.isPreparationTab
@@ -1494,6 +1586,7 @@
     if (progress.stalled) {
       return "Classroomの画面更新を待っています。正しい学生・ファイルを確認できるまで、30秒ごとに自動で再試行します。";
     }
+    if (progress.paused) return PREPARATION_BACKGROUND_PAUSE_MESSAGE;
     if (progress.delayed) {
       return "準備タブは背面ですが、正しい学生・ファイルを確認しながら自動で再試行しています。";
     }
@@ -1558,7 +1651,7 @@
         <div id="cwr-preparation-header">
           <div id="cwr-preparation-spinner" aria-hidden="true"></div>
           <h2 id="cwr-preparation-title">提出物の一括準備</h2>
-          <button id="cwr-preparation-drag" type="button" title="ドラッグして位置を変える" aria-label="ドラッグして位置を変える">移動</button>
+          <button id="cwr-preparation-drag" type="button" title="パネルをドラッグして移動" aria-label="パネルをドラッグして移動">移動</button>
           <button id="cwr-preparation-compact" type="button" aria-pressed="false">小さく表示</button>
         </div>
         <p id="cwr-preparation-count">準備を開始しています…</p>
@@ -1615,6 +1708,7 @@
     }
     if (state.isPreparationTab && state.preparing) {
       state.prepareCancelled = true;
+      resolvePreparationVisibilityWaiters(false);
       setPreparationProgress({ detailText: "現在の1件が終わったら中止します。", cancelRequested: true });
       return;
     }
@@ -1652,6 +1746,7 @@
     panel.dataset.phase = progress.phase;
     panel.classList.toggle("cwr-preparation-compact", state.preparationCompact);
     panel.classList.toggle("cwr-preparation-stalled", Boolean(progress.stalled));
+    panel.classList.toggle("cwr-preparation-paused", Boolean(progress.paused));
     panel.querySelector("#cwr-preparation-spinner").hidden = finished;
     panel.querySelector("#cwr-preparation-title").textContent = progress.title;
     panel.querySelector("#cwr-preparation-count").textContent = progress.countText;
@@ -1805,6 +1900,7 @@
           startedAt: progress.startedAt,
           delayed: progress.delayed === true,
           stalled: progress.stalled === true,
+          paused: progress.paused === true,
           cancelRequested: progress.cancelRequested === true,
           ledger: progress.ledger
         }
@@ -1825,6 +1921,7 @@
       detailText,
       delayed: false,
       stalled: false,
+      paused: false,
       cancelRequested: false
     });
   }
@@ -1874,6 +1971,7 @@
       remote: true,
       delayed: running && message.delayed === true,
       stalled: running && message.stalled === true,
+      paused: running && message.paused === true,
       phase: running ? "running" : message.status,
       title: message.title || progress.title,
       countText: message.countText || progress.countText,
@@ -1918,6 +2016,7 @@
       skipped: 0,
       current: 0,
       startedAt: Date.now(),
+      paused: false,
       cancelRequested: false
     });
     startStallWatchdog();
@@ -1956,6 +2055,7 @@
   // 誤って報告してしまう。
   async function moveSubmission(direction, transition = null) {
     if (!contextAvailable()) return { status: "stuck", transition };
+    if (!await waitForPreparationVisibility()) return { status: "stuck", transition };
     // すでに押した矢印の結果待ちでは、再クリックしない。遅れてDOMだけ
     // 更新された瞬間にもう一度押すと、1人飛ばしてしまうためである。
     if (transition) {
@@ -2005,6 +2105,10 @@
       }
 
       if (status === "missing" && findSubmissionButton(direction === "next" ? "previous" : "next")) return "end";
+      // クリック済みの遷移は、Classroomが遅れて更新する可能性があるため
+      // そのまま保持する。遷移情報を捨てて同じ矢印を押し直すと、復帰時に
+      // 学生を1人飛ばすため、確認に失敗した時点で安全に止める。
+      if (status === "stuck" && (transition || result.transition)) return "stuck";
       transition = result.transition || null;
       retries += 1;
       const stalled = retries > BACKGROUND_RETRY_BEFORE_STALLED;
@@ -2018,9 +2122,6 @@
             : `画面更新を確認中です（${retries}/${BACKGROUND_RETRY_BEFORE_STALLED}回目の自動再試行）。`
       });
       await wait(stalled ? BACKGROUND_STALLED_RETRY_MS : BACKGROUND_RETRY_MS);
-      // 最初のクリックを確認する間は再クリックしない。確認が続けて失敗した
-      // 場合だけ、Classroomがクリック自体を取りこぼした可能性として押し直す。
-      if (!transition || (retries > BACKGROUND_RETRY_BEFORE_STALLED && retries % 3 === 0)) transition = null;
     }
     return "stuck";
   }
@@ -2091,6 +2192,7 @@
       startedAt: Date.now(),
       delayed: false,
       stalled: false,
+      paused: false,
       cancelRequested: false,
       ledger: []
     });
@@ -2351,6 +2453,7 @@
       state.preparing = false;
       state.prepareCancelled = false;
       state.dedicatedPreparation = false;
+      resolvePreparationVisibilityWaiters(false);
       updateUiLabels();
     }
   }
@@ -4332,6 +4435,9 @@
     if (contextAvailable()) return;
     reportContextLostIfNeeded();
   }, 4000);
+  document.addEventListener("visibilitychange", handlePreparationVisibilityEvent);
+  window.addEventListener("focus", handlePreparationVisibilityEvent);
+  window.addEventListener("pageshow", handlePreparationVisibilityEvent);
   window.addEventListener("resize", () => {
     if (!contextAvailable()) return;
     if (state.overlay) applyOverlayBounds();
