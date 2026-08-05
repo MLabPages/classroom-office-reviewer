@@ -19,7 +19,24 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python3 tools/one_time_fix_navigation_decoupling.py 2>&1 | tee /tmp/crw-navigation-fix.log
+          {
+            python3 tools/one_time_fix_navigation_decoupling.py
+            python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/bulk-preparation-flow.mjs")
+          text = path.read_text(encoding="utf-8")
+          start = text.index("// テスト9：未提出ステータスだけの画面でも切替完了にし、クリック後の遷移を再確認する。")
+          end = text.index("// テスト10：学生移動はURLの学生IDだけで判定し、ファイル表示とは分離する。", start)
+          replacement = '''// テスト9：未提出ステータスは、次の学生のファイル待機を省略する判断に使う。
+          assert.match(content, /"割り当て済み", "不足", "未提出"/);
+          assert.match(content, /\["割り当て済み", "不足", "Assigned", "Missing", "未提出"\]/);
+          assert.match(content, /const missingStudent = zipStatusOf\(getStudentLabel\(\)\) === "未提出";/);
+
+          '''
+          path.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
+          PY
+          } 2>&1 | tee /tmp/crw-navigation-fix.log
 
       - name: Verify syntax and tests
         shell: bash
