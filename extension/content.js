@@ -1,6 +1,6 @@
 (() => {
   const isClassroomTop = location.hostname === "classroom.google.com" && window === window.top;
-  const SUBMISSION_CATALOG_STORAGE_KEY = "classroomWordReviewerSubmissionCatalogV1";
+  const SUBMISSION_CATALOG_STORAGE_KEY = "classroomWordReviewerSubmissionCatalogV2";
   const SUBMISSION_CATALOG_MAXIMUM = 2000;
   const SUBMISSION_CATALOG_CONTEXT_MAXIMUM = 24;
   // 準備専用タブが背面のとき、Chromeはタイマーを最大1分まで遅らせる。
@@ -384,6 +384,10 @@
       || "";
   }
 
+  function insideReviewerUi(node) {
+    return Boolean(node?.closest?.("#cwr-controls, #cwr-preparation, #cwr-overlay"));
+  }
+
   // 現行のClassroomでは、選ぶための項目には data-cursor-id だけがあり、
   // 実際のDrive URLは同じ data-selection-id を持つ「新しいウィンドウで開く」
   // 側に置かれている。両方を結び付けないと、同名の複数提出を区別できない。
@@ -423,9 +427,23 @@
   // span として描画されることがある。2件目以降も同じ欄から拾う。
   // 選択欄が閉じているあいだ項目は隠れているだけでDOMには残るため、
   // 見えているかどうかで絞り込まない。絞り込むと2件目を見落とす。
+  function visibleSubmissionAttachmentHints() {
+    const hints = [];
+    const selectors = "a[href], button, [role='button'], [aria-label], [title], [data-tooltip]";
+    for (const node of document.querySelectorAll(selectors)) {
+      if (insideReviewerUi(node) || !visible(node)) continue;
+      if (node.getAttribute?.("role") === "menuitem") continue;
+      const attachment = attachmentInfoOf(node);
+      if (!attachment) continue;
+      if (hints.some((item) => sameFile(item, attachment))) continue;
+      hints.push(attachment);
+    }
+    return hints;
+  }
+
   function findSubmissionFileMenuItems() {
     const items = [...document.querySelectorAll("[role='menuitem']")].filter((node) => {
-      if (node.getAttribute?.("role") !== "menuitem") return false;
+      if (insideReviewerUi(node) || node.getAttribute?.("role") !== "menuitem") return false;
       const text = textOf(node);
       if (!text || /新しいウィンドウ|new window/i.test(text)) return false;
       const menu = node.closest?.("[role='menu']");
@@ -433,29 +451,59 @@
       return !menu || /ファイル|file|submission/i.test(menuLabel) || Boolean(attachmentNameOf(node, googleTypeOfLabel(text)));
     });
     if (items.length < 2) return items;
+
+    // Classroomは学生を高速に切り替えると、同じmenu要素の中へ過去の学生の
+    // menuitemを残すことがある。role=menuによるグループ分けだけでは防げないため、
+    // 現在右側に見えている添付カードと一致する項目だけを最優先で採用する。
+    const visibleHints = visibleSubmissionAttachmentHints();
+    if (visibleHints.length) {
+      const matchedVisibleItems = items.filter((node) => {
+        const attachment = attachmentInfoOf(node);
+        return attachment && visibleHints.some((hint) => sameFile(hint, attachment));
+      });
+      const selectedVisibleItem = matchedVisibleItems.some((node) => [
+        node.getAttribute("aria-selected"),
+        node.getAttribute("aria-current"),
+        node.getAttribute("data-selected")
+      ].some((value) => value === "true") || node.getAttribute("tabindex") === "0");
+      if (matchedVisibleItems.length >= 2 || (matchedVisibleItems.length === 1 && selectedVisibleItem)) {
+        return matchedVisibleItems;
+      }
+    }
+
     // 画面には別の提出者のメニューが残っていることがある。表示中のファイルが
     // 含まれるメニューが見つかったら、その1つだけを使う。
     const displayedId = findDisplayedFileId() || state.activeFile?.id || "";
     const displayedName = normalizedFileName(findOfficeFileName() || findPdfFileName() || state.activeFile?.name || "");
-    if (!displayedId && !displayedName) return items;
     const groups = new Map();
     for (const node of items) {
       const menu = node.closest?.("[role='menu']") || null;
       if (!groups.has(menu)) groups.set(menu, []);
       groups.get(menu).push(node);
     }
-    if (groups.size < 2) return items;
-    if (displayedId) {
-      for (const group of groups.values()) {
-        if (group.some((node) => attachmentInfoOf(node)?.expectedFileId === displayedId)) return group;
+    if (groups.size >= 2) {
+      if (displayedId) {
+        for (const group of groups.values()) {
+          if (group.some((node) => attachmentInfoOf(node)?.expectedFileId === displayedId)) return group;
+        }
       }
-    }
-    for (const group of groups.values()) {
-      const matched = group.some((node) => {
-        const attachment = attachmentInfoOf(node);
-        return attachment && fileNamesLikelyMatch(normalizedFileName(attachment.fileName), displayedName);
-      });
-      if (matched) return group;
+      if (displayedName) {
+        for (const group of groups.values()) {
+          const matched = group.some((node) => {
+            const attachment = attachmentInfoOf(node);
+            return attachment && fileNamesLikelyMatch(normalizedFileName(attachment.fileName), displayedName);
+          });
+          if (matched) return group;
+        }
+      }
+      // 現在のグループを特定できないときは、全履歴を混ぜるより選択中の1件だけを
+      // 返す。誤関連付けを防ぐことを、2件目以降の推測より優先する。
+      const selected = items.filter((node) => [
+        node.getAttribute("aria-selected"),
+        node.getAttribute("aria-current"),
+        node.getAttribute("data-selected")
+      ].some((value) => value === "true") || node.getAttribute("tabindex") === "0");
+      return selected.length ? selected : items.filter((node) => visible(node));
     }
     return items;
   }
@@ -505,8 +553,15 @@
   function findSubmissionAttachments() {
     const attachments = [];
     const seen = new Set();
-    const linkNodes = [...document.querySelectorAll("a[href]")].filter((node) =>
-      typeof node.matches === "function" ? node.matches("a[href]") : Boolean(node.href));
+    const menuItems = findSubmissionFileMenuItems();
+    const allowUnscopedHiddenDriveLinks = menuItems.length === 0;
+    const linkNodes = [...document.querySelectorAll("a[href]")].filter((node) => {
+      if (insideReviewerUi(node)) return false;
+      const isAnchor = typeof node.matches === "function" ? node.matches("a[href]") : Boolean(node.href);
+      // menuitemがある場合、非表示のDriveリンクは過去学生の履歴である可能性が高い。
+      // menuitemが一切ないClassroom表示だけ、従来どおり非表示Driveリンクを採用する。
+      return isAnchor && (visible(node) || (allowUnscopedHiddenDriveLinks && isDriveUrl(fileUrlOf(node))));
+    });
     // Classroomのファイル選択欄の順番を先に採用する。2件目の内側にある
     // Driveリンクを先に並べると、一覧が「2件目→1件目」に逆転し、
     // 現在の1件目が末尾扱いになって右ボタンが効かなくなる。
@@ -514,12 +569,9 @@
     for (const node of nodes) {
       const url = fileUrlOf(node);
       const isMenuItem = node.getAttribute?.("role") === "menuitem";
-      // 選択欄の項目は閉じていると見えない。さらに新しいClassroomでは、
-      // 提出ファイルへのDriveリンク自体が画面に出ない作りになったため、
-      // 「見えないリンク」を捨てると添付が1件も見つからず、表示が
-      // 前の提出者のまま固まる。リンクの見た目ではなく、Driveの
-      // ファイルを指しているかどうかで判断する。
-      if (!isMenuItem && !/(?:drive|docs)\.google\.com/i.test(url) && !visible(node)) continue;
+      // menuitemは閉じていても現在の選択欄として利用する。リンクは上で
+      // 現在見えているカードだけに限定済みで、過去学生の非表示リンクは入らない。
+      if (!isMenuItem && !visible(node) && !allowUnscopedHiddenDriveLinks) continue;
       // Drive上のファイルでも選択欄の項目でもないが、Word/PowerPointなどを
       // 指す共有リンクとして提出されていることがある。これを捨てると
       // 「提出物なし」と誤って扱ってしまうため、リンクとして取り込む。
@@ -769,6 +821,7 @@
       findAnyAttachmentFileName,
       findNoAttachmentMessage,
       findSubmittedLinks,
+      visibleSubmissionAttachmentHints,
       isLikelySubmittedLink,
       linkAttachmentInfoOf,
       findGoogleFileInfo,
