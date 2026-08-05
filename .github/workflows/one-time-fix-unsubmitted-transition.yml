@@ -19,7 +19,10 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python3 tools/one_time_fix_unsubmitted_transition.py 2>&1 | tee /tmp/crw-fix.log
+          {
+            python3 tools/one_time_fix_unsubmitted_transition.py
+            sed -i 's/waitForSubmissionChange(before, 20000, beforeFileId)/waitForSubmissionChange(before, 20000, beforeFileId, beforeLabel)/' tests/validate-release.mjs
+          } 2>&1 | tee /tmp/crw-fix.log
 
       - name: Verify syntax and tests
         shell: bash
