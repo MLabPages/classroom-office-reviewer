@@ -88,12 +88,6 @@ assert(content.includes("const BACKGROUND_RETRY_MS = 10000;"));
 assert(content.includes("const BACKGROUND_STALLED_RETRY_MS = 30000;"));
 assert(content.includes("function waitForSubmissionFileWithRecovery"));
 assert(content.includes("function currentDisplayedFileInfo"));
-assert(content.includes('SUBMISSION_CATALOG_STORAGE_KEY = "classroomWordReviewerSubmissionCatalogV2"'));
-assert(content.includes("function insideReviewerUi"));
-assert(content.includes("function visibleSubmissionAttachmentHints"));
-assert(content.includes("allowUnscopedHiddenDriveLinks"));
-assert(content.includes("allowUnscopedHiddenDriveLinks && isDriveUrl(fileUrlOf(node))"));
-assert(content.includes("!visible(node) && !allowUnscopedHiddenDriveLinks"));
 assert(content.includes("function logCurrentFileContext"));
 assert(!content.includes("function waitForVisibleTab"));
 assert(content.includes('id="cwr-controls-toggle"'));
@@ -103,13 +97,11 @@ assert(viewer.includes('type: "cwr-reconvert"'));
 // `unload`はChromeで廃止予定。戻すと採点画面に警告が出続ける。
 assert(content.includes('window.addEventListener("pagehide"'));
 assert(!content.includes('addEventListener("unload"'));
-// 学生切替はURLの学生ID変化だけで確認し、ファイル表示は次のループで別に待つ。
-// 前のPDFが残っている間はsubmissionFileStillPreviousで受理しない。
-assert(content.includes("async function waitForStudentNavigation(previousKey, timeoutMs = 10000)"));
-assert(content.includes("waitForStudentNavigation(before, 10000)"));
-assert(content.includes("function submissionFileStillPrevious"));
-assert(content.includes("waitForSubmissionFileWithRecovery(15000, previousDisplayedFileId, studentKey)"));
-assert(content.includes('status: "pdf-direct"'));
+// 学生切替は、表示中のファイル番号が入れ替わるまで完了と見なさない。
+// ここを戻すと、前の提出物のまま同じPDFが再表示される。
+assert(content.includes("async function waitForSubmissionChange(previousKey, timeoutMs = 20000, previousFileId"));
+assert(content.includes("waitForSubmissionChange(before, 8000, beforeFileId)"));
+assert(content.includes("waitForSubmissionChange(before, 20000, beforeFileId, beforeLabel)"));
 // 遅れて届いた前のファイルの変換結果で、新しい表示を上書きしない。
 assert(content.includes("function matchesRequestedFile"));
 assert(content.includes("if (!matchesRequestedFile(message))"));

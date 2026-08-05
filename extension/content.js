@@ -1,6 +1,6 @@
 (() => {
   const isClassroomTop = location.hostname === "classroom.google.com" && window === window.top;
-  const SUBMISSION_CATALOG_STORAGE_KEY = "classroomWordReviewerSubmissionCatalogV2";
+  const SUBMISSION_CATALOG_STORAGE_KEY = "classroomWordReviewerSubmissionCatalogV1";
   const SUBMISSION_CATALOG_MAXIMUM = 2000;
   const SUBMISSION_CATALOG_CONTEXT_MAXIMUM = 24;
   // 準備専用タブが背面のとき、Chromeはタイマーを最大1分まで遅らせる。
@@ -384,10 +384,6 @@
       || "";
   }
 
-  function insideReviewerUi(node) {
-    return Boolean(node?.closest?.("#cwr-controls, #cwr-preparation, #cwr-overlay"));
-  }
-
   // 現行のClassroomでは、選ぶための項目には data-cursor-id だけがあり、
   // 実際のDrive URLは同じ data-selection-id を持つ「新しいウィンドウで開く」
   // 側に置かれている。両方を結び付けないと、同名の複数提出を区別できない。
@@ -427,23 +423,9 @@
   // span として描画されることがある。2件目以降も同じ欄から拾う。
   // 選択欄が閉じているあいだ項目は隠れているだけでDOMには残るため、
   // 見えているかどうかで絞り込まない。絞り込むと2件目を見落とす。
-  function visibleSubmissionAttachmentHints() {
-    const hints = [];
-    const selectors = "a[href], button, [role='button'], [aria-label], [title], [data-tooltip]";
-    for (const node of document.querySelectorAll(selectors)) {
-      if (insideReviewerUi(node) || !visible(node)) continue;
-      if (node.getAttribute?.("role") === "menuitem") continue;
-      const attachment = attachmentInfoOf(node);
-      if (!attachment) continue;
-      if (hints.some((item) => sameFile(item, attachment))) continue;
-      hints.push(attachment);
-    }
-    return hints;
-  }
-
   function findSubmissionFileMenuItems() {
     const items = [...document.querySelectorAll("[role='menuitem']")].filter((node) => {
-      if (insideReviewerUi(node) || node.getAttribute?.("role") !== "menuitem") return false;
+      if (node.getAttribute?.("role") !== "menuitem") return false;
       const text = textOf(node);
       if (!text || /新しいウィンドウ|new window/i.test(text)) return false;
       const menu = node.closest?.("[role='menu']");
@@ -451,59 +433,29 @@
       return !menu || /ファイル|file|submission/i.test(menuLabel) || Boolean(attachmentNameOf(node, googleTypeOfLabel(text)));
     });
     if (items.length < 2) return items;
-
-    // Classroomは学生を高速に切り替えると、同じmenu要素の中へ過去の学生の
-    // menuitemを残すことがある。role=menuによるグループ分けだけでは防げないため、
-    // 現在右側に見えている添付カードと一致する項目だけを最優先で採用する。
-    const visibleHints = visibleSubmissionAttachmentHints();
-    if (visibleHints.length) {
-      const matchedVisibleItems = items.filter((node) => {
-        const attachment = attachmentInfoOf(node);
-        return attachment && visibleHints.some((hint) => sameFile(hint, attachment));
-      });
-      const selectedVisibleItem = matchedVisibleItems.some((node) => [
-        node.getAttribute("aria-selected"),
-        node.getAttribute("aria-current"),
-        node.getAttribute("data-selected")
-      ].some((value) => value === "true") || node.getAttribute("tabindex") === "0");
-      if (matchedVisibleItems.length >= 2 || (matchedVisibleItems.length === 1 && selectedVisibleItem)) {
-        return matchedVisibleItems;
-      }
-    }
-
     // 画面には別の提出者のメニューが残っていることがある。表示中のファイルが
     // 含まれるメニューが見つかったら、その1つだけを使う。
     const displayedId = findDisplayedFileId() || state.activeFile?.id || "";
     const displayedName = normalizedFileName(findOfficeFileName() || findPdfFileName() || state.activeFile?.name || "");
+    if (!displayedId && !displayedName) return items;
     const groups = new Map();
     for (const node of items) {
       const menu = node.closest?.("[role='menu']") || null;
       if (!groups.has(menu)) groups.set(menu, []);
       groups.get(menu).push(node);
     }
-    if (groups.size >= 2) {
-      if (displayedId) {
-        for (const group of groups.values()) {
-          if (group.some((node) => attachmentInfoOf(node)?.expectedFileId === displayedId)) return group;
-        }
+    if (groups.size < 2) return items;
+    if (displayedId) {
+      for (const group of groups.values()) {
+        if (group.some((node) => attachmentInfoOf(node)?.expectedFileId === displayedId)) return group;
       }
-      if (displayedName) {
-        for (const group of groups.values()) {
-          const matched = group.some((node) => {
-            const attachment = attachmentInfoOf(node);
-            return attachment && fileNamesLikelyMatch(normalizedFileName(attachment.fileName), displayedName);
-          });
-          if (matched) return group;
-        }
-      }
-      // 現在のグループを特定できないときは、全履歴を混ぜるより選択中の1件だけを
-      // 返す。誤関連付けを防ぐことを、2件目以降の推測より優先する。
-      const selected = items.filter((node) => [
-        node.getAttribute("aria-selected"),
-        node.getAttribute("aria-current"),
-        node.getAttribute("data-selected")
-      ].some((value) => value === "true") || node.getAttribute("tabindex") === "0");
-      return selected.length ? selected : items.filter((node) => visible(node));
+    }
+    for (const group of groups.values()) {
+      const matched = group.some((node) => {
+        const attachment = attachmentInfoOf(node);
+        return attachment && fileNamesLikelyMatch(normalizedFileName(attachment.fileName), displayedName);
+      });
+      if (matched) return group;
     }
     return items;
   }
@@ -553,15 +505,8 @@
   function findSubmissionAttachments() {
     const attachments = [];
     const seen = new Set();
-    const menuItems = findSubmissionFileMenuItems();
-    const allowUnscopedHiddenDriveLinks = menuItems.length === 0;
-    const linkNodes = [...document.querySelectorAll("a[href]")].filter((node) => {
-      if (insideReviewerUi(node)) return false;
-      const isAnchor = typeof node.matches === "function" ? node.matches("a[href]") : Boolean(node.href);
-      // menuitemがある場合、非表示のDriveリンクは過去学生の履歴である可能性が高い。
-      // menuitemが一切ないClassroom表示だけ、従来どおり非表示Driveリンクを採用する。
-      return isAnchor && (visible(node) || (allowUnscopedHiddenDriveLinks && isDriveUrl(fileUrlOf(node))));
-    });
+    const linkNodes = [...document.querySelectorAll("a[href]")].filter((node) =>
+      typeof node.matches === "function" ? node.matches("a[href]") : Boolean(node.href));
     // Classroomのファイル選択欄の順番を先に採用する。2件目の内側にある
     // Driveリンクを先に並べると、一覧が「2件目→1件目」に逆転し、
     // 現在の1件目が末尾扱いになって右ボタンが効かなくなる。
@@ -569,9 +514,12 @@
     for (const node of nodes) {
       const url = fileUrlOf(node);
       const isMenuItem = node.getAttribute?.("role") === "menuitem";
-      // menuitemは閉じていても現在の選択欄として利用する。リンクは上で
-      // 現在見えているカードだけに限定済みで、過去学生の非表示リンクは入らない。
-      if (!isMenuItem && !visible(node) && !allowUnscopedHiddenDriveLinks) continue;
+      // 選択欄の項目は閉じていると見えない。さらに新しいClassroomでは、
+      // 提出ファイルへのDriveリンク自体が画面に出ない作りになったため、
+      // 「見えないリンク」を捨てると添付が1件も見つからず、表示が
+      // 前の提出者のまま固まる。リンクの見た目ではなく、Driveの
+      // ファイルを指しているかどうかで判断する。
+      if (!isMenuItem && !/(?:drive|docs)\.google\.com/i.test(url) && !visible(node)) continue;
       // Drive上のファイルでも選択欄の項目でもないが、Word/PowerPointなどを
       // 指す共有リンクとして提出されていることがある。これを捨てると
       // 「提出物なし」と誤って扱ってしまうため、リンクとして取り込む。
@@ -821,7 +769,6 @@
       findAnyAttachmentFileName,
       findNoAttachmentMessage,
       findSubmittedLinks,
-      visibleSubmissionAttachmentHints,
       isLikelySubmittedLink,
       linkAttachmentInfoOf,
       findGoogleFileInfo,
@@ -850,9 +797,6 @@
       sameSubmissionStudent,
       submissionStateKind,
       submissionChangeReady,
-      studentNavigationChanged,
-      displayedSubmissionFileId,
-      submissionFileStillPrevious,
       preparationDocumentState,
       preparationDocumentVisible,
       getStudentIdFromUrl,
@@ -1260,7 +1204,7 @@
       expectedFileId: entry.expectedFileId || entry.fileId || "",
       expectedGoogleType: entry.expectedGoogleType || "",
       cachedPdfUrl: entry.cachedPdfUrl || entry.pdfUrl || "",
-      status: ["ok", "pdf-direct"].includes(entry.status) ? "available" : (entry.status || "unavailable")
+      status: entry.status === "ok" ? "available" : (entry.status || "unavailable")
     })));
   }
 
@@ -1559,16 +1503,7 @@
     return null;
   }
 
-  function displayedSubmissionFileId(fileState = null) {
-    return findDisplayedFileId() || fileState?.expectedFileId || fileState?.id || "";
-  }
-
-  function submissionFileStillPrevious(previousFileId = "", fileState = null) {
-    const currentFileId = displayedSubmissionFileId(fileState);
-    return Boolean(previousFileId && currentFileId && currentFileId === previousFileId);
-  }
-
-  async function waitForSubmissionFile(timeoutMs = 20000, previousFileId = "", expectedStudentKey = "") {
+  async function waitForSubmissionFile(timeoutMs = 20000) {
     const startedAt = Date.now();
     let pausedMilliseconds = 0;
     let noAttachmentSince = 0;
@@ -1577,16 +1512,8 @@
       if (!await waitForPreparationVisibility()) return null;
       pausedMilliseconds += Date.now() - pauseStartedAt;
       if (Date.now() - startedAt - pausedMilliseconds >= timeoutMs) return null;
-      if (expectedStudentKey && navigationStudentKey() !== expectedStudentKey) {
-        await wait(150);
-        continue;
-      }
       const fileState = inspectSubmissionFile();
-      const stalePreviousFile = fileState
-        && !fileState.waiting
-        && !fileState.noAttachment
-        && submissionFileStillPrevious(previousFileId, fileState);
-      if (fileState && !fileState.waiting && !stalePreviousFile) {
+      if (fileState && !fileState.waiting) {
         // 提出物が見つかったときは、これまでどおり即座に返す。
         if (!fileState.noAttachment) return fileState;
         // 「添付ファイルはありません」は、Classroomが描き直している
@@ -1599,11 +1526,7 @@
       }
       await wait(250);
     }
-    const finalState = inspectSubmissionFile();
-    if (expectedStudentKey && navigationStudentKey() !== expectedStudentKey) return null;
-    if (finalState?.noAttachment) return { noAttachment: true };
-    if (finalState && !finalState.waiting && !submissionFileStillPrevious(previousFileId, finalState)) return finalState;
-    return null;
+    return inspectSubmissionFile()?.noAttachment ? { noAttachment: true } : null;
   }
 
   function formatDuration(milliseconds) {
@@ -1617,7 +1540,7 @@
     return ["done", "cancelled", "error"].includes(progress.phase);
   }
 
-  const PREPARATION_BACKGROUND_PAUSE_MESSAGE = "準備タブは背面ですが、処理を続けています。Classroomの画面更新を確認中です。";
+  const PREPARATION_BACKGROUND_PAUSE_MESSAGE = "Classroomタブがバックグラウンドのため一時停止しています。Classroomタブを表示すると自動的に再開します。";
 
   function preparationDocumentState() {
     return {
@@ -1642,26 +1565,27 @@
   function pausePreparationForBackground() {
     if (!state.isPreparationTab || isPreparationFinished() || preparationDocumentVisible()) return;
     setPreparationProgress({
-      paused: false,
-      delayed: true,
+      paused: true,
+      delayed: false,
       stalled: false,
       detailText: PREPARATION_BACKGROUND_PAUSE_MESSAGE
     });
   }
 
-  // 背面タブでも処理を止めない。待ち時間はservice worker側でも計測しているため、
-  // Chromeのタイマー抑制を避けながらClassroomのDOM更新を確認し続けられる。
   function waitForPreparationVisibility() {
-    if (state.prepareCancelled || state.contextInvalidated) return Promise.resolve(false);
-    if (state.isPreparationTab && !isPreparationFinished() && !preparationDocumentVisible()) {
-      if (!progress.delayed || progress.paused) pausePreparationForBackground();
+    if (!state.isPreparationTab || isPreparationFinished() || preparationDocumentVisible()) {
+      return Promise.resolve(true);
     }
-    return Promise.resolve(true);
+    pausePreparationForBackground();
+    return new Promise((resolve) => {
+      state.preparationVisibilityWaiters.push(resolve);
+      if (state.prepareCancelled || state.contextInvalidated) resolvePreparationVisibilityWaiters(false);
+    });
   }
 
   function resumePreparationAfterForeground() {
     if (!state.isPreparationTab || isPreparationFinished() || !preparationDocumentVisible()) return;
-    if (progress.paused || progress.delayed) {
+    if (progress.paused) {
       setPreparationProgress({
         paused: false,
         delayed: false,
@@ -1903,7 +1827,7 @@
       const entry = entries[index];
       const row = document.createElement("div");
       row.className = "cwr-preparation-ledger-row";
-      row.dataset.status = ["ok", "pdf-direct", "link", "no-attachment"].includes(entry.status) ? entry.status : "failed";
+      row.dataset.status = ["ok", "link", "no-attachment"].includes(entry.status) ? entry.status : "failed";
 
       const seq = document.createElement("span");
       seq.className = "cwr-preparation-ledger-seq";
@@ -1929,16 +1853,6 @@
         link.className = "cwr-preparation-ledger-link";
         link.textContent = entry.cached ? "PDFを開く（再利用）" : "PDFを開く";
         row.append(link);
-      } else if (entry.status === "pdf-direct") {
-        const note = document.createElement(entry.sourceUrl ? "a" : "span");
-        note.className = "cwr-preparation-ledger-note";
-        note.textContent = entry.sourceUrl ? "元のPDFを開く（変換不要）" : "PDF（変換不要）";
-        if (entry.sourceUrl) {
-          note.href = entry.sourceUrl;
-          note.target = "_blank";
-          note.rel = "noopener noreferrer";
-        }
-        row.append(note);
       } else if (entry.status === "link") {
         // 共有リンクは取り込めないが、その場で開けるようにしておく。
         if (entry.sourceUrl) {
@@ -2225,74 +2139,35 @@
   // 見つからない）、"stuck"（押したのに画面が変わらない）を区別する。
   // 区別しないと、背面タブで画面が止まっただけなのに「全員分の準備が完了」と
   // 誤って報告してしまう。
-  function studentNavigationChanged(previousKey, currentKey) {
-    return Boolean(currentKey) && currentKey !== previousKey;
-  }
-
-  async function waitForStudentNavigation(previousKey, timeoutMs = 10000) {
-    const startedAt = Date.now();
-    let changedKey = "";
-    let changedSince = 0;
-    while (Date.now() - startedAt < timeoutMs) {
-      if (!await waitForPreparationVisibility()) return "";
-      const currentKey = navigationStudentKey();
-      if (studentNavigationChanged(previousKey, currentKey)) {
-        if (changedKey !== currentKey) {
-          changedKey = currentKey;
-          changedSince = Date.now();
-        }
-        if (Date.now() - changedSince >= 300) return currentKey;
-      } else {
-        changedKey = "";
-        changedSince = 0;
-      }
-      await wait(120);
-    }
-    return "";
-  }
-
   async function moveSubmission(direction, transition = null) {
     if (!contextAvailable()) return { status: "stuck", transition };
     if (!await waitForPreparationVisibility()) return { status: "stuck", transition };
-
-    // 最初のクリックでURLが変わらなかった場合だけ、同じ学生にいることを
-    // 再確認して1回だけ押し直す。学生IDが変わっていれば再クリックしないため、
-    // 遅延した遷移で1人飛ばすことはない。
+    // すでに押した矢印の結果待ちでは、再クリックしない。遅れてDOMだけ
+    // 更新された瞬間にもう一度押すと、1人飛ばしてしまうためである。
     if (transition) {
-      if (studentNavigationChanged(transition.before, navigationStudentKey())) {
-        await wait(direction === "next" ? 350 : 180);
-        return { status: "moved" };
-      }
-      if (transition.retried) return { status: "stuck", transition };
-      const retryButton = await waitForSubmissionButton(direction, 3000);
-      if (!retryButton) return { status: document.hidden ? "stuck" : "missing", transition };
-      if (submissionButtonDisabled(retryButton)) return { status: "end" };
-      if (navigationStudentKey() !== transition.before) {
-        await wait(direction === "next" ? 350 : 180);
-        return { status: "moved" };
-      }
-      transition.retried = true;
-      retryButton.click();
-      if (!await waitForStudentNavigation(transition.before, 10000)) {
+      if (!await waitForSubmissionChange(transition.before, BACKGROUND_RETRY_MS, transition.beforeFileId, transition.beforeLabel)) {
         return { status: "stuck", transition };
       }
-      await wait(direction === "next" ? 350 : 180);
+      await wait(direction === "next" ? 650 : 180);
       return { status: "moved" };
     }
-
     const button = await waitForSubmissionButton(direction);
     // 「押せない状態で見つかった」なら本当に端。「見つからない」だけのときは、
     // 背面で止まっているか描き直し中の可能性があるので端と決めつけない。
     if (!button) return { status: document.hidden ? "stuck" : "missing" };
     if (submissionButtonDisabled(button)) return { status: "end" };
     const before = navigationStudentKey();
-    if (!before) return { status: "stuck" };
+    // 一括準備でも、学生の番号だけでは切替完了とみなさない。Classroomは
+    // URLを先に更新し、数秒間は前の学生のファイルを表示し続けることがある。
+    // ここを確認しないと、2人目のPDFを3人目以降として繰り返し保存してしまう。
+    const beforeFileId = findDisplayedFileId();
+    const beforeLabel = getStudentLabel();
     button.click();
-    const pendingTransition = { before, retried: false };
-    if (!await waitForStudentNavigation(before, 10000)) {
+    const pendingTransition = { before, beforeFileId, beforeLabel };
+    if (!await waitForSubmissionChange(before, 20000, beforeFileId, beforeLabel)) {
       return { status: "stuck", transition: pendingTransition };
     }
-    await wait(direction === "next" ? 350 : 180);
+    await wait(direction === "next" ? 650 : 180);
     return { status: "moved" };
   }
 
@@ -2310,36 +2185,43 @@
           setPreparationProgress({
             delayed: false,
             stalled: false,
-            detailText: "Classroomの学生切替を確認しました。準備を続けます。"
+            detailText: "Classroomの画面更新を確認しました。準備を続けます。"
           });
         }
         return status;
       }
 
+      // クリック済みなら矢印は押し直さず、同じ遷移を複数回確認する。
+      // 未提出者はClassroomの描画が遅いことがあり、最初の20秒だけで止めない。
       transition = result.transition || transition || null;
       retries += 1;
-      // 同じ学生で安全に1回押し直してもURLが変わらなければ、そこで中断する。
-      // 無制限にクリックすると学生を飛ばす危険がある。
-      if (status === "stuck" && transition?.retried) return "stuck";
-      if (!transition && retries > BACKGROUND_RETRY_BEFORE_STALLED) return status;
+      const transitionRetry = Boolean(transition);
+      const retryLimit = transitionRetry
+        ? BACKGROUND_RETRY_BEFORE_STALLED
+        : BACKGROUND_RETRY_BEFORE_STALLED + 1;
+      if (retries >= retryLimit) return transitionRetry ? "stuck" : status;
+      const stalled = retries > BACKGROUND_RETRY_BEFORE_STALLED;
       setPreparationProgress({
-        delayed: document.hidden,
-        stalled: false,
-        detailText: transition
-          ? "次の学生への移動を確認できなかったため、同じ位置で1回だけ再試行します。"
-          : document.hidden
-            ? `背面で次へボタンを待っています（${retries}/${BACKGROUND_RETRY_BEFORE_STALLED}回目）。`
-            : `次へボタンを確認中です（${retries}/${BACKGROUND_RETRY_BEFORE_STALLED}回目）。`
+        delayed: !stalled && document.hidden,
+        stalled,
+        detailText: transitionRetry
+          ? `切り替え済みの学生画面を再確認しています（${retries}/${retryLimit - 1}回目）。`
+          : stalled
+            ? "Classroomの画面更新を待っています。正しい学生・ファイルを確認するため、30秒後に自動で再試行します。"
+            : document.hidden
+              ? `背面で画面更新を待っています（${retries}/${BACKGROUND_RETRY_BEFORE_STALLED}回目の自動再試行）。`
+              : `画面更新を確認中です（${retries}/${BACKGROUND_RETRY_BEFORE_STALLED}回目の自動再試行）。`
       });
-      if (!transition) await wait(BACKGROUND_RETRY_MS);
+      // transition付きのmoveSubmission自体が10秒待つため、追加待機はしない。
+      if (!transitionRetry) await wait(stalled ? BACKGROUND_STALLED_RETRY_MS : BACKGROUND_RETRY_MS);
     }
     return "stuck";
   }
 
-  async function waitForSubmissionFileWithRecovery(timeoutMs = 15000, previousFileId = "", expectedStudentKey = "") {
+  async function waitForSubmissionFileWithRecovery(timeoutMs = 15000) {
     let retries = 0;
     while (!state.prepareCancelled && contextAvailable()) {
-      const fileInfo = await waitForSubmissionFile(timeoutMs, previousFileId, expectedStudentKey);
+      const fileInfo = await waitForSubmissionFile(timeoutMs);
       if (fileInfo) {
         if (retries) setPreparationProgress({ delayed: false, stalled: false, detailText: "提出物を確認しました。準備を続けます。" });
         return fileInfo;
@@ -2348,8 +2230,7 @@
       // 待ち続けても提出物が出てこない提出者がいる。無期限に再試行すると
       // 一括準備がそこで止まってしまうため、上限を決めて次へ進める。
       // 通常の提出物は1回目の確認で見つかるので、ここは速度に影響しない。
-      const maximumRetries = previousFileId ? 0 : MAX_FILE_WAIT_RETRIES;
-      if (retries > maximumRetries) {
+      if (retries > MAX_FILE_WAIT_RETRIES) {
         setPreparationProgress({
           delayed: false,
           stalled: false,
@@ -2415,8 +2296,6 @@
     let failedCount = 0;
     let linkCount = 0;
     let noAttachmentCount = 0;
-    let directPdfCount = 0;
-    let previousDisplayedFileId = "";
     let forwardMoves = 0;
     let stopReason = "";
     const failedNames = [];
@@ -2450,11 +2329,17 @@
         const sequence = seen.size + 1;
         setPreparationProgress({
           current: sequence,
-          countText: preparationCountText(preparedCount + cachedCount + directPdfCount, skippedCount + failedCount, sequence),
+          countText: preparationCountText(preparedCount + cachedCount, skippedCount + failedCount, sequence),
           detailText: `${sequence}人目の提出物を読み取っています。`
         });
-        // 学生IDを先に確定する。ファイル表示は遅れて更新されることがあるため、
-        // 学生移動の成否とファイル読み込みを同じ判定にしない。
+        // 提出物の名前が出そろってから鍵を作る。先に作ると読み込み途中の
+        // 名前で保存され、採点時に準備済みPDFを見つけられなくなる。
+        const missingStudent = zipStatusOf(getStudentLabel()) === "未提出";
+        let fileInfo = sequence === 1 && initialFileInfo
+          ? initialFileInfo
+          : missingStudent
+            ? null
+            : await waitForSubmissionFileWithRecovery(15000);
         const studentKey = navigationStudentKey();
         if (!studentKey) {
           stopReason = "student-key-missing";
@@ -2465,14 +2350,6 @@
           break;
         }
         seen.add(studentKey);
-        const missingStudent = zipStatusOf(getStudentLabel()) === "未提出";
-        const fileInfo = sequence === 1 && initialFileInfo
-          ? initialFileInfo
-          : missingStudent
-            ? null
-            : await waitForSubmissionFileWithRecovery(15000, previousDisplayedFileId, studentKey);
-        // 前の学生のファイルIDは、この学生の読み込み確認にだけ使う。
-        previousDisplayedFileId = "";
 
         // 1人が複数ファイルを出していることがあるので、全部まとめて準備する。
         const files = fileInfo && !fileInfo.unsupported && !fileInfo.noAttachment
@@ -2519,21 +2396,8 @@
               linkCount += 1;
               addLedgerEntry(fileIndex, file, { status: "link" });
               setPreparationProgress({
-                countText: preparationCountText(preparedCount + cachedCount + directPdfCount, skippedCount + failedCount, sequence),
+                countText: preparationCountText(preparedCount + cachedCount, skippedCount + failedCount, sequence),
                 detailText: `${file.fileName} は共有リンクの提出です。`,
-                fileName: file.fileName
-              });
-              continue;
-            }
-            // PDFはすでに表示可能な形式なので、一括準備では取得・変換・保存を
-            // 行わない。ファイル情報だけを一覧へ登録し、必要なときに直接開く。
-            if (file.kind === "pdf") {
-              directPdfCount += 1;
-              const sourceUrl = sourceUrlForFile(file) || file.sourceUrl || "";
-              addLedgerEntry(fileIndex, file, { status: "pdf-direct", sourceUrl });
-              setPreparationProgress({
-                countText: preparationCountText(preparedCount + cachedCount + directPdfCount, skippedCount + failedCount, sequence),
-                detailText: `${file.fileName} はPDFのため変換せず一覧に登録しました。`,
                 fileName: file.fileName
               });
               continue;
@@ -2554,7 +2418,7 @@
             const submissionKey = getSubmissionKey(preparedFile);
             const ofFiles = files.length > 1 ? `（${fileIndex + 1}/${files.length}件目）` : "";
             setPreparationProgress({
-              countText: preparationCountText(preparedCount + cachedCount + directPdfCount, skippedCount + failedCount, sequence),
+              countText: preparationCountText(preparedCount + cachedCount, skippedCount + failedCount, sequence),
               detailText: `${fileName}${ofFiles} の準備済みPDFを確認しています。`,
               fileName
             });
@@ -2641,21 +2505,17 @@
         }
 
         setPreparationProgress({
-          done: preparedCount + cachedCount + directPdfCount,
+          done: preparedCount + cachedCount,
           skipped: skippedCount + failedCount,
-          countText: preparationCountText(preparedCount + cachedCount + directPdfCount, skippedCount + failedCount, sequence),
+          countText: preparationCountText(preparedCount + cachedCount, skippedCount + failedCount, sequence),
           detailText: "次の提出者へ移動しています。"
         });
         if (state.prepareCancelled) break;
-        // 次の学生の画面に前のPDFが残っていても誤登録しないよう、移動前の
-        // ファイルIDを次のループへ1回だけ引き継ぐ。
-        const departingFileId = findDisplayedFileId() || fileInfo?.expectedFileId || "";
         const moved = await moveWithRecovery("next");
         if (moved !== "moved") {
           stopReason = moved;
           break;
         }
-        previousDisplayedFileId = departingFileId;
         forwardMoves += 1;
         if (limit > 0 && seen.size >= limit) {
           stopReason = "limit";
@@ -2681,11 +2541,10 @@
         }
       }
 
-      const total = preparedCount + cachedCount + directPdfCount;
+      const total = preparedCount + cachedCount;
       const notReady = skippedCount + failedCount;
       const summary = [
         `${total}件を準備しました`,
-        directPdfCount ? `PDF（変換不要） ${directPdfCount}件` : "",
         linkCount ? `共有リンク ${linkCount}件` : "",
         noAttachmentCount ? `添付なし ${noAttachmentCount}件` : "",
         failedCount ? `準備できず ${failedCount}件` : ""
@@ -2707,7 +2566,7 @@
     } catch (error) {
       finishPreparation(
         "一括準備を中断しました",
-        `${preparedCount + cachedCount + directPdfCount}件まで準備できました`,
+        `${preparedCount + cachedCount}件まで準備できました`,
         error.message || "処理中にエラーが発生しました。",
         "error"
       );
