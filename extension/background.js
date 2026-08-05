@@ -314,7 +314,7 @@ async function waitForClassroomTab(tabId) {
   throw new Error("準備専用タブの読み込みが完了しませんでした。通信状況を確認してからお試しください。");
 }
 
-async function startBulkPreparation(sourceTabId, { prefetch = false } = {}) {
+async function startBulkPreparation(sourceTabId, { prefetch = false, startAtCurrent = false } = {}) {
   const sourceTab = await chrome.tabs.get(sourceTabId);
   if (!sourceTab.url?.startsWith("https://classroom.google.com/")) {
     throw new Error("Classroomの採点画面で実行してください。");
@@ -328,7 +328,11 @@ async function startBulkPreparation(sourceTabId, { prefetch = false } = {}) {
     // 実行中と記録されていても、タブが応答しない、または処理が終わっている
     // 場合は作り直す。そうしないと「実行中」のまま二度と進まなくなる。
     if (inspection?.preparing && preparationState.status === "running") {
-      await patchPreparationState({ sourceTabId, sourceWindowId: sourceTab.windowId });
+      if (prefetch && preparationState.prefetch) {
+        await patchPreparationState({ pendingPrefetchSourceTabId: sourceTabId });
+      } else {
+        await patchPreparationState({ sourceTabId, sourceWindowId: sourceTab.windowId });
+      }
       return { ok: true, alreadyRunning: true, tabId: preparationState.tabId };
     }
   }
@@ -355,12 +359,18 @@ async function startBulkPreparation(sourceTabId, { prefetch = false } = {}) {
     acknowledged: false,
     prefetch,
     startedAt: Date.now(),
-    lastProgressAt: Date.now()
+    lastProgressAt: Date.now(),
+    startAtCurrent: prefetch || startAtCurrent,
+    pendingPrefetchSourceTabId: null
   };
   await setPreparationState(preparationState);
   try {
     await waitForClassroomTab(preparationTab.id);
-    await sendWhenReady(preparationTab.id, { type: "cwr-run-preparation", prefetch });
+    await sendWhenReady(preparationTab.id, {
+      type: "cwr-run-preparation",
+      prefetch,
+      startAtCurrent: prefetch || startAtCurrent
+    });
   } catch (error) {
     await patchPreparationState({ status: "error" });
     await focusTab(sourceTabId, sourceTab.windowId);
@@ -377,13 +387,19 @@ async function relayPreparationProgress(senderTabId, progress) {
     await notifyTab(preparationState.sourceTabId, { type: "cwr-prepare-remote-progress", ...progress });
   }
   const finished = progress.status && progress.status !== "running";
+  const pendingPrefetchSourceTabId = finished && preparationState.prefetch
+    ? preparationState.pendingPrefetchSourceTabId
+    : null;
   await patchPreparationState({
     lastProgressAt: Date.now(),
     lastProgress: progress,
-    ...(finished ? { status: progress.status } : {})
+    ...(finished ? { status: progress.status, pendingPrefetchSourceTabId: null } : {})
   });
   // 終わったら採点タブへ自動で戻す。準備専用タブを探す手間をなくす。
   if (finished && !preparationState.prefetch) await focusTab(preparationState.sourceTabId, preparationState.sourceWindowId);
+  if (finished && preparationState.prefetch && Number.isInteger(pendingPrefetchSourceTabId)) {
+    startBulkPreparation(pendingPrefetchSourceTabId, { prefetch: true }).catch(() => undefined);
+  }
   return { ok: true };
 }
 
@@ -830,7 +846,7 @@ async function prepareCurrentSubmission(tabId, submissionKey, expectedName, expe
   const descriptor = await waitForCurrentDocument(tabId, expectedName, expectedFileId, expectedGoogleType);
   if (!descriptor) throw new Error("この提出者のWord／PowerPoint／PDF／Google形式のファイルを見つけられませんでした。");
   const key = descriptorKey(descriptor);
-  const prepared = !cacheIdentity && (await getPreparedPdf(key) || await getPreparedPdfById(descriptor.fileId));
+  const prepared = await getPreparedPdf(key) || await getPreparedPdfById(descriptor.fileId);
   if (prepared) {
     await rememberPreparedPdf(key, submissionKey, prepared, { fileId: descriptor.fileId });
     return { ...prepared, documentKey: key, mode: "prepared", cached: true };
@@ -862,7 +878,7 @@ async function prepareAttachment(tabId, message, { showPdf = false } = {}) {
   const submissionKey = message.submissionKey || "";
   const primary = message.primary === true;
   const key = descriptorKey(descriptor);
-  const prepared = !message.cacheIdentity && (await getPreparedPdf(key) || await getPreparedPdfById(fileId));
+  const prepared = await getPreparedPdf(key) || await getPreparedPdfById(fileId);
   if (prepared) {
     await rememberPreparedPdf(key, submissionKey, prepared, { primary, fileId });
     if (showPdf) await notifyTab(tabId, { type: "cwr-show-pdf", submissionKey, ...prepared });
@@ -1068,7 +1084,7 @@ const messageHandlers = {
   "cwr-prepare-one": (tabId, message) => prepareCurrentSubmission(tabId, message.submissionKey || "", message.expectedName || "", message.expectedFileId || "", message.expectedGoogleType || "", message.cacheIdentity),
   "cwr-prepare-attachment": (tabId, message) => prepareAttachment(tabId, message),
   "cwr-open-attachment": (tabId, message) => prepareAttachment(tabId, message, { showPdf: true }),
-  "cwr-start-bulk-preparation": (tabId) => startBulkPreparation(tabId),
+  "cwr-start-bulk-preparation": (tabId, message) => startBulkPreparation(tabId, { startAtCurrent: message.startAtCurrent === true }),
   "cwr-prefetch-next": (tabId) => startBulkPreparation(tabId, { prefetch: true }),
   "cwr-prepare-progress": (tabId, message) => relayPreparationProgress(tabId, message.progress || {}),
   "cwr-cancel-bulk-preparation": () => cancelBulkPreparation(),

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.9.5";
+const expectedVersion = "0.9.6";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -181,7 +181,7 @@ assert(manifest.web_accessible_resources[0].resources.includes("zip-writer.js"))
 // 追加の権限は使わない。保存はページ側のリンク操作で行う。
 assert(!content.includes("chrome.downloads"));
 assert(!bulkZip.includes("chrome.downloads"));
-assert.deepEqual(manifest.permissions, ["storage", "tabs", "webNavigation"]);
+assert.deepEqual(manifest.permissions, ["storage", "tabs", "webNavigation", "nativeMessaging"]);
 // 取得先はDriveとGoogleドキュメントだけ。外部のCDNやライブラリは読み込まない。
 assert(bulkZipHtml.includes('<script type="module" src="bulk-zip.js"></script>'));
 assert(!/https?:\/\/(?!drive|docs|classroom)/.test(bulkZipHtml));
