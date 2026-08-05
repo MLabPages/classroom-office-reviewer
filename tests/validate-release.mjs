@@ -102,8 +102,11 @@ assert(!content.includes('addEventListener("unload"'));
 // 学生切替は、表示中のファイル番号が入れ替わるまで完了と見なさない。
 // ここを戻すと、前の提出物のまま同じPDFが再表示される。
 assert(content.includes("async function waitForSubmissionChange(previousKey, timeoutMs = 20000, previousFileId"));
-assert(content.includes("waitForSubmissionChange(before, 8000, beforeFileId)"));
-assert(content.includes("waitForSubmissionChange(before, 20000, beforeFileId, beforeLabel)"));
+assert(content.includes("waitForSubmissionChange(before, 20000, beforeFileId, beforeLabel, beforePaneSignature)"));
+assert(content.includes("function submissionFileRegion()"));
+assert(content.includes("function submissionFilePaneSignature()"));
+assert(content.includes("MAX_PREPARATION_ATTACHMENTS = 10"));
+assert(content.includes("function assignmentKey()"));
 // 遅れて届いた前のファイルの変換結果で、新しい表示を上書きしない。
 assert(content.includes("function matchesRequestedFile"));
 assert(content.includes("if (!matchesRequestedFile(message))"));

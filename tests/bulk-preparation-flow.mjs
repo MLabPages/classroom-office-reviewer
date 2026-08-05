@@ -33,6 +33,8 @@ assert.match(background, /if \(prefetch && preparationState\.prefetch\)/);
 // テスト5：学生切替と巡回キーは、提出画面の表示状態に依存しないナビゲーションキーを使う。
 assert.match(content, /const before = navigationStudentKey\(\);/);
 assert.match(content, /const studentKey = navigationStudentKey\(\);/);
+assert.match(content, /const beforePaneSignature = submissionFilePaneSignature\(\);/);
+assert.match(content, /waitForSubmissionChange\(before, 20000, beforeFileId, beforeLabel, beforePaneSignature\)/);
 
 // テスト6：未提出者は長時間の提出物待機を行わず、添付なしとして一覧に残す。
 assert.match(content, /const missingStudent = zipStatusOf\(getStudentLabel\(\)\) === "未提出";/);
@@ -54,12 +56,46 @@ assert.match(content, /if \(moved !== "moved"\) \{\s*stopReason = moved;/s);
 assert.match(content, /"割り当て済み", "不足", "未提出"/);
 assert.match(content, /\["割り当て済み", "不足", "Assigned", "Missing", "未提出"\]/);
 assert.match(content, /submissionStatus === "未提出"/);
-assert.match(content, /studentLabelChanged/);
+assert.match(content, /studentLabelStableForMs/);
+assert.match(content, /filePaneChanged/);
+assert.match(content, /filePaneStableForMs/);
 assert.match(content, /submissionStatusForMs >= NO_ATTACHMENT_CONFIRM_MS/);
 assert.match(content, /transition\.beforeLabel/);
+assert.match(content, /transition\.beforePaneSignature/);
 assert.match(content, /const beforeLabel = getStudentLabel\(\);/);
 assert.match(content, /const transitionRetry = Boolean\(transition\);/);
 assert.doesNotMatch(content, /if \(status === "stuck" && \(transition \|\| result\.transition\)\) return "stuck";/);
 assert.match(content, /次の学生への画面切替を確認できませんでした/);
 
-console.log("9件の一括準備・キャッシュ・先読み・排他・未提出遷移テストに合格しました。");
+// テスト10：添付収集は現在学生の右側ファイル領域に限定し、過去学生・CRW UIを除外する。
+assert.match(content, /function submissionFileRegion\(\)/);
+assert.match(content, /function submissionFilePaneSignature\(\)/);
+assert.match(content, /nodesWithin\(region, "a, button, div, span/);
+assert.match(content, /const menuRoots = new Set\(menuItems\.map/);
+assert.match(content, /現在表示中のファイルと結び付けられない複数メニュー/);
+assert.doesNotMatch(content, /const linkNodes = \[\.\.\.document\.querySelectorAll\("a\[href\]"\)\]/);
+
+// テスト11：一覧キーは課題・学生・ファイルで構成し、一括準備開始時に同じ課題の一覧を初期化する。
+assert.match(content, /function assignmentKey\(\)/);
+assert.match(content, /const assignment = String\(file\.assignmentKey \|\| assignmentKey\(\)\)/);
+assert.match(content, /return `\$\{assignment\}\|\$\{student\}\|\$\{identity\}`/);
+assert.match(content, /ensureSubmissionCatalogContext\(\);\s*state\.submissionCatalog = \[\];/s);
+
+// テスト12：多数添付は一覧登録前に学生名・件数・候補名を表示して停止する。
+assert.match(content, /MAX_PREPARATION_ATTACHMENTS = 10/);
+assert.match(content, /files\.length > MAX_PREPARATION_ATTACHMENTS/);
+assert.match(content, /一覧へ登録せず停止します。候補：/);
+assert.match(content, /const unverifiedPdf = files\.find\(\(file\) => file\.kind === "pdf" && !file\.expectedFileId\)/);
+
+// テスト13：PDFは正しいfileIdが確定した後、Office変換ではなく直接保存する。
+assert.match(content, /type: preparedFile\.expectedFileId && !onScreen \? "cwr-prepare-attachment" : "cwr-prepare-one"/);
+assert.match(background, /if \(isPdfDescriptor\(descriptor\)\) return storeExistingPdf/);
+assert.match(background, /async function storeExistingPdf/);
+
+// テスト14：長い巡回でも学生キーを重複登録しない安全な構造を維持する。
+assert.match(content, /const seen = new Set\(\);/);
+assert.match(content, /if \(seen\.has\(studentKey\)\) \{/);
+assert.match(content, /seen\.add\(studentKey\);/);
+assert.match(content, /studentKey,\s*fileSeq:/s);
+
+console.log("14件の一括準備・キャッシュ・先読み・排他・安全収集テストに合格しました。");

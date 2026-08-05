@@ -21,6 +21,7 @@
   // 「添付ファイルはありません」が描き直しの一瞬だけ出ることがある。
   // この時間だけ続けて見えたときに「添付なし」として確定する。
   const NO_ATTACHMENT_CONFIRM_MS = 1500;
+  const MAX_PREPARATION_ATTACHMENTS = 10;
   // 提出物の表示待ちを打ち切るまでの再試行回数。ここを超えたら、その提出者は
   // 一覧に記録して次へ進む。無期限に待つと一括準備全体が止まってしまう。
   const MAX_FILE_WAIT_RETRIES = 3;
@@ -157,8 +158,11 @@
   }
 
   function findFileName(extensionPattern) {
-    const nodes = document.querySelectorAll("a, button, [role='button'], [role='menuitem'], [aria-label], [title], [data-tooltip]");
+    const region = submissionFileRegion();
+    if (!region) return "";
+    const nodes = nodesWithin(region, "a, button, div, span, [role='button'], [role='menuitem'], [aria-label], [title], [data-tooltip]");
     for (const node of nodes) {
+      if (isCwrOwnedNode(node)) continue;
       if (!visible(node)) continue;
       for (const source of labelSourcesOf(node)) {
         const fileName = matchFileName(source, extensionPattern);
@@ -181,6 +185,85 @@
     return findFileName("docx?|pptx?|pdf|xlsx?|csv|txt|rtf|odt|ods|odp|jpe?g|png|gif|webp|zip");
   }
 
+  const SUBMISSION_FILE_REGION_HINT = /submission|attachment|file|提出|添付|ファイル|課題/i;
+
+  function isCwrOwnedNode(node) {
+    return Boolean(node?.closest?.("#cwr-overlay, [id^='cwr-'], [data-cwr-owned='true']"));
+  }
+
+  function nodeAttributeLabel(node) {
+    return [
+      node?.getAttribute?.("aria-label"),
+      node?.getAttribute?.("data-testid"),
+      node?.getAttribute?.("id"),
+      node?.getAttribute?.("role")
+    ].filter(Boolean).join(" ");
+  }
+
+  function nodesWithin(root, selector) {
+    if (!root) return [];
+    const nodes = [];
+    if (root.matches?.(selector)) nodes.push(root);
+    if (root.querySelectorAll) nodes.push(...root.querySelectorAll(selector));
+    return nodes;
+  }
+
+  // Classroomの提出者画面には、過去学生のメニューや非表示リンクが同じdocumentに
+  // 残ることがある。現在のDrive/Docsプレビューを含む右側の領域、またはその領域を
+  // 明示する属性を持つ要素だけを収集範囲にする。見つからない場合にdocument全体へ
+  // 戻すと誤登録を起こすため、安全側でnullを返す。
+  function submissionFileRegion() {
+    const visibleFrames = [...document.querySelectorAll("iframe[src]")]
+      .filter((frame) => !isCwrOwnedNode(frame) && visible(frame) && /(?:drive|docs)\.google\.com/i.test(frame.src || ""));
+    const candidates = [];
+    const addCandidate = (node, distance = 0) => {
+      if (!node || node === document.body || isCwrOwnedNode(node) || !visible(node)) return;
+      if (candidates.some((candidate) => candidate.node === node)) return;
+      const rect = node.getBoundingClientRect();
+      const fileNodeCount = nodesWithin(node, "a[href], [role='menuitem'], iframe[src]").length;
+      candidates.push({ node, distance, area: Math.max(1, rect.width * rect.height), fileNodeCount });
+    };
+
+    for (const frame of visibleFrames) {
+      let node = frame.parentElement;
+      for (let distance = 1; node && node !== document.body && distance <= 10; distance += 1) {
+        const label = nodeAttributeLabel(node);
+        const fileNodes = nodesWithin(node, "a[href], [role='menuitem'], iframe[src]");
+        if (SUBMISSION_FILE_REGION_HINT.test(label) && fileNodes.length) addCandidate(node, distance);
+        node = node.parentElement;
+      }
+    }
+
+    // 初回表示前や未提出者ではiframeが無いことがあるため、提出物領域を示す
+    // aria/data属性も候補にする。ただしCRW自身のUIは除外する。
+    const explicitNodes = document.querySelectorAll(
+      "[role='region'], [data-testid], [aria-label*='提出'], [aria-label*='添付'], [aria-label*='ファイル'], [aria-label*='submission'], [aria-label*='attachment'], [aria-label*='file']"
+    );
+    for (const node of explicitNodes) {
+      if (!SUBMISSION_FILE_REGION_HINT.test(nodeAttributeLabel(node))) continue;
+      const hasFileNodes = nodesWithin(node, "a[href], [role='menuitem'], iframe[src]").length > 0;
+      if (hasFileNodes || node.getAttribute?.("role") === "region") addCandidate(node, 20);
+    }
+
+    if (candidates.length) {
+      candidates.sort((left, right) => right.fileNodeCount - left.fileNodeCount || left.area - right.area || left.distance - right.distance);
+      return candidates[0].node;
+    }
+
+    // 属性が無いUIでも、プレビューから近い非全画面の親だけを最後の候補にする。
+    // document/bodyまで広げないことで、別学生の残骸を取り込まない。
+    for (const frame of visibleFrames) {
+      let node = frame.parentElement;
+      for (let distance = 1; node && node !== document.body && distance <= 5; distance += 1) {
+        const fileNodes = nodesWithin(node, "a[href], [role='menuitem'], iframe[src]");
+        if (fileNodes.length) addCandidate(node, distance);
+        node = node.parentElement;
+      }
+    }
+    candidates.sort((left, right) => right.fileNodeCount - left.fileNodeCount || left.area - right.area || left.distance - right.distance);
+    return candidates[0]?.node || null;
+  }
+
   // Classroom自身が「添付ファイルはありません」（英語版では"No attachments"）と
   // 表示している状態を検出する。これは「まだ描画中」ではなく、Classroomが
   // 添付なしと確定表示しているサインなので、ここが見えたら再試行を続ける
@@ -192,8 +275,10 @@
     // 要素だけに絞り、短時間は前回の判定を使い回して通常の処理速度を保つ。
     const now = Date.now();
     if (now - noAttachmentProbe.checkedAt < 250) return noAttachmentProbe.result;
+    const region = submissionFileRegion();
+    if (!region) return false;
     let found = false;
-    for (const node of document.querySelectorAll("div, span, p")) {
+    for (const node of nodesWithin(region, "div, span, p")) {
       if (node.children && node.children.length > 0) continue;
       if (!visible(node)) continue;
       const text = textOf(node);
@@ -258,7 +343,10 @@
   function findSubmittedLinks() {
     const links = [];
     const seen = new Set();
-    for (const node of document.querySelectorAll("a[href]")) {
+    const region = submissionFileRegion();
+    if (!region) return links;
+    for (const node of nodesWithin(region, "a[href]")) {
+      if (isCwrOwnedNode(node)) continue;
       const url = fileUrlOf(node);
       if (!isLikelySubmittedLink(node, url)) continue;
       if (seen.has(url)) continue;
@@ -270,12 +358,14 @@
   }
 
   function findGoogleFileInfo() {
-    const frames = [...document.querySelectorAll("iframe[src]")];
+    const region = submissionFileRegion();
+    if (!region) return null;
+    const frames = nodesWithin(region, "iframe[src]").filter((frame) => !isCwrOwnedNode(frame));
     const documentFrame = frames.find((frame) => visible(frame) && /docs\.google\.com\/document\/(?:u\/\d+\/)?d\//i.test(frame.src));
     const slidesFrame = frames.find((frame) => visible(frame) && /docs\.google\.com\/presentation\/(?:u\/\d+\/)?d\//i.test(frame.src));
     let labeledKind = "";
     let labeledFileName = "";
-    const nodes = document.querySelectorAll("a, button, [role='button'], [role='menuitem'], [aria-label], [title], [data-tooltip]");
+    const nodes = nodesWithin(region, "a, button, div, span, [role='button'], [role='menuitem'], [aria-label], [title], [data-tooltip]");
     for (const node of nodes) {
       if (!visible(node)) continue;
       const sources = [node.getAttribute("aria-label"), node.getAttribute("title"), node.getAttribute("data-tooltip"), textOf(node)];
@@ -304,6 +394,7 @@
   function findSupportedFileInfo() {
     const googleFileInfo = findGoogleFileInfo();
     if (googleFileInfo) return googleFileInfo;
+    if (submissionFileMenusAreAmbiguous()) return { waiting: true };
     // 同じ提出物にWordとPDFが添付されている場合、全体を検索すると
     // メニューの先頭にあるWordを、現在選択中のPDFと誤認してしまう。
     // Classroomの実DOMでは選択中のmenuitemが tabindex="0" になるため、
@@ -407,7 +498,7 @@
     if (nestedUrl) return nestedUrl;
     const selectionId = menuSelectionIdOf(node);
     if (!selectionId) return "";
-    const candidates = document.querySelectorAll(
+    const candidates = nodesWithin(submissionFileRegion(),
       "[data-selection-id], [data-cursor-id], [data-url], [data-file-url], [data-file-id], a[href]"
     );
     for (const candidate of candidates) {
@@ -424,7 +515,10 @@
   // 選択欄が閉じているあいだ項目は隠れているだけでDOMには残るため、
   // 見えているかどうかで絞り込まない。絞り込むと2件目を見落とす。
   function findSubmissionFileMenuItems() {
-    const items = [...document.querySelectorAll("[role='menuitem']")].filter((node) => {
+    const region = submissionFileRegion();
+    if (!region) return [];
+    const items = nodesWithin(region, "[role='menuitem']").filter((node) => {
+      if (isCwrOwnedNode(node)) return false;
       if (node.getAttribute?.("role") !== "menuitem") return false;
       const text = textOf(node);
       if (!text || /新しいウィンドウ|new window/i.test(text)) return false;
@@ -437,7 +531,6 @@
     // 含まれるメニューが見つかったら、その1つだけを使う。
     const displayedId = findDisplayedFileId() || state.activeFile?.id || "";
     const displayedName = normalizedFileName(findOfficeFileName() || findPdfFileName() || state.activeFile?.name || "");
-    if (!displayedId && !displayedName) return items;
     const groups = new Map();
     for (const node of items) {
       const menu = node.closest?.("[role='menu']") || null;
@@ -445,6 +538,7 @@
       groups.get(menu).push(node);
     }
     if (groups.size < 2) return items;
+    if (!displayedId && !displayedName) return [];
     if (displayedId) {
       for (const group of groups.values()) {
         if (group.some((node) => attachmentInfoOf(node)?.expectedFileId === displayedId)) return group;
@@ -457,7 +551,9 @@
       });
       if (matched) return group;
     }
-    return items;
+    // 現在表示中のファイルと結び付けられない複数メニューは、過去学生の
+    // 非表示DOMを含む可能性がある。一覧へ混ぜず、ファイル欄の確定待ちに戻す。
+    return [];
   }
 
   function attachmentInfoOf(node) {
@@ -484,6 +580,13 @@
     };
   }
 
+  function submissionFileMenusAreAmbiguous() {
+    const region = submissionFileRegion();
+    if (!region) return false;
+    const allItems = nodesWithin(region, "[role='menuitem']").filter((node) => !isCwrOwnedNode(node));
+    return allItems.length > 0 && findSubmissionFileMenuItems().length === 0;
+  }
+
   function selectedSubmissionAttachment() {
     const selectedItem = findSubmissionFileMenuItems().find((node) => {
       const selected = [
@@ -505,12 +608,21 @@
   function findSubmissionAttachments() {
     const attachments = [];
     const seen = new Set();
-    const linkNodes = [...document.querySelectorAll("a[href]")].filter((node) =>
+    const region = submissionFileRegion();
+    if (!region) return attachments;
+    const allMenuItems = nodesWithin(region, "[role='menuitem']").filter((node) => !isCwrOwnedNode(node));
+    const menuItems = findSubmissionFileMenuItems();
+    if (allMenuItems.length && !menuItems.length) return attachments;
+    const menuRoots = new Set(menuItems.map((node) => node.closest?.("[role='menu']")).filter(Boolean));
+    const linkNodes = nodesWithin(region, "a[href]").filter((node) => {
+      const menu = node.closest?.("[role='menu']");
+      return !menu || menuRoots.has(menu);
+    }).filter((node) =>
       typeof node.matches === "function" ? node.matches("a[href]") : Boolean(node.href));
     // Classroomのファイル選択欄の順番を先に採用する。2件目の内側にある
     // Driveリンクを先に並べると、一覧が「2件目→1件目」に逆転し、
     // 現在の1件目が末尾扱いになって右ボタンが効かなくなる。
-    const nodes = [...findSubmissionFileMenuItems(), ...linkNodes];
+    const nodes = [...menuItems, ...linkNodes].filter((node) => !isCwrOwnedNode(node));
     for (const node of nodes) {
       const url = fileUrlOf(node);
       const isMenuItem = node.getAttribute?.("role") === "menuitem";
@@ -582,6 +694,28 @@
     return files;
   }
 
+  function submissionFilePaneSignature() {
+    const region = submissionFileRegion();
+    if (!region) return "";
+    const frames = nodesWithin(region, "iframe[src]")
+      .filter((frame) => !isCwrOwnedNode(frame))
+      .map((frame) => parseDriveId(frame.src || ""))
+      .filter(Boolean);
+    const attachments = findSubmissionAttachments().map((file) => [
+      file.kind || "",
+      file.expectedFileId || "",
+      normalizedFileName(file.fileName || ""),
+      file.sourceUrl || ""
+    ].join(":"));
+    const noAttachment = nodesWithin(region, "div, span, p")
+      .some((node) => {
+        if (node.children && node.children.length > 0) return false;
+        const text = textOf(node);
+        return text === "添付ファイルはありません" || /^no attachments\.?$/i.test(text);
+      });
+    return JSON.stringify({ frames, attachments, noAttachment });
+  }
+
   // Classroomで利用者が右側の添付を直接選んだときは、拡張が前回覚えた
   // activeFile より、いま表示されているプレビューiframeのファイルIDを優先する。
   // ここを逆にすると、2件目を選んでも1件目のキーとキャッシュを再利用してしまう。
@@ -642,8 +776,10 @@
   }
 
   function findDisplayedFileId() {
-    const frames = [...document.querySelectorAll("iframe[src]")]
-      .filter((frame) => visible(frame) && /(?:drive|docs)\.google\.com/i.test(frame.src || ""));
+    const region = submissionFileRegion();
+    if (!region) return "";
+    const frames = nodesWithin(region, "iframe[src]")
+      .filter((frame) => !isCwrOwnedNode(frame) && visible(frame) && /(?:drive|docs)\.google\.com/i.test(frame.src || ""));
     for (const frame of frames) {
       const fileId = parseDriveId(frame.src || "");
       if (fileId) return fileId;
@@ -678,7 +814,9 @@
   // 選択欄が閉じていると項目を押しても効かない。開くボタンを押してから
   // 項目が実際に見えるまで待つ。
   function findFileMenuOpener() {
-    return [...document.querySelectorAll("[aria-haspopup='true'], [aria-haspopup='menu'], button, [role='button']")]
+    const region = submissionFileRegion();
+    if (!region) return null;
+    return nodesWithin(region, "[aria-haspopup='true'], [aria-haspopup='menu'], button, [role='button']")
       .find((node) => {
         if (!visible(node)) return false;
         if (node.getAttribute("aria-haspopup") !== "true" && node.getAttribute("aria-haspopup") !== "menu") return false;
@@ -779,6 +917,8 @@
       formatDuration,
       preparationCountText,
       findSubmissionAttachments,
+      submissionFileRegion,
+      submissionFilePaneSignature,
       attachmentInfoOf,
       selectedSubmissionAttachment,
       listSubmissionFiles,
@@ -1067,6 +1207,11 @@
     return path.replace(/\/u\/\d+(?=\/)/i, "/u/*");
   }
 
+  function assignmentKey() {
+    const match = (location.pathname || "").match(/\/c\/([^/]+)\/a\/([^/]+)/i);
+    return match ? `${match[1]}:${match[2]}` : submissionCatalogContext();
+  }
+
   function ensureSubmissionCatalogContext() {
     const context = submissionCatalogContext();
     if (state.submissionCatalogContext === context) return;
@@ -1081,6 +1226,7 @@
   }
 
   function submissionCatalogKey(file = {}) {
+    const assignment = String(file.assignmentKey || assignmentKey());
     const student = String(file.studentKey || file.studentId || (file.studentSeq ? `seq:${file.studentSeq}` : file.studentName || "unknown-student"));
     // 共有リンクはファイル番号を持たないため、URLで見分ける。名前で見分けると、
     // 同じ提出者の複数リンクが1件にまとまってしまう。
@@ -1090,14 +1236,15 @@
       || (file.kind === "no-attachment" ? "no-attachment" : "")
       || normalizedFileName(file.fileName || "")
       || "unknown-file";
-    return `${student}|${identity}`;
+    return `${assignment}|${student}|${identity}`;
   }
 
   function sourceUrlForFile(file) {
     if (file?.sourceUrl && /^https?:\/\//i.test(file.sourceUrl)) return file.sourceUrl;
     const matched = findSubmissionAttachments().find((item) => sameFile(item, file));
     if (matched?.sourceUrl) return matched.sourceUrl;
-    const frames = [...document.querySelectorAll("iframe[src]")];
+    const frames = nodesWithin(submissionFileRegion(), "iframe[src]")
+      .filter((frame) => !isCwrOwnedNode(frame));
     return frames
       .map((frame) => frame.src || "")
       .find((value) => {
@@ -1116,6 +1263,7 @@
       stored[state.submissionCatalogContext] = state.submissionCatalog
         .slice(-SUBMISSION_CATALOG_MAXIMUM)
         .map((entry) => ({
+          assignmentKey: entry.assignmentKey || assignmentKey(),
           studentKey: entry.studentKey || "",
           studentName: entry.studentName || "",
           studentSeq: entry.studentSeq || 0,
@@ -1145,6 +1293,7 @@
       if (!raw || (!raw.fileName && !raw.sourceUrl)) continue;
       const entry = {
         ...raw,
+        assignmentKey: raw.assignmentKey || assignmentKey(),
         studentName: raw.studentName || raw.studentLabel || "",
         fileName: raw.fileName || "提出物",
         kind: raw.kind || "unknown",
@@ -1165,7 +1314,7 @@
       }
       const previous = state.submissionCatalog[index];
       const merged = { ...previous, ...entry };
-      for (const field of ["studentName", "sourceUrl", "expectedFileId", "expectedName", "expectedGoogleType", "kind", "fileType", "cachedPdfUrl", "pageCount"]) {
+      for (const field of ["assignmentKey", "studentName", "sourceUrl", "expectedFileId", "expectedName", "expectedGoogleType", "kind", "fileType", "cachedPdfUrl", "pageCount"]) {
         if (!entry[field] && previous[field]) merged[field] = previous[field];
       }
       merged.fileType = fileTypeLabel(merged);
@@ -1314,32 +1463,36 @@
     studentChangedForMs = 0,
     noAttachmentForMs = 0,
     submissionStatus = "",
-    studentLabelChanged = false,
-    submissionStatusForMs = 0
+    studentLabelStableForMs = 0,
+    submissionStatusForMs = 0,
+    filePaneChanged = false,
+    filePaneStableForMs = 0
   } = {}) {
-    if (!studentChanged) return false;
-    // 未提出者では添付欄そのものが出ないことがある。URLの学生IDに加えて、
-    // 新しい学生の表示名・提出状態が一定時間安定したら切替完了とする。
-    // 表示名の変化も必須にし、前の未提出者の状態が残った一瞬を誤認しない。
-    if (
-      submissionStatus === "未提出"
-      && studentLabelChanged
-      && submissionStatusForMs >= NO_ATTACHMENT_CONFIRM_MS
-    ) return true;
+    if (!studentChanged || studentLabelStableForMs < NO_ATTACHMENT_CONFIRM_MS) return false;
+    // URLだけ先に変わった直後は前の学生のPDF・menuitemが残る。右側ファイル欄
+    // の内容が変わり、一定時間その内容が維持されるまで提出物を確定しない。
+    if (!filePaneChanged || filePaneStableForMs < NO_ATTACHMENT_CONFIRM_MS) return false;
+    // 未提出者では新しいDriveファイルIDが無いことがある。その場合も、URL・学生名・
+    // 右側の「添付なし」状態が安定したときだけ切替完了にする。
+    if (submissionStatus === "未提出") {
+      return submissionStatusForMs >= NO_ATTACHMENT_CONFIRM_MS;
+    }
     const stateKind = submissionStateKind(fileState);
-    if (!stateKind) return false;
-    if (stateKind === "no-attachment") return noAttachmentForMs >= NO_ATTACHMENT_CONFIRM_MS;
-    if (displayedFileId && displayedFileId !== previousFileId) return true;
-    if (displayedFileId && previousFileId && displayedFileId === previousFileId) return false;
-    return studentChangedForMs >= NO_ATTACHMENT_CONFIRM_MS;
+    return Boolean(stateKind) && (stateKind === "no-attachment"
+      ? noAttachmentForMs >= NO_ATTACHMENT_CONFIRM_MS
+      : Boolean(displayedFileId) && displayedFileId !== previousFileId);
   }
 
-  async function waitForSubmissionChange(previousKey, timeoutMs = 20000, previousFileId = "", previousLabel = "") {
+  async function waitForSubmissionChange(previousKey, timeoutMs = 20000, previousFileId = "", previousLabel = "", previousPaneSignature = "") {
     const startedAt = Date.now();
     let pausedMilliseconds = 0;
     let studentChangedAt = 0;
     let noAttachmentSince = 0;
     let submissionStatusSince = 0;
+    let studentLabelSince = 0;
+    let paneSince = 0;
+    let observedLabel = previousLabel;
+    let observedPane = previousPaneSignature;
     while (Date.now() - startedAt - pausedMilliseconds < timeoutMs) {
       const pauseStartedAt = Date.now();
       if (!await waitForPreparationVisibility()) return false;
@@ -1348,14 +1501,20 @@
       const currentKey = navigationStudentKey();
       const studentChanged = Boolean(currentKey) && currentKey !== previousKey;
       const currentLabel = getStudentLabel();
-      const studentLabelChanged = Boolean(currentLabel) && currentLabel !== previousLabel;
       const submissionStatus = zipStatusOf(currentLabel);
       const fileState = inspectSubmissionFile();
       if (studentChanged) {
         if (!studentChangedAt) studentChangedAt = Date.now();
-        // 未提出者には新しいDriveファイルIDや「添付ファイルはありません」が
-        // 出ない場合がある。新しい学生の表示名と未提出状態が安定した時間も測る。
-        if (submissionStatus === "未提出" && studentLabelChanged) {
+        const now = Date.now();
+        if (currentLabel && currentLabel !== observedLabel) {
+          observedLabel = currentLabel;
+          studentLabelSince = now;
+        } else if (currentLabel && !studentLabelSince) {
+          studentLabelSince = now;
+        } else if (!currentLabel) {
+          studentLabelSince = 0;
+        }
+        if (submissionStatus === "未提出") {
           if (!submissionStatusSince) submissionStatusSince = Date.now();
         } else {
           submissionStatusSince = 0;
@@ -1365,17 +1524,29 @@
         } else {
           noAttachmentSince = 0;
         }
+        const currentPane = submissionFilePaneSignature();
+        const filePaneChanged = Boolean(currentPane) && currentPane !== previousPaneSignature;
+        if (filePaneChanged && currentPane !== observedPane) {
+          observedPane = currentPane;
+          paneSince = now;
+        } else if (!filePaneChanged) {
+          paneSince = 0;
+        } else if (!paneSince) {
+          paneSince = now;
+        }
         const displayedFileId = findDisplayedFileId();
         if (submissionChangeReady({
           studentChanged,
           fileState,
           previousFileId,
           displayedFileId,
-          studentChangedForMs: Date.now() - studentChangedAt,
+          studentChangedForMs: now - studentChangedAt,
           noAttachmentForMs: noAttachmentSince ? Date.now() - noAttachmentSince : 0,
           submissionStatus,
-          studentLabelChanged,
-          submissionStatusForMs: submissionStatusSince ? Date.now() - submissionStatusSince : 0
+          studentLabelStableForMs: studentLabelSince ? now - studentLabelSince : 0,
+          submissionStatusForMs: submissionStatusSince ? now - submissionStatusSince : 0,
+          filePaneChanged,
+          filePaneStableForMs: paneSince ? now - paneSince : 0
         })) return true;
       }
       await wait(150);
@@ -2145,7 +2316,7 @@
     // すでに押した矢印の結果待ちでは、再クリックしない。遅れてDOMだけ
     // 更新された瞬間にもう一度押すと、1人飛ばしてしまうためである。
     if (transition) {
-      if (!await waitForSubmissionChange(transition.before, BACKGROUND_RETRY_MS, transition.beforeFileId, transition.beforeLabel)) {
+      if (!await waitForSubmissionChange(transition.before, BACKGROUND_RETRY_MS, transition.beforeFileId, transition.beforeLabel, transition.beforePaneSignature)) {
         return { status: "stuck", transition };
       }
       await wait(direction === "next" ? 650 : 180);
@@ -2162,9 +2333,10 @@
     // ここを確認しないと、2人目のPDFを3人目以降として繰り返し保存してしまう。
     const beforeFileId = findDisplayedFileId();
     const beforeLabel = getStudentLabel();
+    const beforePaneSignature = submissionFilePaneSignature();
     button.click();
-    const pendingTransition = { before, beforeFileId, beforeLabel };
-    if (!await waitForSubmissionChange(before, 20000, beforeFileId, beforeLabel)) {
+    const pendingTransition = { before, beforeFileId, beforeLabel, beforePaneSignature };
+    if (!await waitForSubmissionChange(before, 20000, beforeFileId, beforeLabel, beforePaneSignature)) {
       return { status: "stuck", transition: pendingTransition };
     }
     await wait(direction === "next" ? 650 : 180);
@@ -2270,6 +2442,11 @@
     state.preparing = true;
     state.dedicatedPreparation = dedicated;
     state.prepareCancelled = false;
+    // 同じ課題の作業中一覧は、一括準備を開始した回ごとに作り直す。
+    // 保存済みPDF自体は残すが、今回の巡回結果へ過去の学生・添付を混ぜない。
+    ensureSubmissionCatalogContext();
+    state.submissionCatalog = [];
+    state.catalogActiveKey = "";
     endDisplayRequest();
     removeOverlay();
     setPreparationProgress({
@@ -2355,6 +2532,20 @@
         const files = fileInfo && !fileInfo.unsupported && !fileInfo.noAttachment
           ? listSubmissionFiles(fileInfo.linkOnly ? undefined : fileInfo)
           : [];
+        if (files.length > MAX_PREPARATION_ATTACHMENTS) {
+          const studentName = studentDisplayName(getStudentLabel()) || `提出者${sequence}`;
+          const candidates = files.slice(0, MAX_PREPARATION_ATTACHMENTS + 2)
+            .map((file) => file.fileName || "名称不明")
+            .join("、");
+          throw new Error(`${studentName}から${files.length}件の添付候補を検出しました。安全のため一覧へ登録せず停止します。候補：${candidates}`);
+        }
+        const unverifiedFile = files.find((file) => file.kind !== "link" && !file.expectedFileId);
+        const unverifiedPdf = files.find((file) => file.kind === "pdf" && !file.expectedFileId);
+        if (unverifiedFile) {
+          const studentName = studentDisplayName(getStudentLabel()) || `提出者${sequence}`;
+          const type = unverifiedPdf ? "PDF" : "提出物";
+          throw new Error(`${studentName}の${type}のファイルIDを右側のファイル欄で確認できませんでした。一覧へ登録せず停止します。`);
+        }
         if (files.length) {
           const displayedIndex = Math.max(0, activeFileIndex(files));
           // 学生名だけで見分けがつかないことがあるため、提出者ごと・ファイルごとの
@@ -4102,10 +4293,12 @@
       if (getStudentKey() === targetKey) return true;
       const button = findSubmissionButton(direction);
       if (!button || submissionButtonDisabled(button)) return false;
-      const before = getStudentKey();
+      const before = navigationStudentKey();
       const beforeFileId = findDisplayedFileId();
+      const beforeLabel = getStudentLabel();
+      const beforePaneSignature = submissionFilePaneSignature();
       button.click();
-      if (!await waitForSubmissionChange(before, 8000, beforeFileId)) return false;
+      if (!await waitForSubmissionChange(before, 20000, beforeFileId, beforeLabel, beforePaneSignature)) return false;
       await waitForSubmissionFile(5000);
       state.activeFile = null;
       state.catalogActiveKey = "";
@@ -4224,12 +4417,14 @@
       setStatus(direction === "next" ? "最後の提出者です。" : "最初の提出者です。", "idle");
       return;
     }
-    const before = getStudentKey();
+    const before = navigationStudentKey();
     const beforeFileId = findDisplayedFileId();
+    const beforeLabel = getStudentLabel();
+    const beforePaneSignature = submissionFilePaneSignature();
     setStatus(direction === "next" ? "次の提出者へ移動しています…" : "前の提出者へ移動しています…", "working");
     state.fileSwitching = false;
     button.click();
-    if (!await waitForSubmissionChange(before, 8000, beforeFileId)) {
+    if (!await waitForSubmissionChange(before, 20000, beforeFileId, beforeLabel, beforePaneSignature)) {
       setStatus("提出者を切り替えられませんでした。Classroomを再読み込みしてください。", "error");
       return;
     }
