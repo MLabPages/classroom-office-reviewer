@@ -14,7 +14,9 @@ assert(content.includes('window.addEventListener("pageshow", handlePreparationVi
 assert(content.includes('if (!state.preparing && !state.remotePreparing)'));
 assert(content.includes('if (status === "stuck" && (transition || result.transition)) return "stuck";'));
 assert(!content.includes('retries > BACKGROUND_RETRY_BEFORE_STALLED && retries % 3 === 0'));
-assert(content.includes('title="パネルをドラッグして移動" aria-label="パネルをドラッグして移動">ドラッグで移動</button>'));
+assert(content.includes('title="パネルをドラッグして移動" aria-label="パネルをドラッグして移動"><svg'));
+assert(content.includes('<button id="cwr-preparation-compact" type="button" aria-pressed="false">小さく表示</button>'));
+assert(content.includes('compactButton.textContent = state.preparationCompact ? "展開" : "最小化";'));
 assert(!content.includes('id="cwr-preparation-drag" type="button" title="ドラッグして位置を変える"'));
 assert(css.includes("#cwr-preparation-drag"));
 assert(css.includes("cursor: grab"));
