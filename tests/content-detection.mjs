@@ -412,6 +412,69 @@ assert.deepEqual(
   [firstFile, secondFile]
 );
 
+// Classroomが同じrole=menu内に過去学生の項目を残しても、現在右側に
+// 見えている添付カードと一致する2件だけを採用する。
+const reusedMenu = new MockElement({ attributes: { role: "menu" } });
+const leakedOldItem1 = new MockElement({
+  text: "PDF: No.11人目 24_9033 篠原レポート.pdf",
+  attributes: { role: "menuitem", tabindex: "-1" },
+  rect: { width: 0, height: 0, top: 0 }
+});
+const leakedOldItem2 = new MockElement({
+  text: "PDF: 5：期末レポート.pdf",
+  attributes: { role: "menuitem", tabindex: "-1" },
+  rect: { width: 0, height: 0, top: 0 }
+});
+const currentPdf1 = "621569829593678559_スポーツ分析.pdf";
+const currentPdf2 = "marketing_6_0_analysis.pdf";
+const currentReusedItem1 = new MockElement({
+  text: `PDF: ${currentPdf1}`,
+  attributes: { role: "menuitem", tabindex: "-1" },
+  rect: { width: 0, height: 0, top: 0 }
+});
+const currentReusedItem2 = new MockElement({
+  text: `PDF: ${currentPdf2}`,
+  attributes: { role: "menuitem", tabindex: "0" },
+  rect: { width: 0, height: 0, top: 0 }
+});
+for (const item of [leakedOldItem1, leakedOldItem2, currentReusedItem1, currentReusedItem2]) {
+  item.parentElement = reusedMenu;
+}
+const currentVisibleCard1 = new MockElement({
+  text: currentPdf1,
+  href: "https://drive.google.com/file/d/1CURRENTVISIBLEPDF111111111111111/view"
+});
+const currentVisibleCard2 = new MockElement({
+  text: currentPdf2,
+  href: "https://drive.google.com/file/d/1CURRENTVISIBLEPDF222222222222222/view"
+});
+const staleHiddenDriveLink = new MockElement({
+  text: "5：期末レポート.pdf",
+  href: "https://drive.google.com/file/d/1STALEHIDDENDRIVELINK111111111111/view",
+  rect: { width: 0, height: 0, top: 0 }
+});
+const reusedMenuHooks = runDetection({
+  nodes: [
+    leakedOldItem1,
+    leakedOldItem2,
+    currentReusedItem1,
+    currentReusedItem2,
+    currentVisibleCard1,
+    currentVisibleCard2,
+    staleHiddenDriveLink,
+    new MockElement({ attributes: { "aria-label": "次の学生を選択" }, rect: { width: 44, height: 44, top: 100 } })
+  ],
+  frames: [new MockElement({ src: "https://docs.google.com/file/d/1CURRENTVISIBLEPDF222222222222222/grading" })]
+});
+assert.deepEqual(
+  plain(reusedMenuHooks.listSubmissionFiles().map((item) => item.fileName)),
+  [currentPdf1, currentPdf2]
+);
+assert.deepEqual(
+  plain(reusedMenuHooks.visibleSubmissionAttachmentHints().map((item) => item.fileName)),
+  [currentPdf1, currentPdf2]
+);
+
 // 添付リンクを1件も拾えなくても、従来どおり表示中の1件は準備できる。
 const singleHooks = runDetection({
   nodes: [
