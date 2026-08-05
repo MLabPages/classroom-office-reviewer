@@ -20,24 +20,7 @@ jobs:
         run: |
           set -o pipefail
           {
-            python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("tools/one_time_fix_stale_attachment_leak.py")
-          text = path.read_text(encoding="utf-8")
-          old = '      if (matchedVisibleItems.length) return matchedVisibleItems;'
-          new = '''      const selectedVisibleItem = matchedVisibleItems.some((node) => [
-        node.getAttribute("aria-selected"),
-        node.getAttribute("aria-current"),
-        node.getAttribute("data-selected")
-      ].some((value) => value === "true") || node.getAttribute("tabindex") === "0");
-      if (matchedVisibleItems.length >= 2 || (matchedVisibleItems.length === 1 && selectedVisibleItem)) {
-        return matchedVisibleItems;
-      }'''
-          if text.count(old) != 1:
-              raise SystemExit(f"generator refinement: expected 1 match, found {text.count(old)}")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
-          PY
+            python3 tools/one_time_refine_stale_attachment_patch.py
             python3 tools/one_time_fix_stale_attachment_leak.py
           } 2>&1 | tee /tmp/crw-stale-attachment-fix.log
 
@@ -55,6 +38,7 @@ jobs:
       - name: Commit verified fix
         shell: bash
         run: |
+          rm tools/one_time_refine_stale_attachment_patch.py
           rm tools/one_time_fix_stale_attachment_leak.py
           rm .github/workflows/one-time-fix-stale-attachment-leak.yml
           git config user.name "github-actions[bot]"
