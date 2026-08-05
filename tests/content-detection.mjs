@@ -613,6 +613,25 @@ assert.equal(noAttachmentWithoutNavigationHooks.submissionStateKind({ noAttachme
 assert.equal(noAttachmentWithoutNavigationHooks.submissionStateKind({ kind: "office" }), "attachment");
 assert.equal(noAttachmentWithoutNavigationHooks.submissionStateKind({ waiting: true }), "");
 
+// 学生移動はファイル状態ではなく、URL由来の学生キーの変化だけで判定する。
+assert.equal(noAttachmentWithoutNavigationHooks.studentNavigationChanged("u:student-a", "u:student-b"), true);
+assert.equal(noAttachmentWithoutNavigationHooks.studentNavigationChanged("u:student-a", "u:student-a"), false);
+assert.equal(noAttachmentWithoutNavigationHooks.studentNavigationChanged("u:student-a", ""), false);
+
+// 次の学生へ移動した直後に前のPDF iframeが残っている場合は、まだ新しい提出物としない。
+const stalePreviousPdfId = "1STALEPREVIOUSPDFID123456789012345";
+const stalePreviousPdfHooks = runDetection({
+  frames: [new MockElement({ src: `https://docs.google.com/file/d/${stalePreviousPdfId}/grading` })]
+});
+assert.equal(
+  stalePreviousPdfHooks.submissionFileStillPrevious(stalePreviousPdfId, { kind: "pdf", expectedFileId: stalePreviousPdfId }),
+  true
+);
+assert.equal(
+  stalePreviousPdfHooks.submissionFileStillPrevious("1OTHERPREVIOUSPDFID12345678901234", { kind: "pdf", expectedFileId: stalePreviousPdfId }),
+  false
+);
+
 // 学生の識別情報の変化を先に確認する。ファイルIDが無いことだけでは切替成功にしない。
 assert.equal(
   noAttachmentWithoutNavigationHooks.submissionChangeReady({
