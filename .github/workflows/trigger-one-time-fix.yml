@@ -18,3 +18,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run fix-bulk-preparation-unsubmitted.yml --repo "${{ github.repository }}"
+
+# trigger: 2026-08-05
