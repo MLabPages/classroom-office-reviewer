@@ -40,4 +40,11 @@ if count != 1:
     raise SystemExit(f"hidden link refinement: expected 1 match, found {count}")
 text = text.replace(old_link_filter, new_link_filter, 1)
 
+old_final_guard = '      if (!isMenuItem && !visible(node)) continue;'
+new_final_guard = '      if (!isMenuItem && !visible(node) && !allowUnscopedHiddenDriveLinks) continue;'
+count = text.count(old_final_guard)
+if count != 1:
+    raise SystemExit(f"final visibility guard refinement: expected 1 match, found {count}")
+text = text.replace(old_final_guard, new_final_guard, 1)
+
 path.write_text(text, encoding="utf-8")
