@@ -52,7 +52,9 @@
         "bulk-zip-core.js",
         "zip-writer.js",
         "vendor/pdf.mjs",
-        "vendor/pdf.worker.mjs"
+        "vendor/pdf.worker.mjs",
+        "vendor/cmaps/*",
+        "vendor/standard_fonts/*"
       ],
       "matches": [
         "https://classroom.google.com/*"

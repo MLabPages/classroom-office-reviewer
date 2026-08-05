@@ -21,6 +21,8 @@ const [manifestText, background, content, viewer, viewerHtml, server, start, sto
   read("extension/zip-writer.js")
 ]);
 
+await import("./pdfjs-fonts.mjs");
+
 const manifest = JSON.parse(manifestText);
 assert.equal(manifest.version, expectedVersion);
 assert.equal(typeof manifest.key, "string");
@@ -135,6 +137,9 @@ assert(content.includes("cachedPdfUrl"));
 assert(content.includes('event.data?.type === "cwr-select-submission"'));
 assert(content.includes("function openExternalSubmission"));
 assert(viewer.includes('loadPdf(pdfUrl, fileName, params.get("pages")).catch(showError);'));
+assert(viewer.includes('const cMapUrl = chrome.runtime.getURL("vendor/cmaps/");'));
+assert(viewer.includes('const standardFontDataUrl = chrome.runtime.getURL("vendor/standard_fonts/");'));
+assert(viewer.includes("cMapPacked: true"));
 assert(/\r?\n}\r?\nloadPdf\(pdfUrl, fileName, params\.get\("pages"\)\)/.test(viewer));
 assert(server.includes(`const port = ${expectedPort};`));
 assert(server.includes("version: appVersion"));
