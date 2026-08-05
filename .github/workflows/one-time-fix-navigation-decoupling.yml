@@ -1,0 +1,64 @@
+name: One-time fix navigation decoupling
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  patch-and-verify:
+    if: github.event.issue.title == '[crw-maintenance] decouple navigation from file loading'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch navigation and PDF handling
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 tools/one_time_fix_navigation_decoupling.py 2>&1 | tee /tmp/crw-navigation-fix.log
+
+      - name: Verify syntax and tests
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            node --check extension/content.js
+            node tests/content-detection.mjs
+            node tests/bulk-preparation-flow.mjs
+            node tests/validate-release.mjs
+          } 2>&1 | tee -a /tmp/crw-navigation-fix.log
+
+      - name: Commit verified fix
+        shell: bash
+        run: |
+          rm tools/one_time_fix_navigation_decoupling.py
+          rm .github/workflows/one-time-fix-navigation-decoupling.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Decouple student navigation from file loading"
+          git push origin HEAD:main
+          echo "FIX_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Report success
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue comment "${{ github.event.issue.number }}" --repo "${{ github.repository }}" --body "学生移動とファイル読み込みの分離、背面継続、PDF直登録の修正とテストが完了し、mainへ反映しました。Commit: $FIX_COMMIT"
+          gh issue close "${{ github.event.issue.number }}" --repo "${{ github.repository }}" --reason completed
+
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          LOG=$(tail -c 8000 /tmp/crw-navigation-fix.log 2>/dev/null || echo "ログを取得できませんでした。")
+          BODY=$(printf '自動修正またはテストに失敗したため、コード本体はmainへ反映していません。\n\n```text\n%s\n```' "$LOG")
+          gh issue comment "${{ github.event.issue.number }}" --repo "${{ github.repository }}" --body "$BODY"
