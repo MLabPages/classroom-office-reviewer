@@ -24,7 +24,28 @@ async function fetchWithTimeout(url, init, timeoutMs, timeoutMessage) {
   }
 }
 
+let nativePort = null;
+let nativePortConnecting = false;
+
+function ensureNativeHost() {
+  if (nativePort || nativePortConnecting) return;
+  nativePortConnecting = true;
+  try {
+    nativePort = chrome.runtime.connectNative("com.mlabpages.classroom_reviewer");
+    nativePort.onDisconnect.addListener(() => {
+      nativePort = null;
+      nativePortConnecting = false;
+    });
+    nativePort.onMessage.addListener(() => {});
+  } catch (e) {
+    nativePort = null;
+  } finally {
+    nativePortConnecting = false;
+  }
+}
+
 async function helperHealth() {
+  ensureNativeHost();
   const response = await fetchWithTimeout(
     `${HELPER_BASE}/health`,
     { cache: "no-store" },

@@ -41,7 +41,7 @@ class MockElement {
   }
 }
 
-function runDetection({ nodes = [], frames = [], href, runtimeId = "test-extension-id", storageBroken = false } = {}) {
+function runDetection({ nodes = [], frames = [], href, runtimeId = "test-extension-id", storageBroken = false, visibilityState = "visible", hidden = false, hasFocus = true } = {}) {
   const hooks = {};
   const location = {
     hostname: "classroom.google.com",
@@ -50,6 +50,9 @@ function runDetection({ nodes = [], frames = [], href, runtimeId = "test-extensi
   const window = {};
   window.top = window;
   const document = {
+    visibilityState,
+    hidden,
+    hasFocus: () => hasFocus,
     querySelector: () => null,
     querySelectorAll(selector) {
       if (selector === "iframe[src]") return frames;
@@ -127,6 +130,18 @@ assert.deepEqual(
   }
 );
 assert.equal(googleHooks.describeDocument().googleType, "document");
+
+const hiddenPreparationHooks = runDetection({ visibilityState: "hidden", hidden: true, hasFocus: false });
+assert.deepEqual(JSON.parse(JSON.stringify(hiddenPreparationHooks.preparationDocumentState())), {
+  visibilityState: "hidden",
+  hidden: true,
+  hasFocus: false
+});
+assert.equal(hiddenPreparationHooks.preparationDocumentVisible(), false);
+// 別ウィンドウを前面にしただけの hasFocus() false は、タブの背景化とは
+// 異なるため、Classroomタブ自体がvisibleなら待機させない。
+const visibleUnfocusedPreparationHooks = runDetection({ visibilityState: "visible", hidden: false, hasFocus: false });
+assert.equal(visibleUnfocusedPreparationHooks.preparationDocumentVisible(), true);
 
 // Googleドキュメントのラベルは、アイコン用の見えない文字が前に付くことや、
 // 名前が2回続けて出ることがある（Officeのdocxdocxと同様の重複表示）。

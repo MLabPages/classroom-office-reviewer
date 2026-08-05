@@ -31,7 +31,7 @@ Word／PowerPointはPC上のMicrosoft OfficeでPDFに変換し、Googleドキュ
 
 1. [最新版の配布ページ](https://github.com/MLabPages/classroom-office-reviewer/releases/latest)から `Classroom-Office-Reviewer-Windows.zip` をダウンロードします。
 2. ZIPを右クリックして「すべて展開」します。ZIPの中から直接起動しないでください。
-3. 展開先の `Start-Reviewer.cmd` をダブルクリックします。
+3. 展開先の `Start-Reviewer.cmd` または Chrome連動で自動起動するための `Install-NativeHost.cmd` をダブルクリックします。
 4. `Open-Chrome-Setup.cmd` をダブルクリックします。
 5. 開いたChrome画面で右上の「デベロッパー モード」をオンにします。
 6. 「パッケージ化されていない拡張機能を読み込む」を押し、`extension` フォルダを選びます。
@@ -161,3 +161,5 @@ ZIPの生成には**外部ライブラリを追加していません**。ブラ�
 ## ライセンス
 
 本体コードは[MIT License](LICENSE)です。PDF.jsはApache License 2.0で、ライセンス本文を `extension/vendor/pdfjs-LICENSE.txt` に同梱しています。その他の同梱物は[第三者ライセンス](THIRD_PARTY_NOTICES.md)をご確認ください。
+
+

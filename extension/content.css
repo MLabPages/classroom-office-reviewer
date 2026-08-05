@@ -313,6 +313,29 @@
   cursor: pointer;
 }
 
+#cwr-preparation-drag {
+  flex: 0 0 auto;
+  border: 0;
+  padding: 4px 2px;
+  color: #bdc1c6;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: grab;
+  appearance: none;
+}
+
+#cwr-preparation-drag:hover,
+#cwr-preparation-drag:focus-visible {
+  color: #e8eaed;
+  outline: 2px solid #8ab4f8;
+  outline-offset: 2px;
+}
+
+#cwr-preparation.cwr-preparation-dragging #cwr-preparation-drag {
+  cursor: grabbing;
+}
+
 #cwr-preparation-spinner {
   flex: 0 0 auto;
   width: 22px;
@@ -581,6 +604,13 @@
   margin: 0;
 }
 
+#cwr-preparation.cwr-preparation-compact #cwr-preparation-drag {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: start;
+  margin: 0;
+}
+
 #cwr-preparation.cwr-preparation-compact #cwr-preparation-detail,
 #cwr-preparation.cwr-preparation-compact #cwr-preparation-note,
 #cwr-preparation.cwr-preparation-compact #cwr-preparation-ledger-wrap {
@@ -593,8 +623,9 @@
   display: none;
 }
 
-/* 止まっているときの案内だけは、小さく表示していても隠さない。 */
-#cwr-preparation.cwr-preparation-compact.cwr-preparation-stalled #cwr-preparation-note {
+/* 停止中・一時停止中の案内だけは、小さく表示していても隠さない。 */
+#cwr-preparation.cwr-preparation-compact.cwr-preparation-stalled #cwr-preparation-note,
+#cwr-preparation.cwr-preparation-compact.cwr-preparation-paused #cwr-preparation-note {
   display: block;
   margin-bottom: 10px;
 }
