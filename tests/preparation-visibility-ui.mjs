@@ -21,5 +21,7 @@ assert(!content.includes('id="cwr-preparation-drag" type="button" title="ドラ�
 assert(css.includes("#cwr-preparation-drag"));
 assert(css.includes("cursor: grab"));
 assert(css.includes("cwr-preparation-paused"));
+assert(css.includes("width: max-content;"));
+assert(css.includes("justify-self: end;"));
 
 console.log("Bulk preparation pauses safely in hidden tabs and the compact drag control has an explicit label.");
