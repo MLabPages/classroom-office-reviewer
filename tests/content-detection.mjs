@@ -14,6 +14,9 @@ class MockElement {
     this.hidden = hidden;
     this.parentElement = null;
     this.children = children;
+    for (const child of children) {
+      if (!child.parentElement) child.parentElement = this;
+    }
   }
 
   getAttribute(name) {
@@ -25,10 +28,37 @@ class MockElement {
   }
 
   matches(selector) {
-    if (selector === "a[href]") return Boolean(this.href);
-    const roleMatch = selector.match(/^\[role=['"]?([\w-]+)['"]?\]$/);
-    if (roleMatch) return this.getAttribute("role") === roleMatch[1];
-    return false;
+    return selector.split(",").some((part) => {
+      const value = part.trim();
+      if (value === "a[href]") return Boolean(this.href);
+      if (value === "iframe[src]") return Boolean(this.src);
+      if (/^(?:a|iframe|button|div|span|p)$/.test(value)) return value === (this.src ? "iframe" : this.href ? "a" : "div");
+      if (value === "#cwr-overlay") return this.getAttribute("id") === "cwr-overlay";
+      const attributeMatch = value.match(/^\[([\w-]+)(?:([*^$|~]?=)['"]?([^\]'"]+)['"]?)?\]$/);
+      if (attributeMatch) {
+        const actual = this.getAttribute(attributeMatch[1]);
+        if (actual === null) return false;
+        if (!attributeMatch[2]) return true;
+        const expected = attributeMatch[3];
+        if (attributeMatch[2] === "*=") return actual.includes(expected);
+        if (attributeMatch[2] === "=") return actual === expected;
+        if (attributeMatch[2] === "^=") return actual.startsWith(expected);
+        return false;
+      }
+      return false;
+    });
+  }
+
+  querySelectorAll(selector) {
+    const descendants = [];
+    for (const child of this.children || []) {
+      descendants.push(child, ...child.querySelectorAll(selector));
+    }
+    return descendants.filter((node) => node.matches(selector));
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
   }
 
   closest(selector) {
@@ -47,16 +77,24 @@ function runDetection({ nodes = [], frames = [], href, runtimeId = "test-extensi
     hostname: "classroom.google.com",
     href: href || "https://classroom.google.com/u/5/g/tg/course/work#u=student&t=f"
   };
+  const fileRegion = new MockElement({
+    attributes: { "data-testid": "submission-files", role: "region" },
+    children: [...nodes, ...frames]
+  });
+  const body = new MockElement({ children: [fileRegion] });
+  fileRegion.parentElement = body;
   const window = {};
   window.top = window;
   const document = {
     visibilityState,
     hidden,
+    body,
     hasFocus: () => hasFocus,
     querySelector: () => null,
     querySelectorAll(selector) {
       if (selector === "iframe[src]") return frames;
       if (selector === "a[href], iframe[src]") return frames;
+      if (selector.includes("data-testid") || selector.includes("role='region'") || selector.includes("aria-label*='提出'")) return [fileRegion];
       return nodes;
     }
   };
@@ -271,7 +309,12 @@ assert.equal(mixedAttachments[1].sourceUrl, `https://docs.google.com/presentatio
 assert.equal(mixedHooks.fileTypeLabel({ kind: "office", fileName: "report.docx" }), "Word");
 assert.equal(mixedHooks.fileTypeLabel({ kind: "google-presentation", fileName: "slides" }), "Googleスライド");
 assert.equal(mixedHooks.fileTypeLabel({ kind: "unknown", fileName: "集計表.xlsx" }), "XLSX");
-assert.equal(mixedHooks.submissionCatalogKey({ studentKey: "u:student", expectedFileId: mixedDocumentId }), `u:student|${mixedDocumentId}`);
+assert.equal(mixedHooks.submissionCatalogKey({ studentKey: "u:student", expectedFileId: mixedDocumentId }), `https://classroom.google.com/u/*/g/tg/course/work|u:student|${mixedDocumentId}`);
+const longRunKeys = Array.from({ length: 200 }, (_, index) => mixedHooks.submissionCatalogKey({
+  studentKey: `u:student-${index}`,
+  expectedFileId: `1FILE${String(index).padStart(34, "0")}`
+}));
+assert.equal(new Set(longRunKeys).size, 200, "200人巡回でも学生ごとの一覧キーが重複しない");
 
 // Classroomがリンクを出さず、role=menuitemだけでファイルを並べる場合も拾う。
 const menuOnlyHooks = runDetection({
@@ -421,6 +464,15 @@ const singleHooks = runDetection({
 });
 assert.deepEqual(plain(singleHooks.findSubmissionAttachments()), []);
 assert.deepEqual(plain(singleHooks.listSubmissionFiles().map((item) => item.fileName)), [firstFile]);
+
+// CRW自身のビューアー／一覧に残るリンクは、提出物として数えない。
+const cwrOwnedLink = new MockElement({
+  text: "過去学生の表示.pdf",
+  href: "https://drive.google.com/file/d/1CWRVIEWER000000000000000000000000/view"
+});
+const cwrOverlay = new MockElement({ attributes: { id: "cwr-overlay" }, children: [cwrOwnedLink] });
+const cwrOwnedHooks = runDetection({ nodes: [cwrOverlay] });
+assert.deepEqual(plain(cwrOwnedHooks.findSubmissionAttachments()), []);
 
 // 提出者の見分けは、描画待ちで揺れる画面上の名前ではなくURLの #u= を使う。
 // これがずれると、変換したPDFが「別の提出者のもの」と誤判定されて捨てられる。
@@ -624,13 +676,31 @@ assert.equal(
   false,
   "学生が変わっていない添付なし表示は切替完了にしない"
 );
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: { kind: "pdf" },
+    previousFileId: "previous-drive-file",
+    displayedFileId: "new-drive-file",
+    studentLabelStableForMs: 2000,
+    filePaneChanged: false,
+    filePaneStableForMs: 2000
+  }),
+  false,
+  "URLや新しいiframeだけでは、右側ファイル欄が更新されるまで収集しない"
+);
 // 提出済み -> 未提出：前の学生だけがファイルIDを持つ場合。
 assert.equal(
   noAttachmentWithoutNavigationHooks.submissionChangeReady({
     studentChanged: true,
     fileState: { noAttachment: true },
     previousFileId: "previous-drive-file",
-    noAttachmentForMs: 1500
+    noAttachmentForMs: 1500,
+    submissionStatus: "未提出",
+    submissionStatusForMs: 1500,
+    studentLabelStableForMs: 1500,
+    filePaneChanged: true,
+    filePaneStableForMs: 1500
   }),
   true,
   "提出済み学生から未提出者へ移るときは、新しいファイルIDが無くても切替完了にする"
@@ -640,7 +710,12 @@ assert.equal(
     studentChanged: true,
     fileState: { noAttachment: true },
     previousFileId: "previous-drive-file",
-    noAttachmentForMs: 1499
+    noAttachmentForMs: 1499,
+    submissionStatus: "未提出",
+    submissionStatusForMs: 1499,
+    studentLabelStableForMs: 1500,
+    filePaneChanged: true,
+    filePaneStableForMs: 1500
   }),
   false,
   "添付なし表示は短時間の描画途中では確定しない"
@@ -651,7 +726,10 @@ assert.equal(
     studentChanged: true,
     fileState: { kind: "office" },
     previousFileId: "",
-    displayedFileId: "new-drive-file"
+    displayedFileId: "new-drive-file",
+    studentLabelStableForMs: 1500,
+    filePaneChanged: true,
+    filePaneStableForMs: 1500
   }),
   true
 );
@@ -660,7 +738,12 @@ assert.equal(
   noAttachmentWithoutNavigationHooks.submissionChangeReady({
     studentChanged: true,
     fileState: { noAttachment: true },
-    noAttachmentForMs: 1500
+    noAttachmentForMs: 1500,
+    submissionStatus: "未提出",
+    submissionStatusForMs: 1500,
+    studentLabelStableForMs: 1500,
+    filePaneChanged: true,
+    filePaneStableForMs: 1500
   }),
   true
 );
@@ -671,7 +754,10 @@ assert.equal(
     studentChanged: true,
     fileState: { noAttachment: true },
     previousFileId: "previous-drive-file",
-    noAttachmentForMs: 1500
+    noAttachmentForMs: 1500,
+    studentLabelStableForMs: 1500,
+    filePaneChanged: true,
+    filePaneStableForMs: 1500
   }),
   true
 );
@@ -683,8 +769,10 @@ assert.equal(
     studentChanged: true,
     fileState: null,
     submissionStatus: "未提出",
-    studentLabelChanged: true,
-    submissionStatusForMs: 1500
+    studentLabelStableForMs: 1500,
+    submissionStatusForMs: 1500,
+    filePaneChanged: true,
+    filePaneStableForMs: 1500
   }),
   true
 );
@@ -693,8 +781,10 @@ assert.equal(
     studentChanged: true,
     fileState: null,
     submissionStatus: "未提出",
-    studentLabelChanged: false,
-    submissionStatusForMs: 2000
+    studentLabelStableForMs: 2000,
+    submissionStatusForMs: 2000,
+    filePaneChanged: false,
+    filePaneStableForMs: 2000
   }),
   false,
   "前の未提出者の表示が残っている間は切替完了にしない"
@@ -704,8 +794,10 @@ assert.equal(
     studentChanged: true,
     fileState: null,
     submissionStatus: "未提出",
-    studentLabelChanged: true,
-    submissionStatusForMs: 1499
+    studentLabelStableForMs: 1499,
+    submissionStatusForMs: 1499,
+    filePaneChanged: true,
+    filePaneStableForMs: 1499
   }),
   false,
   "未提出状態も一定時間安定するまで確定しない"
