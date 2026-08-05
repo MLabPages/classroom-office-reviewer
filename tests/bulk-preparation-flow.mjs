@@ -50,4 +50,16 @@ assert.match(content, /if \(!state\.prepareCancelled && !\["end", "limit"\]\.inc
 assert.match(content, /人目まで確認しました。現在位置から再開してください/);
 assert.match(content, /if \(moved !== "moved"\) \{\s*stopReason = moved;/s);
 
-console.log("8件の一括準備・キャッシュ・先読み・排他テストに合格しました。");
+// テスト9：未提出ステータスだけの画面でも切替完了にし、クリック後の遷移を再確認する。
+assert.match(content, /"割り当て済み", "不足", "未提出"/);
+assert.match(content, /\["割り当て済み", "不足", "Assigned", "Missing", "未提出"\]/);
+assert.match(content, /submissionStatus === "未提出"/);
+assert.match(content, /studentLabelChanged/);
+assert.match(content, /submissionStatusForMs >= NO_ATTACHMENT_CONFIRM_MS/);
+assert.match(content, /transition\.beforeLabel/);
+assert.match(content, /const beforeLabel = getStudentLabel\(\);/);
+assert.match(content, /const transitionRetry = Boolean\(transition\);/);
+assert.doesNotMatch(content, /if \(status === "stuck" && \(transition \|\| result\.transition\)\) return "stuck";/);
+assert.match(content, /次の学生への画面切替を確認できませんでした/);
+
+console.log("9件の一括準備・キャッシュ・先読み・排他・未提出遷移テストに合格しました。");

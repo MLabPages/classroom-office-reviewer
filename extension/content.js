@@ -28,7 +28,7 @@
   const noAttachmentProbe = { checkedAt: 0, result: false };
   // 一括ZIPダウンロードで使う語句。提出者切替欄の表記から提出状態を読み取る。
   const ZIP_STATUS_WORDS = [
-    "提出済み", "遅れて提出", "提出期限後に提出", "返却済み", "採点済み", "下書き", "割り当て済み", "未提出",
+    "提出済み", "遅れて提出", "提出期限後に提出", "返却済み", "採点済み", "下書き", "割り当て済み", "不足", "未提出",
     "Turned in", "Done late", "Returned", "Graded", "Draft", "Assigned", "Missing"
   ];
   // 提出物を探しに行く価値がある状態。未提出の学生で待たないための判断に使う。
@@ -1312,9 +1312,20 @@
     previousFileId = "",
     displayedFileId = "",
     studentChangedForMs = 0,
-    noAttachmentForMs = 0
+    noAttachmentForMs = 0,
+    submissionStatus = "",
+    studentLabelChanged = false,
+    submissionStatusForMs = 0
   } = {}) {
     if (!studentChanged) return false;
+    // 未提出者では添付欄そのものが出ないことがある。URLの学生IDに加えて、
+    // 新しい学生の表示名・提出状態が一定時間安定したら切替完了とする。
+    // 表示名の変化も必須にし、前の未提出者の状態が残った一瞬を誤認しない。
+    if (
+      submissionStatus === "未提出"
+      && studentLabelChanged
+      && submissionStatusForMs >= NO_ATTACHMENT_CONFIRM_MS
+    ) return true;
     const stateKind = submissionStateKind(fileState);
     if (!stateKind) return false;
     if (stateKind === "no-attachment") return noAttachmentForMs >= NO_ATTACHMENT_CONFIRM_MS;
@@ -1323,11 +1334,12 @@
     return studentChangedForMs >= NO_ATTACHMENT_CONFIRM_MS;
   }
 
-  async function waitForSubmissionChange(previousKey, timeoutMs = 20000, previousFileId = "") {
+  async function waitForSubmissionChange(previousKey, timeoutMs = 20000, previousFileId = "", previousLabel = "") {
     const startedAt = Date.now();
     let pausedMilliseconds = 0;
     let studentChangedAt = 0;
     let noAttachmentSince = 0;
+    let submissionStatusSince = 0;
     while (Date.now() - startedAt - pausedMilliseconds < timeoutMs) {
       const pauseStartedAt = Date.now();
       if (!await waitForPreparationVisibility()) return false;
@@ -1335,12 +1347,19 @@
       if (Date.now() - startedAt - pausedMilliseconds >= timeoutMs) return false;
       const currentKey = navigationStudentKey();
       const studentChanged = Boolean(currentKey) && currentKey !== previousKey;
+      const currentLabel = getStudentLabel();
+      const studentLabelChanged = Boolean(currentLabel) && currentLabel !== previousLabel;
+      const submissionStatus = zipStatusOf(currentLabel);
       const fileState = inspectSubmissionFile();
       if (studentChanged) {
         if (!studentChangedAt) studentChangedAt = Date.now();
-        // 未提出者には新しいDriveファイルIDが存在しない。直前の提出済み学生の
-        // ファイルIDと違うことを待つと必ずタイムアウトするため、「添付なし」の
-        // 表示が一定時間続いた時点で学生切替は完了したものとして次へ進める。
+        // 未提出者には新しいDriveファイルIDや「添付ファイルはありません」が
+        // 出ない場合がある。新しい学生の表示名と未提出状態が安定した時間も測る。
+        if (submissionStatus === "未提出" && studentLabelChanged) {
+          if (!submissionStatusSince) submissionStatusSince = Date.now();
+        } else {
+          submissionStatusSince = 0;
+        }
         if (fileState?.noAttachment === true) {
           if (!noAttachmentSince) noAttachmentSince = Date.now();
         } else {
@@ -1353,7 +1372,10 @@
           previousFileId,
           displayedFileId,
           studentChangedForMs: Date.now() - studentChangedAt,
-          noAttachmentForMs: noAttachmentSince ? Date.now() - noAttachmentSince : 0
+          noAttachmentForMs: noAttachmentSince ? Date.now() - noAttachmentSince : 0,
+          submissionStatus,
+          studentLabelChanged,
+          submissionStatusForMs: submissionStatusSince ? Date.now() - submissionStatusSince : 0
         })) return true;
       }
       await wait(150);
@@ -2123,7 +2145,7 @@
     // すでに押した矢印の結果待ちでは、再クリックしない。遅れてDOMだけ
     // 更新された瞬間にもう一度押すと、1人飛ばしてしまうためである。
     if (transition) {
-      if (!await waitForSubmissionChange(transition.before, BACKGROUND_RETRY_MS, transition.beforeFileId)) {
+      if (!await waitForSubmissionChange(transition.before, BACKGROUND_RETRY_MS, transition.beforeFileId, transition.beforeLabel)) {
         return { status: "stuck", transition };
       }
       await wait(direction === "next" ? 650 : 180);
@@ -2139,9 +2161,10 @@
     // URLを先に更新し、数秒間は前の学生のファイルを表示し続けることがある。
     // ここを確認しないと、2人目のPDFを3人目以降として繰り返し保存してしまう。
     const beforeFileId = findDisplayedFileId();
+    const beforeLabel = getStudentLabel();
     button.click();
-    const pendingTransition = { before, beforeFileId };
-    if (!await waitForSubmissionChange(before, 20000, beforeFileId)) {
+    const pendingTransition = { before, beforeFileId, beforeLabel };
+    if (!await waitForSubmissionChange(before, 20000, beforeFileId, beforeLabel)) {
       return { status: "stuck", transition: pendingTransition };
     }
     await wait(direction === "next" ? 650 : 180);
@@ -2168,23 +2191,29 @@
         return status;
       }
 
-      // クリック済みの遷移は、Classroomが遅れて更新する可能性があるため
-      // そのまま保持する。遷移情報を捨てて同じ矢印を押し直すと、復帰時に
-      // 学生を1人飛ばすため、確認に失敗した時点で安全に止める。
-      if (status === "stuck" && (transition || result.transition)) return "stuck";
-      transition = result.transition || null;
+      // クリック済みなら矢印は押し直さず、同じ遷移を複数回確認する。
+      // 未提出者はClassroomの描画が遅いことがあり、最初の20秒だけで止めない。
+      transition = result.transition || transition || null;
       retries += 1;
+      const transitionRetry = Boolean(transition);
+      const retryLimit = transitionRetry
+        ? BACKGROUND_RETRY_BEFORE_STALLED
+        : BACKGROUND_RETRY_BEFORE_STALLED + 1;
+      if (retries >= retryLimit) return transitionRetry ? "stuck" : status;
       const stalled = retries > BACKGROUND_RETRY_BEFORE_STALLED;
       setPreparationProgress({
         delayed: !stalled && document.hidden,
         stalled,
-        detailText: stalled
-          ? "Classroomの画面更新を待っています。正しい学生・ファイルを確認するため、30秒後に自動で再試行します。"
-          : document.hidden
-            ? `背面で画面更新を待っています（${retries}/${BACKGROUND_RETRY_BEFORE_STALLED}回目の自動再試行）。`
-            : `画面更新を確認中です（${retries}/${BACKGROUND_RETRY_BEFORE_STALLED}回目の自動再試行）。`
+        detailText: transitionRetry
+          ? `切り替え済みの学生画面を再確認しています（${retries}/${retryLimit - 1}回目）。`
+          : stalled
+            ? "Classroomの画面更新を待っています。正しい学生・ファイルを確認するため、30秒後に自動で再試行します。"
+            : document.hidden
+              ? `背面で画面更新を待っています（${retries}/${BACKGROUND_RETRY_BEFORE_STALLED}回目の自動再試行）。`
+              : `画面更新を確認中です（${retries}/${BACKGROUND_RETRY_BEFORE_STALLED}回目の自動再試行）。`
       });
-      await wait(stalled ? BACKGROUND_STALLED_RETRY_MS : BACKGROUND_RETRY_MS);
+      // transition付きのmoveSubmission自体が10秒待つため、追加待機はしない。
+      if (!transitionRetry) await wait(stalled ? BACKGROUND_STALLED_RETRY_MS : BACKGROUND_RETRY_MS);
     }
     return "stuck";
   }
@@ -2495,7 +2524,13 @@
       }
 
       if (!state.prepareCancelled && !["end", "limit"].includes(stopReason)) {
-        throw new Error(`${seen.size}人目まで確認しました。現在位置から再開してください`);
+        const reason = {
+          "student-key-missing": "現在の学生を識別できませんでした",
+          "duplicate-student": "同じ学生を再び検出しました",
+          missing: "次へボタンを取得できませんでした",
+          stuck: "次の学生への画面切替を確認できませんでした"
+        }[stopReason] || "一括準備を最後まで完了できませんでした";
+        throw new Error(`${reason}。${seen.size}人目まで確認しました。現在位置から再開してください。`);
       }
 
       if (!dedicated) {
@@ -2585,7 +2620,7 @@
     const found = ZIP_STATUS_WORDS.find((word) => text.endsWith(word))
       || ZIP_STATUS_WORDS.find((word) => text.includes(word));
     if (!found) return "";
-    if (["割り当て済み", "Assigned", "Missing", "未提出"].includes(found)) return "未提出";
+    if (["割り当て済み", "不足", "Assigned", "Missing", "未提出"].includes(found)) return "未提出";
     return found;
   }
 

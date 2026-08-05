@@ -675,6 +675,42 @@ assert.equal(
   }),
   true
 );
+// Classroomが未提出を「不足」と表示する場合も、未提出として扱う。
+assert.equal(noAttachmentWithoutNavigationHooks.zipStatusOf("26_0301 佐藤 不足"), "未提出");
+// 添付欄が無くても、新しい学生の表示名と未提出状態が安定すれば切替完了にする。
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: null,
+    submissionStatus: "未提出",
+    studentLabelChanged: true,
+    submissionStatusForMs: 1500
+  }),
+  true
+);
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: null,
+    submissionStatus: "未提出",
+    studentLabelChanged: false,
+    submissionStatusForMs: 2000
+  }),
+  false,
+  "前の未提出者の表示が残っている間は切替完了にしない"
+);
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: null,
+    submissionStatus: "未提出",
+    studentLabelChanged: true,
+    submissionStatusForMs: 1499
+  }),
+  false,
+  "未提出状態も一定時間安定するまで確定しない"
+);
+
 assert.deepEqual(plain(noAttachmentWithoutNavigationHooks.zipCollectionCompletion({
   rosterTotal: 18, collectedCount: 18, stopReason: "end"
 })), { complete: true, message: "" });
