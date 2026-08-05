@@ -52,6 +52,7 @@
     mode: "pdf",
     submissionView: false,
     currentKey: "",
+    prefetchRequestedStudentKey: "",
     convertedKey: "",
     displayedPdfUrl: "",
     viewerStatus: null,
@@ -867,7 +868,11 @@
         }
         sendResponse({ ok: true });
         // 表示中の1件は既にキャッシュにあるため、そこを起点に次の3人分まで低優先度で準備する。
-        prepareAllSubmissions({ dedicated: true, limit: message.prefetch ? 4 : 0, startAtCurrent: message.prefetch === true });
+        prepareAllSubmissions({
+          dedicated: true,
+          limit: message.prefetch ? 4 : 0,
+          startAtCurrent: message.prefetch === true || message.startAtCurrent === true
+        });
       })();
       return true;
     }
@@ -918,9 +923,7 @@
       // 採点中の画面を動かさず、別タブで次の3人分だけ低優先度に準備する。
       // 一括準備中は同じ学生切替・待機処理を二重に走らせない。完了または
       // 中止後の次回表示から、通常どおり先読みを再開する。
-      if (!state.preparing && !state.remotePreparing) {
-        safeSendMessage({ type: "cwr-prefetch-next" }).catch(() => undefined);
-      }
+      requestNextPrefetch();
     }
     return false;
   });
@@ -1992,6 +1995,62 @@
       message.status === "done" ? progress.countText : progress.title,
       message.status === "done" ? "ready" : "error"
     );
+    if (["done", "cancelled"].includes(message.status)) {
+      state.prefetchRequestedStudentKey = "";
+      requestNextPrefetch();
+    }
+  }
+
+  function requestNextPrefetch() {
+    if (state.isPreparationTab || state.preparing || state.remotePreparing) return;
+    const studentKey = getStudentKey();
+    if (!studentKey || state.prefetchRequestedStudentKey === studentKey) return;
+    state.prefetchRequestedStudentKey = studentKey;
+    safeSendMessage({ type: "cwr-prefetch-next" }).then((response) => {
+      if (response?.ok) return;
+      if (state.prefetchRequestedStudentKey === studentKey) state.prefetchRequestedStudentKey = "";
+    }, () => {
+      if (state.prefetchRequestedStudentKey === studentKey) state.prefetchRequestedStudentKey = "";
+    });
+  }
+
+  function choosePreparationRange() {
+    return new Promise((resolve) => {
+      const dialog = document.createElement("dialog");
+      dialog.id = "cwr-preparation-range-dialog";
+      dialog.innerHTML = `
+        <form method="dialog">
+          <h2>一括準備の処理範囲</h2>
+          <fieldset>
+            <legend>処理範囲</legend>
+            <label><input type="radio" name="range" value="current" checked> 現在表示している学生から最後まで</label>
+            <label><input type="radio" name="range" value="first"> 最初の学生から全員</label>
+          </fieldset>
+          <div class="cwr-preparation-range-actions">
+            <button value="cancel" type="submit">キャンセル</button>
+            <button value="start" type="submit">開始</button>
+          </div>
+        </form>`;
+      document.body.appendChild(dialog);
+      const finish = (value) => {
+        dialog.remove();
+        resolve(value);
+      };
+      dialog.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        finish(null);
+      }, { once: true });
+      dialog.querySelector("form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        const submitter = event.submitter?.value;
+        if (submitter !== "start") {
+          finish(null);
+          return;
+        }
+        finish(dialog.querySelector("input[name=range]:checked")?.value === "first" ? "first" : "current");
+      });
+      dialog.showModal();
+    });
   }
 
   async function startDedicatedPreparation() {
@@ -2003,6 +2062,9 @@
       setPreparationProgress({ remote: true });
       return;
     }
+    const preparationRange = await choosePreparationRange();
+    if (!preparationRange) return;
+    const startAtCurrent = preparationRange === "current";
     state.preparationPanelHidden = false;
     state.remotePreparing = true;
     updateUiLabels();
@@ -2011,7 +2073,9 @@
       phase: "running",
       title: "提出物の一括準備",
       countText: "準備専用タブを起動中…",
-      detailText: "Classroomをもう1枚開き、先頭の提出者から順に準備します。",
+      detailText: startAtCurrent
+        ? "Classroomをもう1枚開き、現在の学生から順に準備します。"
+        : "Classroomをもう1枚開き、先頭の提出者から順に準備します。",
       done: 0,
       skipped: 0,
       current: 0,
@@ -2021,7 +2085,7 @@
     });
     startStallWatchdog();
     try {
-      const response = await safeSendMessage({ type: "cwr-start-bulk-preparation" });
+      const response = await safeSendMessage({ type: "cwr-start-bulk-preparation", startAtCurrent });
       if (!response?.ok) throw new Error(response?.error || "準備専用タブを開始できませんでした。");
       updatePreparation(
         response.alreadyRunning ? "準備専用タブで処理中" : "準備専用タブを起動しました",
@@ -4372,6 +4436,7 @@
       state.activeFile = null;
       state.catalogActiveKey = "";
       if (state.preparing) return;
+      if (!fileChangedWithinStudent) requestNextPrefetch();
       sendViewerControls();
       if (hadPrevious) {
         // Do not blank the projector while Office is converting the next file.

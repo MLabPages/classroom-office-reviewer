@@ -294,6 +294,70 @@
   pointer-events: auto;
 }
 
+#cwr-preparation-range-dialog {
+  width: min(420px, calc(100vw - 32px));
+  border: 1px solid #5f6368;
+  border-radius: 14px;
+  padding: 20px;
+  color: #e8eaed;
+  background: #292a2d;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  font: 14px/1.5 Arial, "Noto Sans JP", sans-serif;
+}
+
+#cwr-preparation-range-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+#cwr-preparation-range-dialog h2 {
+  margin: 0 0 14px;
+  font-size: 18px;
+}
+
+#cwr-preparation-range-dialog fieldset {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  border: 1px solid #5f6368;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+#cwr-preparation-range-dialog label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+#cwr-preparation-range-dialog input {
+  flex: 0 0 auto;
+  margin-top: 3px;
+  accent-color: #8ab4f8;
+}
+
+.cwr-preparation-range-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.cwr-preparation-range-actions button {
+  border: 1px solid #5f6368;
+  border-radius: 999px;
+  padding: 8px 14px;
+  color: #e8eaed;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.cwr-preparation-range-actions button:last-child {
+  border-color: #8ab4f8;
+  color: #d2e3fc;
+}
+
 #cwr-preparation-header {
   display: flex;
   align-items: center;
