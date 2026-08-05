@@ -1,9 +1,9 @@
-{
-  "name": "com.mlabpages.classroom_reviewer",
-  "description": "Classroom Office Reviewer Native Host",
-  "path": "native-host.cmd",
-  "type": "stdio",
-  "allowed_origins": [
-    "chrome-extension://dbafjkigeiajjijjijmplmoodkiclcgg/"
-  ]
+﻿{
+    "name":  "com.mlabpages.classroom_reviewer",
+    "description":  "Classroom Office Reviewer Native Host",
+    "path":  "C:\\myproject\\classroom-office-reviewer\\native\\native-host.cmd",
+    "type":  "stdio",
+    "allowed_origins":  [
+                            "chrome-extension://dbafjkigeiajjijjijmplmoodkiclcgg/"
+                        ]
 }
