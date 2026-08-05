@@ -47,4 +47,13 @@ if count != 1:
     raise SystemExit(f"final visibility guard refinement: expected 1 match, found {count}")
 text = text.replace(old_final_guard, new_final_guard, 1)
 
+old_validation = 'assert(content.includes("return isAnchor && visible(node);"));'
+new_validation = '''assert(content.includes("allowUnscopedHiddenDriveLinks"));
+assert(content.includes("allowUnscopedHiddenDriveLinks && isDriveUrl(fileUrlOf(node))"));
+assert(content.includes("!visible(node) && !allowUnscopedHiddenDriveLinks"));'''
+count = text.count(old_validation)
+if count != 1:
+    raise SystemExit(f"release validation refinement: expected 1 match, found {count}")
+text = text.replace(old_validation, new_validation, 1)
+
 path.write_text(text, encoding="utf-8")
