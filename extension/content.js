@@ -2134,7 +2134,7 @@
     // 背面で止まっているか描き直し中の可能性があるので端と決めつけない。
     if (!button) return { status: document.hidden ? "stuck" : "missing" };
     if (submissionButtonDisabled(button)) return { status: "end" };
-    const before = getStudentKey();
+    const before = navigationStudentKey();
     // 一括準備でも、学生の番号だけでは切替完了とみなさない。Classroomは
     // URLを先に更新し、数秒間は前の学生のファイルを表示し続けることがある。
     // ここを確認しないと、2人目のPDFを3人目以降として繰り返し保存してしまう。
@@ -2168,7 +2168,6 @@
         return status;
       }
 
-      if (status === "missing" && findSubmissionButton(direction === "next" ? "previous" : "next")) return "end";
       // クリック済みの遷移は、Classroomが遅れて更新する可能性があるため
       // そのまま保持する。遷移情報を捨てて同じ矢印を押し直すと、復帰時に
       // 学生を1人飛ばすため、確認に失敗した時点で安全に止める。
@@ -2269,6 +2268,7 @@
     let linkCount = 0;
     let noAttachmentCount = 0;
     let forwardMoves = 0;
+    let stopReason = "";
     const failedNames = [];
     const seen = new Set();
     const preparedDocumentKeys = new Set();
@@ -2277,13 +2277,20 @@
       if (!startAtCurrent) {
         updatePreparation("先頭の提出者へ移動中…", "提出者リストの最初まで戻っています。");
         for (let attempts = 0; attempts < 1000 && !state.prepareCancelled; attempts += 1) {
-          if (await moveWithRecovery("previous") !== "moved") break;
+          const moved = await moveWithRecovery("previous");
+          if (moved !== "moved") {
+            if (moved !== "end") stopReason = moved;
+            break;
+          }
           updatePreparation("先頭の提出者へ移動中…", `${attempts + 1}人分戻りました。`);
         }
       }
 
       updatePreparation("最初の提出物を確認中…", "Classroomのファイルプレビューを待っています。");
-      const initialFileInfo = await waitForSubmissionFileWithRecovery(20000);
+      const initialMissingStudent = zipStatusOf(getStudentLabel()) === "未提出";
+      const initialFileInfo = initialMissingStudent
+        ? null
+        : await waitForSubmissionFileWithRecovery(20000);
       const initialNavigation = findNextSubmissionButton() || findPreviousSubmissionButton();
       if (!initialFileInfo && !initialNavigation) {
         throw new Error("Classroomの提出者画面を読み込めませんでした。準備専用タブで提出物が表示されているか確認してください。");
@@ -2298,11 +2305,21 @@
         });
         // 提出物の名前が出そろってから鍵を作る。先に作ると読み込み途中の
         // 名前で保存され、採点時に準備済みPDFを見つけられなくなる。
+        const missingStudent = zipStatusOf(getStudentLabel()) === "未提出";
         let fileInfo = sequence === 1 && initialFileInfo
           ? initialFileInfo
-          : await waitForSubmissionFileWithRecovery(15000);
-        const studentKey = getStudentKey();
-        if (!studentKey || seen.has(studentKey)) break;
+          : missingStudent
+            ? null
+            : await waitForSubmissionFileWithRecovery(15000);
+        const studentKey = navigationStudentKey();
+        if (!studentKey) {
+          stopReason = "student-key-missing";
+          break;
+        }
+        if (seen.has(studentKey)) {
+          stopReason = "duplicate-student";
+          break;
+        }
         seen.add(studentKey);
 
         // 1人が複数ファイルを出していることがあるので、全部まとめて準備する。
@@ -2326,7 +2343,7 @@
                 studentSeq: sequence,
                 studentLabel: studentLabelForLedger,
                 studentName: studentLabelForLedger,
-                studentKey: getStudentKey(),
+                studentKey,
                 fileSeq: fileIndex + 1,
                 fileCount: files.length,
                 fileName: file.fileName,
@@ -2442,7 +2459,7 @@
               studentSeq: sequence,
               studentLabel: emptyStudentLabel,
               studentName: emptyStudentLabel,
-              studentKey: getStudentKey(),
+              studentKey,
               fileSeq: 1,
               fileCount: 1,
               fileName: "添付ファイルを確認できません",
@@ -2466,12 +2483,19 @@
         });
         if (state.prepareCancelled) break;
         const moved = await moveWithRecovery("next");
-        if (moved === "stuck") {
+        if (moved !== "moved") {
+          stopReason = moved;
           break;
         }
-        if (moved === "end") break;
         forwardMoves += 1;
-        if (limit > 0 && seen.size >= limit) break;
+        if (limit > 0 && seen.size >= limit) {
+          stopReason = "limit";
+          break;
+        }
+      }
+
+      if (!state.prepareCancelled && !["end", "limit"].includes(stopReason)) {
+        throw new Error(`${seen.size}人目まで確認しました。現在位置から再開してください`);
       }
 
       if (!dedicated) {
