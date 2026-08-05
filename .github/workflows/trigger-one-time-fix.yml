@@ -1,0 +1,20 @@
+name: Trigger one-time fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/trigger-one-time-fix.yml"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start fix workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run fix-bulk-preparation-unsubmitted.yml --repo "${{ github.repository }}"
