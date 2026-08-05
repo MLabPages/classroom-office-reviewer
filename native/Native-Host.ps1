@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $nativeDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # サーバーを起動
@@ -18,3 +18,4 @@ try {
     # 拡張機能がアンロードされたかChromeが閉じたのでサーバーを終了
     & (Join-Path $nativeDir 'Stop-Reviewer.ps1') | Out-Null
 }
+

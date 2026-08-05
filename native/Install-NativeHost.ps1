@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $nativeDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $manifestPath = Join-Path $nativeDir 'native-host.json'
 $cmdPath = Join-Path $nativeDir 'native-host.cmd'
@@ -22,3 +22,5 @@ Set-ItemProperty -Path $registryPath -Name '(default)' -Value $manifestPath -Typ
 Write-Host "Chrome拡張機能の自動起動(Native Messaging Host)を登録しました。" -ForegroundColor Green
 Write-Host "Chromeの拡張機能(Classroom Office Reviewer)が有効になると、補助アプリも連動して起動・終了するようになります。"
 Start-Sleep -Seconds 3
+
+
