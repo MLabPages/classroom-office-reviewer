@@ -19,7 +19,44 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python3 tools/one_time_fix_stale_attachment_leak.py 2>&1 | tee /tmp/crw-stale-attachment-fix.log
+          {
+            python3 tools/one_time_fix_stale_attachment_leak.py
+            python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("extension/content.js")
+          text = path.read_text(encoding="utf-8")
+          old = '''    const visibleHints = visibleSubmissionAttachmentHints();
+          if (visibleHints.length) {
+            const matchedVisibleItems = items.filter((node) => {
+              const attachment = attachmentInfoOf(node);
+              return attachment && visibleHints.some((hint) => sameFile(hint, attachment));
+            });
+            if (matchedVisibleItems.length) return matchedVisibleItems;
+          }
+
+          // 画面には別の提出者のメニューが残っていることがある。表示中のファイルが
+          '''
+          new = '''    const menuGroupCount = new Set(items.map((node) => node.closest?.("[role='menu']") || null)).size;
+          const visibleHints = visibleSubmissionAttachmentHints();
+          if (visibleHints.length) {
+            const matchedVisibleItems = items.filter((node) => {
+              const attachment = attachmentInfoOf(node);
+              return attachment && visibleHints.some((hint) => sameFile(hint, attachment));
+            });
+            // 同じmenu内へ履歴が混在している場合は現在見えているカードで絞る。
+            // 別menuとして分離できている場合は、後段のグループ判定で非表示の
+            // 2件目以降も保持する。
+            if (matchedVisibleItems.length && menuGroupCount < 2) return matchedVisibleItems;
+          }
+
+          // 画面には別の提出者のメニューが残っていることがある。表示中のファイルが
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f"menu refinement: expected 1 match, found {text.count(old)}")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+          } 2>&1 | tee /tmp/crw-stale-attachment-fix.log
 
       - name: Verify syntax and tests
         shell: bash
