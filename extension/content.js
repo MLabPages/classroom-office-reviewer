@@ -1651,8 +1651,8 @@
         <div id="cwr-preparation-header">
           <div id="cwr-preparation-spinner" aria-hidden="true"></div>
           <h2 id="cwr-preparation-title">提出物の一括準備</h2>
-          <button id="cwr-preparation-drag" type="button" title="パネルをドラッグして移動" aria-label="パネルをドラッグして移動">移動</button>
-          <button id="cwr-preparation-compact" type="button" aria-pressed="false">小さく表示</button>
+          <button id="cwr-preparation-drag" type="button" title="パネルをドラッグして移動" aria-label="パネルをドラッグして移動"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg></button>
+          <button id="cwr-preparation-compact" type="button" title="最小化" aria-label="最小化" aria-pressed="false"><svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg></button>
         </div>
         <p id="cwr-preparation-count">準備を開始しています…</p>
         <div id="cwr-preparation-bar" aria-hidden="true"><span></span></div>
@@ -1771,7 +1771,7 @@
     focusButton.classList.toggle("cwr-preparation-urgent", Boolean(progress.stalled));
 
     const compactButton = panel.querySelector("#cwr-preparation-compact");
-    compactButton.textContent = state.preparationCompact ? "展開" : "最小化";
+    compactButton.setAttribute("title", state.preparationCompact ? "展開" : "最小化"); compactButton.setAttribute("aria-label", state.preparationCompact ? "展開" : "最小化");
     compactButton.setAttribute("aria-pressed", String(state.preparationCompact));
 
     renderLedger(panel);
