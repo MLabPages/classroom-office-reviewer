@@ -2,6 +2,8 @@ import * as pdfjsLib from "./vendor/pdf.mjs";
 import { filterSubmissionEntries, normalizeSubmissionSearch } from "./submission-list.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("vendor/pdf.worker.mjs");
+const cMapUrl = chrome.runtime.getURL("vendor/cmaps/");
+const standardFontDataUrl = chrome.runtime.getURL("vendor/standard_fonts/");
 
 const params = new URLSearchParams(location.search);
 const pdfUrl = params.get("pdf") || "";
@@ -442,7 +444,13 @@ async function loadPdf(pdfUrl, targetFileName, targetPageCount) {
     const response = await fetch(pdfUrl, { cache: "no-store" });
     if (!response.ok) throw new Error("表示用PDFを読み込めませんでした。");
     const data = new Uint8Array(await response.arrayBuffer());
-    pdfDocument = await pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+    pdfDocument = await pdfjsLib.getDocument({
+      data,
+      isEvalSupported: false,
+      cMapUrl,
+      cMapPacked: true,
+      standardFontDataUrl
+    }).promise;
     updateToolbar();
     await renderPages();
   } catch (error) {
