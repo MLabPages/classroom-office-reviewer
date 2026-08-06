@@ -119,4 +119,13 @@ assert.match(content, /await wait\(direction === "next" \? 300 : 180\);/);
 assert.doesNotMatch(content, /await wait\(direction === "next" \? 650 : 180\);/);
 assert.doesNotMatch(content, /paused: true/);
 
-console.log("17件の一括準備・キャッシュ・先読み・排他・安全収集テストに合格しました。");
+// テスト18：Google形式はPDF変換とそのまま表示を切り替えられる。
+assert.match(content, /id="cwr-google-native" type="checkbox"/);
+assert.match(content, /saveSetting\(\{ cwrGoogleNative: state\.googleNative \}\)/);
+assert.match(content, /state\.googleNative = cwrGoogleNative === true;/);
+assert.match(content, /if \(state\.googleNative && \["google-document", "google-presentation"\]\.includes\(file\.kind\)\)/);
+assert.match(content, /status: "google-native"/);
+assert.match(content, /function googleFileUrl\(file = \{\}\)/);
+assert.match(content, /if \(notice\.kind === "google-native"\) removeOverlay\(\);/);
+
+console.log("18件の一括準備・キャッシュ・先読み・排他・安全収集テストに合格しました。");

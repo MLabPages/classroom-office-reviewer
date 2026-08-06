@@ -51,6 +51,8 @@
     enabled: true,
     busy: false,
     auto: false,
+    // Googleドキュメント／スライドをPDFへ変換せず、Classroomの表示のまま扱うか。
+    googleNative: false,
     preparing: false,
     remotePreparing: false,
     dedicatedPreparation: false,
@@ -1239,6 +1241,9 @@
   }
 
   function fileTypeLabel(file = {}) {
+    if (file.status === "google-native") {
+      return file.kind === "google-presentation" ? "Googleスライド（そのまま）" : "Googleドキュメント（そのまま）";
+    }
     if (file.kind === "pdf") return "PDF";
     if (file.kind === "office") return /\.pptx?$/i.test(file.fileName || "") ? "PowerPoint" : "Word";
     if (file.kind === "google-document") return "Googleドキュメント";
@@ -1247,6 +1252,17 @@
     if (file.kind === "no-attachment") return "添付ファイルなし";
     const extension = (file.fileName || "").match(/\.([a-z0-9]+)$/i)?.[1];
     return extension ? extension.toUpperCase() : "不明";
+  }
+
+  // Google形式をそのまま一覧へ載せるときの開き先。ファイル番号が分かれば
+  // Google上の画面を直接開けるようにし、採点者があとから確認できるようにする。
+  function googleFileUrl(file = {}) {
+    const fileId = file.expectedFileId || file.fileId || "";
+    if (!fileId) return file.sourceUrl || "";
+    const type = file.expectedGoogleType === "presentation" || file.kind === "google-presentation"
+      ? "presentation"
+      : "document";
+    return `https://docs.google.com/${type}/d/${fileId}/edit`;
   }
 
   function submissionCatalogContext() {
@@ -2066,7 +2082,7 @@
       const entry = entries[index];
       const row = document.createElement("div");
       row.className = "cwr-preparation-ledger-row";
-      row.dataset.status = ["ok", "link", "no-attachment"].includes(entry.status) ? entry.status : "failed";
+      row.dataset.status = ["ok", "link", "no-attachment", "google-native"].includes(entry.status) ? entry.status : "failed";
 
       const seq = document.createElement("span");
       seq.className = "cwr-preparation-ledger-seq";
@@ -2113,6 +2129,22 @@
         note.className = "cwr-preparation-ledger-note";
         note.textContent = "添付ファイルを確認できず";
         row.append(note);
+      } else if (entry.status === "google-native") {
+        // PDFへ変換しない設定のGoogle形式。Google上の画面をそのまま開ける。
+        if (entry.sourceUrl) {
+          const link = document.createElement("a");
+          link.href = entry.sourceUrl;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.className = "cwr-preparation-ledger-link";
+          link.textContent = "Googleで開く";
+          row.append(link);
+        } else {
+          const note = document.createElement("span");
+          note.className = "cwr-preparation-ledger-note";
+          note.textContent = "Classroomの表示のまま";
+          row.append(note);
+        }
       } else {
         const failed = document.createElement("span");
         failed.className = "cwr-preparation-ledger-failed";
@@ -2543,6 +2575,7 @@
     let failedCount = 0;
     let linkCount = 0;
     let noAttachmentCount = 0;
+    let googleNativeCount = 0;
     let forwardMoves = 0;
     let stopReason = "";
     const failedNames = [];
@@ -2651,6 +2684,22 @@
           };
           for (const [fileIndex, file] of files.entries()) {
             if (state.prepareCancelled) break;
+            // Google形式をそのまま扱う設定のときは、PDFへの書き出しを行わず
+            // 一覧へ登録して次へ進む。Classroom側の表示がそのまま使えるため、
+            // 変換によるレイアウトのずれも起きない。
+            if (state.googleNative && ["google-document", "google-presentation"].includes(file.kind)) {
+              googleNativeCount += 1;
+              addLedgerEntry(fileIndex, file, {
+                status: "google-native",
+                sourceUrl: file.sourceUrl || googleFileUrl(file)
+              });
+              setPreparationProgress({
+                countText: preparationCountText(preparedCount + cachedCount, skippedCount + failedCount, sequence),
+                detailText: `${file.fileName} はClassroomの表示のまま一覧へ加えました。`,
+                fileName: file.fileName
+              });
+              continue;
+            }
             // 共有リンクの提出は取り込めない。失敗として数えず、一覧には
             // 「共有リンク」として残し、あとからリンクを開けるようにする。
             if (file.kind === "link") {
@@ -2806,6 +2855,7 @@
       const notReady = skippedCount + failedCount;
       const summary = [
         `${total}件を準備しました`,
+        googleNativeCount ? `Google形式そのまま ${googleNativeCount}件` : "",
         linkCount ? `共有リンク ${linkCount}件` : "",
         noAttachmentCount ? `添付なし ${noAttachmentCount}件` : "",
         failedCount ? `準備できず ${failedCount}件` : ""
@@ -2818,9 +2868,11 @@
         summary,
         total
           ? failedNote || "変換した表示用PDFは、このPC内に24時間保持します。"
-          : notReady
-            ? `準備できるWord／PowerPoint／PDF／Google形式の提出物がありませんでした。${failedNote}`
-            : "提出者を読み取れませんでした。Classroomの採点画面で提出物を1件開いてから、もう一度お試しください。",
+          : googleNativeCount
+            ? "Google形式はClassroomの表示のまま一覧へ加えました。学生を切り替えるとそのまま確認できます。"
+            : notReady
+              ? `準備できるWord／PowerPoint／PDF／Google形式の提出物がありませんでした。${failedNote}`
+              : "提出者を読み取れませんでした。Classroomの採点画面で提出物を1件開いてから、もう一度お試しください。",
         state.prepareCancelled ? "cancelled" : "done"
       );
       setStatus(`${total}件の提出物を準備済み`, total ? "ready" : "idle");
@@ -3751,6 +3803,10 @@
         <input id="cwr-auto" type="checkbox">
         次の提出物を自動表示
       </label>
+      <label id="cwr-google-native-label" title="Googleドキュメント／スライドを、PDFへ変換せずClassroomの表示のまま一覧へ加えます。表示は速くなりますが、PDFビューアの操作は使えません。">
+        <input id="cwr-google-native" type="checkbox">
+        Google形式はPDFにせず表示
+      </label>
       <button id="cwr-toggle" type="button">機能OFF</button>
       <span id="cwr-status" role="status">待機中</span>
     `;
@@ -3790,11 +3846,22 @@
       if (reportContextLostIfNeeded()) return;
       setStatus(state.auto ? "自動表示オン" : "自動表示オフ", "idle");
     });
+    root.querySelector("#cwr-google-native").addEventListener("change", (event) => {
+      state.googleNative = event.target.checked;
+      saveSetting({ cwrGoogleNative: state.googleNative });
+      if (reportContextLostIfNeeded()) return;
+      setStatus(
+        state.googleNative
+          ? "Google形式はClassroomの表示のまま扱います"
+          : "Google形式もPDFに変換して表示します",
+        "idle"
+      );
+    });
     root.querySelector("#cwr-toggle").addEventListener("click", () => setEnabled(!state.enabled));
     updateUiLabels();
     applyControlsLayout();
-    loadSettings(["cwrAuto", "cwrMode", "cwrEnabled", "cwrControlsCollapsed", "cwrControlsPositionV2", "cwrZipLayout", "cwrZipTokenRule", "cwrZipFileNameStyle"]).then(({
-      cwrAuto, cwrMode, cwrEnabled, cwrControlsCollapsed, cwrControlsPositionV2, cwrZipLayout, cwrZipTokenRule, cwrZipFileNameStyle
+    loadSettings(["cwrAuto", "cwrMode", "cwrEnabled", "cwrControlsCollapsed", "cwrControlsPositionV2", "cwrZipLayout", "cwrZipTokenRule", "cwrZipFileNameStyle", "cwrGoogleNative"]).then(({
+      cwrAuto, cwrMode, cwrEnabled, cwrControlsCollapsed, cwrControlsPositionV2, cwrZipLayout, cwrZipTokenRule, cwrZipFileNameStyle, cwrGoogleNative
     }) => {
       if (!contextAvailable()) return;
       // 前回選んだ整理方法と学籍番号の決め方を初期値にする。毎回変更できる。
@@ -3804,6 +3871,8 @@
         : cwrZipTokenRule === "email" ? "roster-number" : "name-number";
       zipRun.fileNameStyle = cwrZipFileNameStyle === "without-original" ? "without-original" : "with-original";
       state.auto = state.isPreparationTab ? false : Boolean(cwrAuto);
+      // 既定はこれまでどおりPDF変換。表示の統一を保ちたい利用者の設定を変えない。
+      state.googleNative = cwrGoogleNative === true;
       state.mode = ["word", "office"].includes(cwrMode) ? "office" : "pdf";
       state.enabled = cwrEnabled !== false;
       state.controlsCollapsed = cwrControlsCollapsed !== false;
@@ -3812,6 +3881,7 @@
         ? cwrControlsPositionV2
         : null;
       root.querySelector("#cwr-auto").checked = state.auto;
+      root.querySelector("#cwr-google-native").checked = state.googleNative;
       applyEnabledUi();
       applyControlsLayout();
     }, () => undefined);
@@ -3874,6 +3944,18 @@
   // 変換して表示できない提出かどうかを判定し、ビューアーに出す内容を作る。
   // 「未提出」とは断定できないため、確認できた事実だけを言葉にする。
   function noticeForSubmission(fileInfo) {
+    // PDFへ変換しない設定では、Google形式はClassroomの表示をそのまま使う。
+    // 変換によるレイアウトのずれが起きず、表示も速い。
+    if (state.googleNative && ["google-document", "google-presentation"].includes(fileInfo?.kind)) {
+      return {
+        kind: "google-native",
+        fileName: fileInfo.fileName || "Google形式の提出",
+        url: googleFileUrl(fileInfo),
+        title: "Classroomの表示をそのまま使います",
+        body: "「Google形式はPDFにせず表示」がオンのため、PDFへは変換していません。Classroomの画面をそのままご確認ください。PDFで見たい場合は操作パネルでこの設定をオフにしてください。",
+        status: "Google形式はClassroomの表示のままです。"
+      };
+    }
     if (fileInfo?.kind === "no-attachment") {
       return {
         kind: "no-attachment",
@@ -3953,7 +4035,10 @@
       state.catalogActiveKey = "";
       state.currentKey = getSubmissionKey(fileInfo || undefined);
       state.convertedKey = state.currentKey;
-      showViewerNotice(notice);
+      // Google形式をそのまま見る設定では、Classroomの表示を覆わない。
+      // 案内を重ねると、せっかくの元の画面が読めなくなる。
+      if (notice.kind === "google-native") removeOverlay();
+      else showViewerNotice(notice);
       setStatus(notice.status, "idle");
       return true;
     }
