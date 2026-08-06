@@ -847,6 +847,36 @@ assert.equal(
   false,
   "切替直後は従来どおり右側ファイル欄の更新を待つ"
 );
+// ファイル欄を特定できない画面では提出物の状態自体を読み取れず、fileStateが
+// nullになる。この場合も猶予後は表示中ファイルの入れ替わりで切替完了にする。
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: null,
+    previousFileId: "previous-drive-file",
+    displayedFileId: "new-drive-file",
+    studentChangedForMs: 6000,
+    studentLabelStableForMs: 1500,
+    filePaneChanged: false,
+    filePaneStableForMs: 0
+  }),
+  true,
+  "提出物の状態を読み取れない画面でも、表示中ファイルが入れ替われば切替完了にする"
+);
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: null,
+    previousFileId: "previous-drive-file",
+    displayedFileId: "previous-drive-file",
+    studentChangedForMs: 6000,
+    studentLabelStableForMs: 1500,
+    filePaneChanged: false,
+    filePaneStableForMs: 0
+  }),
+  false,
+  "前の学生のファイルが表示されたままなら、状態を読めなくても切替完了にしない"
+);
 
 assert.deepEqual(plain(noAttachmentWithoutNavigationHooks.zipCollectionCompletion({
   rosterTotal: 18, collectedCount: 18, stopReason: "end"
