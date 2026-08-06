@@ -169,6 +169,109 @@ assert.deepEqual(
 );
 assert.equal(googleHooks.describeDocument().googleType, "document");
 
+// Googleドキュメントの提出は、Classroomが埋め込み枠ではなく編集画面をそのまま
+// 開くことがある。この画面には提出物領域と呼べる区画が無く、以前は提出物を
+// 見つけられずに一括準備がその学生で止まっていた。枠だけは画面全体から探す。
+const googleEditorFrame = new MockElement({
+  src: `https://docs.google.com/document/d/${googleFileId}/edit`
+});
+const googleEditorHooks = (() => {
+  const hooks = {};
+  const body = new MockElement({ children: [googleEditorFrame] });
+  googleEditorFrame.parentElement = body;
+  const window = {};
+  window.top = window;
+  const document = {
+    visibilityState: "visible",
+    hidden: false,
+    body,
+    hasFocus: () => true,
+    querySelector: () => null,
+    querySelectorAll(selector) {
+      if (selector === "iframe[src]") return [googleEditorFrame];
+      return [];
+    }
+  };
+  const context = vm.createContext({
+    __CWR_TEST_HOOKS__: hooks,
+    chrome: { runtime: { id: "test-extension-id" }, storage: { local: { get: async () => ({}), set: async () => undefined } } },
+    Element: MockElement,
+    atob,
+    document,
+    getComputedStyle: () => ({ display: "block", visibility: "visible" }),
+    globalThis: null,
+    location: {
+      hostname: "classroom.google.com",
+      href: "https://classroom.google.com/u/5/g/tg/course/work#u=student&t=f"
+    },
+    window
+  });
+  context.globalThis = context;
+  vm.runInContext(content, context);
+  return hooks;
+})();
+assert.equal(googleEditorHooks.submissionFileRegion(), null, "編集画面には提出物領域が無い状態を再現する");
+assert.equal(
+  googleEditorHooks.findGoogleFileInfo()?.expectedFileId,
+  googleFileId,
+  "提出物領域を特定できない編集画面でも、Googleドキュメントの提出物を見つける"
+);
+assert.equal(googleEditorHooks.findGoogleFileInfo()?.kind, "google-document");
+
+// 編集画面でも右側には「ファイル」見出しの欄が出る。属性の手掛かりが無くても、
+// この見出しから提出物領域を見つけられることを確認する。
+const fileHeadingPanel = (() => {
+  const heading = new MockElement({ text: "ファイル" });
+  const attachmentLink = new MockElement({ href: `https://drive.google.com/file/d/${googleFileId}/view` });
+  const panel = new MockElement({ children: [heading, attachmentLink] });
+  heading.parentElement = panel;
+  attachmentLink.parentElement = panel;
+  return { panel, heading };
+})();
+const fileHeadingHooks = (() => {
+  const hooks = {};
+  const { panel: filePanel, heading } = fileHeadingPanel;
+  heading.parentElement = filePanel;
+  const body = new MockElement({ children: [filePanel] });
+  filePanel.parentElement = body;
+  const window = {};
+  window.top = window;
+  const document = {
+    visibilityState: "visible",
+    hidden: false,
+    body,
+    hasFocus: () => true,
+    querySelector: () => null,
+    querySelectorAll(selector) {
+      if (selector === "iframe[src]") return [];
+      if (selector === "div, span, h1, h2, h3") return [heading];
+      return [];
+    }
+  };
+  const context = vm.createContext({
+    __CWR_TEST_HOOKS__: hooks,
+    chrome: { runtime: { id: "test-extension-id" }, storage: { local: { get: async () => ({}), set: async () => undefined } } },
+    Element: MockElement,
+    atob,
+    document,
+    getComputedStyle: () => ({ display: "block", visibility: "visible" }),
+    globalThis: null,
+    location: {
+      hostname: "classroom.google.com",
+      href: "https://classroom.google.com/u/5/g/tg/course/work#u=student&t=f"
+    },
+    window
+  });
+  context.globalThis = context;
+  vm.runInContext(content, context);
+  return hooks;
+})();
+assert.equal(
+  fileHeadingHooks.submissionFileRegion(),
+  fileHeadingPanel.panel,
+  "「ファイル」見出しを持つ欄を提出物領域として見つける"
+);
+
 const hiddenPreparationHooks = runDetection({ visibilityState: "hidden", hidden: true, hasFocus: false });
 assert.deepEqual(JSON.parse(JSON.stringify(hiddenPreparationHooks.preparationDocumentState())), {
   visibilityState: "hidden",

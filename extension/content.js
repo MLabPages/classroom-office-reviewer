@@ -251,6 +251,29 @@
       if (hasFileNodes || node.getAttribute?.("role") === "region") addCandidate(node, 20);
     }
 
+    // Googleドキュメント／スライドの提出では、Classroomが編集画面を直接開き、
+    // 属性の手掛かりが付かないことがある。その画面でも右側には「ファイル」と
+    // いう見出しの欄が出ているため、その見出しを持つ区画を候補にする。
+    if (!candidates.length) {
+      const headings = [...document.querySelectorAll("div, span, h1, h2, h3")]
+        .filter((node) => !isCwrOwnedNode(node) && visible(node) && (!node.children || node.children.length === 0))
+        .filter((node) => {
+          const text = textOf(node);
+          return text === "ファイル" || /^files?$/i.test(text);
+        });
+      for (const heading of headings) {
+        let node = heading.parentElement;
+        for (let distance = 1; node && node !== document.body && distance <= 6; distance += 1) {
+          const fileNodes = nodesWithin(node, "a[href], [role='menuitem'], iframe[src]");
+          if (fileNodes.length) {
+            addCandidate(node, distance);
+            break;
+          }
+          node = node.parentElement;
+        }
+      }
+    }
+
     if (candidates.length) {
       candidates.sort((left, right) => right.fileNodeCount - left.fileNodeCount || left.area - right.area || left.distance - right.distance);
       return candidates[0].node;
@@ -365,13 +388,19 @@
 
   function findGoogleFileInfo() {
     const region = submissionFileRegion();
-    if (!region) return null;
-    const frames = nodesWithin(region, "iframe[src]").filter((frame) => !isCwrOwnedNode(frame));
+    // Googleドキュメント／スライドの提出は、Classroomが埋め込み枠ではなく
+    // 編集画面そのものを開くことがある。その画面には提出物領域と呼べる区画が
+    // 無く、region が null になる。ここで諦めると提出物を最後まで見つけられず、
+    // 一括準備がその学生で止まってしまう。枠の探索だけは画面全体へ広げる。
+    const frameScope = region ? nodesWithin(region, "iframe[src]") : [...document.querySelectorAll("iframe[src]")];
+    const frames = frameScope.filter((frame) => !isCwrOwnedNode(frame));
     const documentFrame = frames.find((frame) => visible(frame) && /docs\.google\.com\/document\/(?:u\/\d+\/)?d\//i.test(frame.src));
     const slidesFrame = frames.find((frame) => visible(frame) && /docs\.google\.com\/presentation\/(?:u\/\d+\/)?d\//i.test(frame.src));
     let labeledKind = "";
     let labeledFileName = "";
-    const nodes = nodesWithin(region, "a, button, div, span, [role='button'], [role='menuitem'], [aria-label], [title], [data-tooltip]");
+    const nodes = region
+      ? nodesWithin(region, "a, button, div, span, [role='button'], [role='menuitem'], [aria-label], [title], [data-tooltip]")
+      : [];
     for (const node of nodes) {
       if (!visible(node)) continue;
       const sources = [node.getAttribute("aria-label"), node.getAttribute("title"), node.getAttribute("data-tooltip"), textOf(node)];
