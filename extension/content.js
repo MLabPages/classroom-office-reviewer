@@ -21,6 +21,11 @@
   // 「添付ファイルはありません」が描き直しの一瞬だけ出ることがある。
   // この時間だけ続けて見えたときに「添付なし」として確定する。
   const NO_ATTACHMENT_CONFIRM_MS = 1500;
+  // 右側ファイル欄の内容が入れ替わったことを、切替完了の条件として求める時間。
+  // Classroomの表示形式によってはファイル欄自体を特定できず、この確認だけを
+  // 待ち続けると一括準備が1人目から進めなくなる。ここを過ぎたら、学生名・
+  // 提出状態・表示中ファイル番号による確認へ切り替える。
+  const FILE_PANE_CONFIRM_GRACE_MS = 6000;
   const MAX_PREPARATION_ATTACHMENTS = 10;
   // 提出物の表示待ちを打ち切るまでの再試行回数。ここを超えたら、その提出者は
   // 一覧に記録して次へ進む。無期限に待つと一括準備全体が止まってしまう。
@@ -777,8 +782,10 @@
 
   function findDisplayedFileId() {
     const region = submissionFileRegion();
-    if (!region) return "";
-    const frames = nodesWithin(region, "iframe[src]")
+    // 提出物領域を特定できない画面でも、実際に表示されているDrive/Docsの
+    // プレビューは1つしかない。ここで空を返すと切替確認の手掛かりが全く
+    // 無くなり、一括準備が1人目から進めなくなる。表示中の枠に限って探す。
+    const frames = (region ? nodesWithin(region, "iframe[src]") : [...document.querySelectorAll("iframe[src]")])
       .filter((frame) => !isCwrOwnedNode(frame) && visible(frame) && /(?:drive|docs)\.google\.com/i.test(frame.src || ""));
     for (const frame of frames) {
       const fileId = parseDriveId(frame.src || "");
@@ -1471,7 +1478,13 @@
     if (!studentChanged || studentLabelStableForMs < NO_ATTACHMENT_CONFIRM_MS) return false;
     // URLだけ先に変わった直後は前の学生のPDF・menuitemが残る。右側ファイル欄
     // の内容が変わり、一定時間その内容が維持されるまで提出物を確定しない。
-    if (!filePaneChanged || filePaneStableForMs < NO_ATTACHMENT_CONFIRM_MS) return false;
+    const filePaneConfirmed = filePaneChanged && filePaneStableForMs >= NO_ATTACHMENT_CONFIRM_MS;
+    // Classroomの表示形式によっては右側ファイル欄そのものを特定できず、署名が
+    // いつまでも確定しないことがある。その状態で待ち続けると、1人目の直後に
+    // 一括準備が必ず止まる。一定時間を過ぎたら、学生名・提出状態・表示中の
+    // ファイル番号という別の手掛かりだけで切替完了を判断する。
+    const filePaneGraceExpired = studentChangedForMs >= FILE_PANE_CONFIRM_GRACE_MS;
+    if (!filePaneConfirmed && !filePaneGraceExpired) return false;
     // 未提出者では新しいDriveファイルIDが無いことがある。その場合も、URL・学生名・
     // 右側の「添付なし」状態が安定したときだけ切替完了にする。
     if (submissionStatus === "未提出") {
