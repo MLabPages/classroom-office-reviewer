@@ -24,8 +24,9 @@
   // 右側ファイル欄の内容が入れ替わったことを、切替完了の条件として求める時間。
   // Classroomの表示形式によってはファイル欄自体を特定できず、この確認だけを
   // 待ち続けると一括準備が1人目から進めなくなる。ここを過ぎたら、学生名・
-  // 提出状態・表示中ファイル番号による確認へ切り替える。
-  const FILE_PANE_CONFIRM_GRACE_MS = 6000;
+  // 提出状態・表示中ファイル番号による確認へ切り替える。PDF中心の課題では
+  // 毎回この猶予を待つため、待ち時間がそのまま1件あたりの所要時間に乗る。
+  const FILE_PANE_CONFIRM_GRACE_MS = 2500;
   const MAX_PREPARATION_ATTACHMENTS = 10;
   // 提出物の表示待ちを打ち切るまでの再試行回数。ここを超えたら、その提出者は
   // 一覧に記録して次へ進む。無期限に待つと一括準備全体が止まってしまう。
@@ -1483,7 +1484,8 @@
     studentLabelStableForMs = 0,
     submissionStatusForMs = 0,
     filePaneChanged = false,
-    filePaneStableForMs = 0
+    filePaneStableForMs = 0,
+    studentLabelChanged = false
   } = {}) {
     if (!studentChanged || studentLabelStableForMs < NO_ATTACHMENT_CONFIRM_MS) return false;
     // URLだけ先に変わった直後は前の学生のPDF・menuitemが残る。右側ファイル欄
@@ -1501,16 +1503,16 @@
       return submissionStatusForMs >= NO_ATTACHMENT_CONFIRM_MS;
     }
     const stateKind = submissionStateKind(fileState);
-    // 右側ファイル欄を特定できない画面では、提出物の状態自体を読み取れず
-    // stateKind が空のままになる。猶予時間を過ぎた後は、表示中のプレビューが
-    // 前の学生と違うファイルへ入れ替わったことを切替完了の根拠として使う。
-    // これが無いと、提出済みの学生で一括準備が1人目から進めない。
-    if (!stateKind && filePaneGraceExpired) {
-      return Boolean(displayedFileId) && displayedFileId !== previousFileId;
-    }
+    const fileIdChanged = displayedFileId !== previousFileId;
+    // PDFの提出物はClassroom自身のビューアで表示され、Drive/Docsのプレビュー枠が
+    // 置かれないことがある。その場合はファイル番号が前後とも空になり、番号の
+    // 入れ替わりを切替の根拠にできない。猶予時間を過ぎた後は、画面上の提出者名が
+    // 実際に別人へ変わったことを根拠として認める。ここが無いと、PDF提出の学生で
+    // 一括準備が1人目から進めない。
+    if (filePaneGraceExpired && (fileIdChanged || studentLabelChanged)) return true;
     return Boolean(stateKind) && (stateKind === "no-attachment"
       ? noAttachmentForMs >= NO_ATTACHMENT_CONFIRM_MS
-      : Boolean(displayedFileId) && displayedFileId !== previousFileId);
+      : Boolean(displayedFileId) && fileIdChanged);
   }
 
   async function waitForSubmissionChange(previousKey, timeoutMs = 20000, previousFileId = "", previousLabel = "", previousPaneSignature = "", transition = null) {
@@ -1572,6 +1574,9 @@
           paneSince = now;
         }
         const displayedFileId = findDisplayedFileId();
+        // 画面上の提出者名が、矢印を押す前の名前から実際に変わったか。
+        // PDF提出でファイル番号を取得できない画面での切替確認に使う。
+        const studentLabelChanged = Boolean(currentLabel) && Boolean(previousLabel) && currentLabel !== previousLabel;
         if (submissionChangeReady({
           studentChanged,
           fileState,
@@ -1583,7 +1588,8 @@
           studentLabelStableForMs: studentLabelSince ? now - studentLabelSince : 0,
           submissionStatusForMs: submissionStatusSince ? now - submissionStatusSince : 0,
           filePaneChanged,
-          filePaneStableForMs: paneSince ? now - paneSince : 0
+          filePaneStableForMs: paneSince ? now - paneSince : 0,
+          studentLabelChanged
         })) return true;
       }
       await wait(150);
@@ -1748,7 +1754,7 @@
     return ["done", "cancelled", "error"].includes(progress.phase);
   }
 
-  const PREPARATION_BACKGROUND_PAUSE_MESSAGE = "Classroomタブがバックグラウンドのため一時停止しています。Classroomタブを表示すると自動的に再開します。";
+  const PREPARATION_BACKGROUND_MESSAGE = "準備タブは背面ですが、そのまま処理を続けています。採点タブで作業を続けて構いません。";
 
   function preparationDocumentState() {
     return {
@@ -1771,33 +1777,30 @@
   }
 
   function pausePreparationForBackground() {
+    // 背面でも処理は続ける。待ち時間は拡張機能のバックグラウンド側でも計るため、
+    // Chromeがタブのタイマーを遅らせても巡回は進む。ここでは「背面で処理中」で
+    // あることだけを画面に伝え、採点タブと準備タブの行き来を不要にする。
     if (!state.isPreparationTab || isPreparationFinished() || preparationDocumentVisible()) return;
     setPreparationProgress({
-      paused: true,
-      delayed: false,
-      stalled: false,
-      detailText: PREPARATION_BACKGROUND_PAUSE_MESSAGE
+      paused: false,
+      delayed: true,
+      detailText: PREPARATION_BACKGROUND_MESSAGE
     });
   }
 
   function waitForPreparationVisibility() {
-    if (!state.isPreparationTab || isPreparationFinished() || preparationDocumentVisible()) {
-      return Promise.resolve(true);
-    }
+    // 背面でも待たずに処理を続ける。中止・拡張機能の切り離しのときだけ止める。
+    if (state.prepareCancelled || state.contextInvalidated) return Promise.resolve(false);
     pausePreparationForBackground();
-    return new Promise((resolve) => {
-      state.preparationVisibilityWaiters.push(resolve);
-      if (state.prepareCancelled || state.contextInvalidated) resolvePreparationVisibilityWaiters(false);
-    });
+    return Promise.resolve(true);
   }
 
   function resumePreparationAfterForeground() {
     if (!state.isPreparationTab || isPreparationFinished() || !preparationDocumentVisible()) return;
-    if (progress.paused) {
+    if (progress.paused || progress.delayed) {
       setPreparationProgress({
         paused: false,
         delayed: false,
-        stalled: false,
         detailText: "Classroomの画面を再確認しています。"
       });
     }
@@ -1819,9 +1822,8 @@
     if (progress.stalled) {
       return "Classroomの画面更新を待っています。正しい学生・ファイルを確認できるまで、30秒ごとに自動で再試行します。";
     }
-    if (progress.paused) return PREPARATION_BACKGROUND_PAUSE_MESSAGE;
     if (progress.delayed) {
-      return "準備タブは背面ですが、正しい学生・ファイルを確認しながら自動で再試行しています。";
+      return PREPARATION_BACKGROUND_MESSAGE;
     }
     return state.isPreparationTab
       ? "このタブは自動で操作します。完了まで触らずにお待ちください。終わると採点タブへ自動で戻ります。"
@@ -2356,7 +2358,7 @@
       if (!await waitForSubmissionChange(transition.before, BACKGROUND_RETRY_MS, transition.beforeFileId, transition.beforeLabel, transition.beforePaneSignature, transition)) {
         return { status: "stuck", transition };
       }
-      await wait(direction === "next" ? 650 : 180);
+      await wait(direction === "next" ? 300 : 180);
       return { status: "moved" };
     }
     const button = await waitForSubmissionButton(direction);
@@ -2376,7 +2378,9 @@
     if (!await waitForSubmissionChange(before, 20000, beforeFileId, beforeLabel, beforePaneSignature, pendingTransition)) {
       return { status: "stuck", transition: pendingTransition };
     }
-    await wait(direction === "next" ? 650 : 180);
+    // 切替の確認自体が学生名・ファイル欄の安定を含むため、ここでの追加待機は
+    // 短くてよい。PDF中心の課題では、この差が人数分そのまま効いてくる。
+    await wait(direction === "next" ? 300 : 180);
     return { status: "moved" };
   }
 

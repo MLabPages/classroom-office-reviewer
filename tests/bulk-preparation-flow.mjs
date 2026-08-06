@@ -110,6 +110,13 @@ assert.match(content, /let studentChangedAt = transition\?\.studentChangedAt \|\
 assert.match(content, /if \(transition\) transition\.studentChangedAt = studentChangedAt;/);
 assert.match(content, /transition\.beforePaneSignature, transition\)/);
 assert.match(content, /beforePaneSignature, pendingTransition\)/);
-assert.match(content, /if \(!stateKind && filePaneGraceExpired\)/);
+assert.match(content, /if \(filePaneGraceExpired && \(fileIdChanged \|\| studentLabelChanged\)\) return true;/);
+assert.match(content, /const studentLabelChanged = Boolean\(currentLabel\) && Boolean\(previousLabel\) && currentLabel !== previousLabel;/);
 
-console.log("16件の一括準備・キャッシュ・先読み・排他・安全収集テストに合格しました。");
+// テスト17：準備タブが背面でも処理を続け、切替待ちを短くして1件あたりを速くする。
+assert.match(content, /FILE_PANE_CONFIRM_GRACE_MS = 2500/);
+assert.match(content, /await wait\(direction === "next" \? 300 : 180\);/);
+assert.doesNotMatch(content, /await wait\(direction === "next" \? 650 : 180\);/);
+assert.doesNotMatch(content, /paused: true/);
+
+console.log("17件の一括準備・キャッシュ・先読み・排他・安全収集テストに合格しました。");
