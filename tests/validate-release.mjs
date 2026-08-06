@@ -48,7 +48,9 @@ assert(content.includes('id="cwr-show-preparation"'));
 assert(content.includes("function getCacheIdentity"));
 assert(content.includes("function showPreparationPanel"));
 assert(content.includes("preparationPanelHidden"));
-assert(content.includes('openButton.textContent = "PDFで表示"'));
+// Google形式を変換せず表示する設定のときは、ボタン名も実際の動作に合わせる。
+assert(content.includes('? "ビューアーで表示"'));
+assert(content.includes(': "PDFで表示";'));
 assert(content.includes('type: "cwr-cache-summary"'));
 assert(content.includes('"cwr-prepare-one"'));
 // 1人が複数ファイルを出した場合、2件目以降も準備する経路が要る。
@@ -139,11 +141,12 @@ assert(content.includes("loadSubmissionCatalog"));
 assert(content.includes("cachedPdfUrl"));
 assert(content.includes('event.data?.type === "cwr-select-submission"'));
 assert(content.includes("function openExternalSubmission"));
-assert(viewer.includes('loadPdf(pdfUrl, fileName, params.get("pages")).catch(showError);'));
+// PDFを持たない表示では読み込みを始めない。始めると不要なエラーが出る。
+assert(viewer.includes('if (pdfUrl) loadPdf(pdfUrl, fileName, params.get("pages")).catch(showError);'));
 assert(viewer.includes('const cMapUrl = chrome.runtime.getURL("vendor/cmaps/");'));
 assert(viewer.includes('const standardFontDataUrl = chrome.runtime.getURL("vendor/standard_fonts/");'));
 assert(viewer.includes("cMapPacked: true"));
-assert(/\r?\n}\r?\nloadPdf\(pdfUrl, fileName, params\.get\("pages"\)\)/.test(viewer));
+assert(/\r?\n}\r?\n(?:\/\/[^\n]*\r?\n)*if \(pdfUrl\) loadPdf\(pdfUrl, fileName, params\.get\("pages"\)\)/.test(viewer));
 assert(server.includes(`const port = ${expectedPort};`));
 assert(server.includes("version: appVersion"));
 assert(server.includes('"ClassroomReviewer"'));

@@ -542,4 +542,6 @@ async function loadPdf(pdfUrl, targetFileName, targetPageCount) {
     showError(error);
   }
 }
-loadPdf(pdfUrl, fileName, params.get("pages")).catch(showError);
+// PDFを持たない表示（Google形式をそのまま出す場合や案内表示）では、
+// 親側から内容が届くのを待つ。ここで読み込むと不要なエラーが出てしまう。
+if (pdfUrl) loadPdf(pdfUrl, fileName, params.get("pages")).catch(showError);

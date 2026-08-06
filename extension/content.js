@@ -3719,9 +3719,11 @@
       autoInput.disabled = true;
       return;
     }
-    openButton.textContent = "PDFで表示";
+    openButton.textContent = state.googleNative && (googleDocument || googlePresentation)
+      ? "ビューアーで表示"
+      : "PDFで表示";
     officeButton.textContent = googleDocument || googlePresentation
-      ? "Google形式はPDF表示のみ"
+      ? "Google形式は別窓なし"
       : pdfAttachment
         ? "PDFはPDF表示のみ"
       : powerpoint
@@ -4699,7 +4701,12 @@
     state.viewerNotice = notice;
     state.displayedPdfUrl = "";
     const iframe = state.overlay?.querySelector("iframe");
-    if (!iframe || !document.body.contains(state.overlay)) return false;
+    // ビューアがまだ開いていないときは、ここで新しく開く。以前は何もせず
+    // 終了していたため、「PDFで表示」を押しても画面が変わらなかった。
+    if (!iframe || !document.body.contains(state.overlay)) {
+      openViewerForNotice(notice);
+      return true;
+    }
     state.pendingOverlay?.remove();
     state.pendingOverlay = null;
     iframe.title = `${notice.fileName || "提出物"} の内容`;
@@ -4709,6 +4716,46 @@
     state.overlay.style.right = `${bounds.right}px`;
     sendViewerControls();
     return true;
+  }
+
+  // PDFを持たない表示（Google形式をそのまま出す場合や、共有リンク・添付なしの
+  // 案内）のためにビューアを開く。PDF表示と同じ枠・同じ操作欄をそのまま使う。
+  function openViewerForNotice(notice) {
+    if (!contextAvailable()) return;
+    state.pendingOverlay?.remove();
+    state.pendingOverlay = null;
+    state.overlay?.remove();
+
+    const bounds = findPreviewBounds();
+    const overlay = document.createElement("div");
+    overlay.id = "cwr-overlay";
+    overlay.style.top = `${bounds.top}px`;
+    overlay.style.right = `${bounds.right}px`;
+
+    const viewerUrl = new URL(chrome.runtime.getURL("viewer.html"));
+    viewerUrl.searchParams.set("name", notice.fileName || "提出物");
+
+    const iframe = document.createElement("iframe");
+    iframe.src = viewerUrl.href;
+    iframe.title = `${notice.fileName || "提出物"} の内容`;
+    iframe.allow = "fullscreen";
+    iframe.addEventListener("load", () => {
+      iframe.contentWindow?.postMessage({ type: "cwr-show-notice", ...notice }, "*");
+      const viewerStatus = state.viewerStatus;
+      if (viewerStatus) iframe.contentWindow?.postMessage({ type: "cwr-viewer-status", ...viewerStatus }, "*");
+      sendViewerControls();
+    });
+    overlay.appendChild(iframe);
+    overlay.insertAdjacentHTML("beforeend", `
+      <div class="cwr-resize cwr-resize-top" data-edge="top" title="上下の大きさを変更（ダブルクリックで自動に戻す）"></div>
+      <div class="cwr-resize cwr-resize-right" data-edge="right" title="左右の大きさを変更（ダブルクリックで自動に戻す）"></div>
+      <div class="cwr-resize cwr-resize-corner" data-edge="corner" title="大きさを変更（ダブルクリックで自動に戻す）"></div>
+    `);
+    attachResizeHandles(overlay);
+    document.body.appendChild(overlay);
+    state.ui?.classList.add("cwr-hidden");
+    state.overlay = overlay;
+    applyOverlayBounds();
   }
 
   function renderPdf(pdfUrl, fileName, pageCount) {
@@ -4872,7 +4919,12 @@
       // これも切替対象に含めないと、前の学生のPDFが残ったままになる。
       const hasDisplayableSubmission = Boolean(currentDisplayedFileInfo())
         || Boolean(noticeForSubmission(currentDisplayedFileInfo()));
-      if (state.enabled && hadPrevious && (state.auto || fileChangedWithinStudent) && isSubmissionView() && hasDisplayableSubmission) {
+      // ビューアを開いたまま学生を切り替えたときは、自動表示の設定に関係なく
+      // 表示を追従させる。追従しないと前の学生の内容が残り、切り替えたはずの
+      // 画面が変わらないように見えてしまう。
+      const viewerOpen = Boolean(state.overlay) && document.body.contains(state.overlay);
+      const shouldFollow = state.auto || fileChangedWithinStudent || viewerOpen;
+      if (state.enabled && hadPrevious && shouldFollow && isSubmissionView() && hasDisplayableSubmission) {
         setTimeout(() => {
           if (state.mode === "office" && currentDisplayedFileInfo()?.kind === "office") startOfficeWindow(true);
           else startConversion(true);
