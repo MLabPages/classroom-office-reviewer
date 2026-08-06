@@ -1265,6 +1265,19 @@
     return `https://docs.google.com/${type}/d/${fileId}/edit`;
   }
 
+  // ビューア内へ埋め込むときの表示用URL。編集画面ではなくプレビュー表示を使う。
+  // 余計な操作欄が出ず、提出物の中身だけを大きく読める。
+  function googleEmbedUrl(file = {}) {
+    const fileId = file.expectedFileId || file.fileId || "";
+    if (!fileId) return "";
+    const type = file.expectedGoogleType === "presentation" || file.kind === "google-presentation"
+      ? "presentation"
+      : "document";
+    return type === "presentation"
+      ? `https://docs.google.com/presentation/d/${fileId}/preview`
+      : `https://docs.google.com/document/d/${fileId}/preview`;
+  }
+
   function submissionCatalogContext() {
     const path = location.pathname || (location.href || "").split(/[?#]/)[0];
     return path.replace(/\/u\/\d+(?=\/)/i, "/u/*");
@@ -3951,9 +3964,10 @@
         kind: "google-native",
         fileName: fileInfo.fileName || "Google形式の提出",
         url: googleFileUrl(fileInfo),
+        embedUrl: googleEmbedUrl(fileInfo),
         title: "Classroomの表示をそのまま使います",
-        body: "「Google形式はPDFにせず表示」がオンのため、PDFへは変換していません。Classroomの画面をそのままご確認ください。PDFで見たい場合は操作パネルでこの設定をオフにしてください。",
-        status: "Google形式はClassroomの表示のままです。"
+        body: "「Google形式はPDFにせず表示」がオンのため、PDFへは変換せずGoogleの表示をそのまま出しています。PDFのページ送りや倍率を使いたい場合は、操作パネルでこの設定をオフにしてください。",
+        status: "Google形式は変換せずに表示しています。"
       };
     }
     if (fileInfo?.kind === "no-attachment") {
@@ -4035,10 +4049,7 @@
       state.catalogActiveKey = "";
       state.currentKey = getSubmissionKey(fileInfo || undefined);
       state.convertedKey = state.currentKey;
-      // Google形式をそのまま見る設定では、Classroomの表示を覆わない。
-      // 案内を重ねると、せっかくの元の画面が読めなくなる。
-      if (notice.kind === "google-native") removeOverlay();
-      else showViewerNotice(notice);
+      showViewerNotice(notice);
       setStatus(notice.status, "idle");
       return true;
     }

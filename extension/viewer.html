@@ -71,8 +71,23 @@
     .notice-body { margin: 0; color: #bdc1c6; font-size: 13px; line-height: 1.7; text-align: left; }
     .notice-link { display: inline-block; margin-top: 4px; border: 1px solid #8ab4f8; border-radius: 999px; padding: 9px 18px; color: #d2e3fc; text-decoration: none; }
     .notice-link:hover, .notice-link:focus-visible { background: #3c4043; outline: 2px solid #8ab4f8; }
+    /* PDFへ変換しないGoogle形式は、ビューアいっぱいに表示して読みやすくする。 */
+    #google-frame { width: 100%; height: 100%; min-height: 100%; border: 0; background: #fff; }
+    #pages:has(#google-frame) { width: 100%; padding: 0; }
     .notice-url { margin: 0; overflow-wrap: anywhere; color: #9aa0a6; font-size: 11px; }
-    html:fullscreen header { display: none; }
+    /* 全画面でも倍率・ページ送りを使えるようにする。ふだんは隠し、画面上部へ
+       マウスを近づけるか操作したときだけ操作欄を重ねて出す。 */
+    html:fullscreen header {
+      position: fixed;
+      inset: 0 0 auto;
+      z-index: 6;
+      background: rgba(32, 33, 36, .96);
+      opacity: 0;
+      transform: translateY(-100%);
+      transition: opacity .15s ease, transform .15s ease;
+      pointer-events: none;
+    }
+    html:fullscreen.controls-visible header { opacity: 1; transform: none; pointer-events: auto; }
     html:fullscreen main { inset: 0; background: #111; }
     html:fullscreen #submission-panel { top: 0; }
     html:fullscreen #pages { gap: 24px; padding: 8px 16px 32px; }

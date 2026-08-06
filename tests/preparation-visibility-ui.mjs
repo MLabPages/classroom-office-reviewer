@@ -5,6 +5,10 @@ const [content, css] = await Promise.all([
   readFile(new URL("../extension/content.js", import.meta.url), "utf8"),
   readFile(new URL("../extension/content.css", import.meta.url), "utf8")
 ]);
+const [viewer, viewerHtml] = await Promise.all([
+  readFile(new URL("../extension/viewer.js", import.meta.url), "utf8"),
+  readFile(new URL("../extension/viewer.html", import.meta.url), "utf8")
+]);
 
 // 準備タブが背面でも処理を止めない。採点タブと準備タブを行き来せずに済ませる。
 const backgroundMessage = "準備タブは背面ですが、そのまま処理を続けています。採点タブで作業を続けて構いません。";
@@ -25,5 +29,20 @@ assert(css.includes("#cwr-preparation-drag"));
 assert(css.includes("cursor: grab"));
 assert(css.includes("width: max-content;"));
 assert(css.includes("justify-self: end;"));
+
+// 操作パネルの長い項目名がはみ出さないこと。
+assert(css.includes("grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);"));
+assert(css.includes("overflow-wrap: anywhere;"));
+assert(!css.includes("#cwr-google-native-label {\n  display: inline-flex;\n  align-items: center;\n  gap: 6px;\n  white-space: nowrap;"));
+
+// 全画面でも倍率変更・ページ送りを使えること。
+assert(viewerHtml.includes("html:fullscreen.controls-visible header"));
+assert(viewer.includes("function revealFullscreenControls"));
+assert(viewer.includes("function stepPage(delta)"));
+assert(viewer.includes('if (event.clientY <= 72) revealFullscreenControls();'));
+
+// PDFへ変換しないGoogle形式も、ビューア内へ大きく埋め込むこと。
+assert(viewer.includes('notice.kind === "google-native" && notice.embedUrl'));
+assert(viewerHtml.includes("#google-frame"));
 
 console.log("Bulk preparation keeps running in hidden tabs and the compact drag control has an explicit label.");

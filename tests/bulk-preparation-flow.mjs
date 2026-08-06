@@ -126,6 +126,9 @@ assert.match(content, /state\.googleNative = cwrGoogleNative === true;/);
 assert.match(content, /if \(state\.googleNative && \["google-document", "google-presentation"\]\.includes\(file\.kind\)\)/);
 assert.match(content, /status: "google-native"/);
 assert.match(content, /function googleFileUrl\(file = \{\}\)/);
-assert.match(content, /if \(notice\.kind === "google-native"\) removeOverlay\(\);/);
+// PDFへ変換しないGoogle形式も、ビューア内に大きく表示する。
+assert.match(content, /function googleEmbedUrl\(file = \{\}\)/);
+assert.match(content, /embedUrl: googleEmbedUrl\(fileInfo\)/);
+assert.doesNotMatch(content, /if \(notice\.kind === "google-native"\) removeOverlay\(\);/);
 
 console.log("18件の一括準備・キャッシュ・先読み・排他・安全収集テストに合格しました。");
