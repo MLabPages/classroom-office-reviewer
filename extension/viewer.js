@@ -70,9 +70,27 @@ function showNotice(notice) {
   pdfDocument = null;
   zoom = 1;
   nameElement.textContent = notice.fileName || "提出物";
-  metaElement.textContent = notice.kind === "link" ? "共有リンクの提出" : "添付ファイルなし";
+  metaElement.textContent = notice.kind === "link"
+    ? "共有リンクの提出"
+    : notice.kind === "google-native"
+      ? "Google形式（変換なし）"
+      : "添付ファイルなし";
   zoomOutButton.disabled = true;
   zoomInButton.disabled = true;
+
+  // PDFへ変換しないGoogle形式は、案内文ではなくGoogleの画面そのものを
+  // ビューアいっぱいに埋め込む。Classroomの小さな枠より大きく読めるうえ、
+  // 変換によるレイアウトのずれも起きない。
+  if (notice.kind === "google-native" && notice.embedUrl) {
+    const frame = document.createElement("iframe");
+    frame.id = "google-frame";
+    frame.src = notice.embedUrl;
+    frame.title = `${notice.fileName || "提出物"} の内容`;
+    frame.setAttribute("allow", "fullscreen");
+    pagesElement.replaceChildren(frame);
+    window.parent.postMessage({ type: "cwr-viewer-ready" }, "*");
+    return;
+  }
 
   const message = document.createElement("div");
   message.id = "message";
@@ -378,6 +396,73 @@ async function toggleFullscreen() {
 }
 
 fullscreenButton.addEventListener("click", () => toggleFullscreen().catch(showError));
+
+// 1ページずつの送り・戻し。表示中のページを基準に前後へ移動する。
+function stepPage(delta) {
+  const current = visiblePageIndex();
+  if (current < 0) return;
+  showPresentationPage(current + delta);
+}
+
+// 全画面では操作欄をふだん隠す。画面上部へマウスを近づけたときと、キーボード
+// 操作の直後だけ出し、倍率変更・ページ送り・一覧を全画面のまま使えるようにする。
+let controlsHideTimer = null;
+function revealFullscreenControls(keepVisibleMs = 2200) {
+  if (!document.fullscreenElement) return;
+  document.documentElement.classList.add("controls-visible");
+  clearTimeout(controlsHideTimer);
+  controlsHideTimer = setTimeout(() => {
+    document.documentElement.classList.remove("controls-visible");
+  }, keepVisibleMs);
+}
+
+document.addEventListener("mousemove", (event) => {
+  if (!document.fullscreenElement) return;
+  if (event.clientY <= 72) revealFullscreenControls();
+});
+
+document.addEventListener("fullscreenchange", () => {
+  clearTimeout(controlsHideTimer);
+  document.documentElement.classList.remove("controls-visible");
+  if (document.fullscreenElement) revealFullscreenControls(3200);
+});
+
+// 全画面中でもキーだけで送り・戻し・倍率を操作できるようにする。
+document.addEventListener("keydown", (event) => {
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  const target = event.target;
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+  if (["PageDown", "ArrowRight", " "].includes(event.key)) {
+    if (event.key === " " && !document.fullscreenElement) return;
+    event.preventDefault();
+    stepPage(1);
+    revealFullscreenControls();
+    return;
+  }
+  if (["PageUp", "ArrowLeft"].includes(event.key)) {
+    event.preventDefault();
+    stepPage(-1);
+    revealFullscreenControls();
+    return;
+  }
+  if (event.key === "+" || event.key === "=") {
+    event.preventDefault();
+    changeZoom(0.2);
+    revealFullscreenControls();
+    return;
+  }
+  if (event.key === "-") {
+    event.preventDefault();
+    changeZoom(-0.2);
+    revealFullscreenControls();
+    return;
+  }
+  if (event.key === "f" || event.key === "F") {
+    event.preventDefault();
+    toggleFullscreen().catch(showError);
+  }
+});
+
 document.getElementById("reconvert").addEventListener("click", () => {
   closeMoreMenu();
   send({ type: "cwr-reconvert" });
