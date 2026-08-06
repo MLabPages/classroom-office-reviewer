@@ -701,7 +701,17 @@
 
   function submissionFilePaneSignature() {
     const region = submissionFileRegion();
-    if (!region) return "";
+    // 提出物領域を特定できない画面では、ここが常に空文字になり「ファイル欄が
+    // 変わっていない」と判定され続ける。切替確認の手掛かりを失わないよう、
+    // その場合は表示中のDrive/Docsプレビューだけで簡易的な署名を作る。
+    // 添付の収集範囲は広げないので、別学生の添付が混ざることはない。
+    if (!region) {
+      const displayedFrames = [...document.querySelectorAll("iframe[src]")]
+        .filter((frame) => !isCwrOwnedNode(frame) && visible(frame) && /(?:drive|docs)\.google\.com/i.test(frame.src || ""))
+        .map((frame) => parseDriveId(frame.src || ""))
+        .filter(Boolean);
+      return displayedFrames.length ? JSON.stringify({ frames: displayedFrames }) : "";
+    }
     const frames = nodesWithin(region, "iframe[src]")
       .filter((frame) => !isCwrOwnedNode(frame))
       .map((frame) => parseDriveId(frame.src || ""))
@@ -1491,15 +1501,25 @@
       return submissionStatusForMs >= NO_ATTACHMENT_CONFIRM_MS;
     }
     const stateKind = submissionStateKind(fileState);
+    // 右側ファイル欄を特定できない画面では、提出物の状態自体を読み取れず
+    // stateKind が空のままになる。猶予時間を過ぎた後は、表示中のプレビューが
+    // 前の学生と違うファイルへ入れ替わったことを切替完了の根拠として使う。
+    // これが無いと、提出済みの学生で一括準備が1人目から進めない。
+    if (!stateKind && filePaneGraceExpired) {
+      return Boolean(displayedFileId) && displayedFileId !== previousFileId;
+    }
     return Boolean(stateKind) && (stateKind === "no-attachment"
       ? noAttachmentForMs >= NO_ATTACHMENT_CONFIRM_MS
       : Boolean(displayedFileId) && displayedFileId !== previousFileId);
   }
 
-  async function waitForSubmissionChange(previousKey, timeoutMs = 20000, previousFileId = "", previousLabel = "", previousPaneSignature = "") {
+  async function waitForSubmissionChange(previousKey, timeoutMs = 20000, previousFileId = "", previousLabel = "", previousPaneSignature = "", transition = null) {
     const startedAt = Date.now();
     let pausedMilliseconds = 0;
-    let studentChangedAt = 0;
+    // 再試行のたびにここを0へ戻すと、ファイル欄を確認できない画面での猶予時間が
+    // いつまでも満了せず、一括準備が1人目から進めなくなる。矢印を押した一連の
+    // 待ち直しでは、最初に学生が変わった時刻を引き継ぐ。
+    let studentChangedAt = transition?.studentChangedAt || 0;
     let noAttachmentSince = 0;
     let submissionStatusSince = 0;
     let studentLabelSince = 0;
@@ -1517,7 +1537,11 @@
       const submissionStatus = zipStatusOf(currentLabel);
       const fileState = inspectSubmissionFile();
       if (studentChanged) {
-        if (!studentChangedAt) studentChangedAt = Date.now();
+        if (!studentChangedAt) {
+          studentChangedAt = Date.now();
+          // 次の待ち直しでも同じ起点を使えるよう、呼び出し側へ覚えさせる。
+          if (transition) transition.studentChangedAt = studentChangedAt;
+        }
         const now = Date.now();
         if (currentLabel && currentLabel !== observedLabel) {
           observedLabel = currentLabel;
@@ -2329,7 +2353,7 @@
     // すでに押した矢印の結果待ちでは、再クリックしない。遅れてDOMだけ
     // 更新された瞬間にもう一度押すと、1人飛ばしてしまうためである。
     if (transition) {
-      if (!await waitForSubmissionChange(transition.before, BACKGROUND_RETRY_MS, transition.beforeFileId, transition.beforeLabel, transition.beforePaneSignature)) {
+      if (!await waitForSubmissionChange(transition.before, BACKGROUND_RETRY_MS, transition.beforeFileId, transition.beforeLabel, transition.beforePaneSignature, transition)) {
         return { status: "stuck", transition };
       }
       await wait(direction === "next" ? 650 : 180);
@@ -2349,7 +2373,7 @@
     const beforePaneSignature = submissionFilePaneSignature();
     button.click();
     const pendingTransition = { before, beforeFileId, beforeLabel, beforePaneSignature };
-    if (!await waitForSubmissionChange(before, 20000, beforeFileId, beforeLabel, beforePaneSignature)) {
+    if (!await waitForSubmissionChange(before, 20000, beforeFileId, beforeLabel, beforePaneSignature, pendingTransition)) {
       return { status: "stuck", transition: pendingTransition };
     }
     await wait(direction === "next" ? 650 : 180);

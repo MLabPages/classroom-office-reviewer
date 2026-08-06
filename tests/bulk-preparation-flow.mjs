@@ -105,4 +105,11 @@ assert.match(content, /if \(!filePaneConfirmed && !filePaneGraceExpired\) return
 assert.doesNotMatch(content, /if \(!filePaneChanged \|\| filePaneStableForMs < NO_ATTACHMENT_CONFIRM_MS\) return false;/);
 assert.match(content, /region \? nodesWithin\(region, "iframe\[src\]"\) : \[\.\.\.document\.querySelectorAll\("iframe\[src\]"\)\]/);
 
-console.log("15件の一括準備・キャッシュ・先読み・排他・安全収集テストに合格しました。");
+// テスト16：待ち直しでも猶予時間の起点を引き継ぎ、状態を読めない画面でも進める。
+assert.match(content, /let studentChangedAt = transition\?\.studentChangedAt \|\| 0;/);
+assert.match(content, /if \(transition\) transition\.studentChangedAt = studentChangedAt;/);
+assert.match(content, /transition\.beforePaneSignature, transition\)/);
+assert.match(content, /beforePaneSignature, pendingTransition\)/);
+assert.match(content, /if \(!stateKind && filePaneGraceExpired\)/);
+
+console.log("16件の一括準備・キャッシュ・先読み・排他・安全収集テストに合格しました。");
