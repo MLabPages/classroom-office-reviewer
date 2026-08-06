@@ -129,10 +129,12 @@ assert.match(content, /function googleFileUrl\(file = \{\}\)/);
 // PDFへ変換しないGoogle形式も、ビューア内に大きく表示する。
 assert.match(content, /function googleEmbedUrl\(file = \{\}\)/);
 assert.match(content, /const embedUrl = googleEmbedUrl\(fileInfo\);/);
+assert.match(content, /linkLabel: hasDirectGoogleUrl/);
+assert.match(content, /Classroomの提出画面を開く/);
 // 埋め込みURLの元になるファイル番号は、枠が無い画面でも探し出す。
 assert.match(content, /function googleFileIdFromLinks\(kind\)/);
 assert.match(content, /function googleFileIdFromLocation\(kind\)/);
-assert.match(content, /\|\| googleFileIdFromLinks\(kind\)/);
+assert.match(content, /const linkInfo = googleLinkInfoFromLinks\(kind\);/);
 // 番号を取れないときは、埋め込めない理由と対処を画面に出す。
 assert.match(content, /embedUrl \? "Classroomの表示をそのまま使います" : "この提出物のファイル番号を取得できません"/);
 assert.doesNotMatch(content, /if \(notice\.kind === "google-native"\) removeOverlay\(\);/);

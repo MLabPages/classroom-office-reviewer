@@ -44,6 +44,7 @@ assert(viewer.includes('if (event.clientY <= 72) revealFullscreenControls();'));
 // PDFへ変換しないGoogle形式も、ビューア内へ大きく埋め込むこと。
 assert(viewer.includes('notice.kind === "google-native" && notice.embedUrl'));
 assert(viewerHtml.includes("#google-frame"));
+assert(viewer.includes('id = "google-frame-link"'));
 
 // ビューアが開いていないときは、案内表示のためにビューアを新しく開くこと。
 // ここが無いと「PDFで表示」を押しても画面が変わらない。

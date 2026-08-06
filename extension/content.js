@@ -422,39 +422,81 @@
     // Classroomが編集画面を直接開いている場合、枠が無いのでそこからは番号を
     // 取れない。右側のファイル欄のリンクや、Classroom自身のURLからも探す。
     // 番号が空のままだと表示に使うURLを組み立てられず、案内文だけが出てしまう。
-    const fileId = parseDriveId(matchingFrame?.src || "")
-      || googleFileIdFromLinks(kind)
-      || googleFileIdFromLocation(kind);
+    const frameUrl = matchingFrame?.src || "";
+    const linkInfo = googleLinkInfoFromLinks(kind);
+    const locationInfo = googleLinkInfoFromLocation(kind);
+    const fileId = parseDriveId(frameUrl)
+      || linkInfo.fileId
+      || locationInfo.fileId;
     return {
       kind,
       fileName: labeledFileName || (kind === "google-document" ? "Googleドキュメント" : "Googleスライド"),
       expectedName: "",
       expectedFileId: fileId,
-      expectedGoogleType: kind === "google-document" ? "document" : "presentation"
+      expectedGoogleType: kind === "google-document" ? "document" : "presentation",
+      // IDが取れなくても、Googleの元URLが残っていれば確認用リンクとして使う。
+      sourceUrl: isGoogleUrlForKind(frameUrl, kind)
+        ? frameUrl
+        : (linkInfo.sourceUrl || locationInfo.sourceUrl)
     };
+  }
+
+  function googleFileIdFromValue(value) {
+    const text = String(value || "").trim();
+    if (/^[a-zA-Z0-9_-]{20,}$/.test(text)) return text;
+    return parseDriveId(text);
+  }
+
+  function isGoogleUrlForKind(value, kind) {
+    const text = String(value || "").trim();
+    if (/^[a-zA-Z0-9_-]{20,}$/.test(text)) return true;
+    if (!/^https?:\/\//i.test(text) || !isDriveUrl(text)) return false;
+    const type = googleTypeOfUrl(text);
+    if (type) return type === (kind === "google-presentation" ? "presentation" : "document");
+    // DriveのファイルURLは種類をURLに含めないため、検出済みの提出形式を使う。
+    return Boolean(googleFileIdFromValue(value));
+  }
+
+  function googleLinkInfoFromLinks(kind) {
+    const wanted = kind === "google-presentation" ? "presentation" : "document";
+    const selectors = "a[href], [data-href], [data-url], [data-file-url], [data-file-id]";
+    const region = submissionFileRegion();
+    const nodes = region ? nodesWithin(region, selectors) : [...document.querySelectorAll(selectors)];
+    for (const node of nodes) {
+      if (isCwrOwnedNode(node)) continue;
+      const href = fileUrlOf(node);
+      if (!href || !isGoogleUrlForKind(href, kind)) continue;
+      const type = googleTypeOfUrl(href);
+      if (type && type !== wanted) continue;
+      return {
+        fileId: googleFileIdFromValue(href),
+        sourceUrl: /^https?:\/\//i.test(href) ? href : ""
+      };
+    }
+    return { fileId: "", sourceUrl: "" };
   }
 
   // 右側のファイル欄などに置かれたGoogleドキュメント／スライドのリンクから番号を拾う。
   function googleFileIdFromLinks(kind) {
+    return googleLinkInfoFromLinks(kind).fileId;
+  }
+
+  // Classroomが編集画面を開くとき、番号や元URLはページのURLにだけ現れることがある。
+  function googleLinkInfoFromLocation(kind) {
     const wanted = kind === "google-presentation" ? "presentation" : "document";
-    for (const node of document.querySelectorAll("a[href]")) {
-      if (isCwrOwnedNode(node)) continue;
-      const href = node.getAttribute("href") || "";
-      const match = href.match(ZIP_GOOGLE_URL);
-      if (!match) continue;
-      const type = ZIP_GOOGLE_TYPES[match[1].toLowerCase()] || "";
-      if (type === wanted) return match[2];
-    }
-    return "";
+    const href = location.href || "";
+    if (!isGoogleUrlForKind(href, kind)) return { fileId: "", sourceUrl: "" };
+    const type = googleTypeOfUrl(href);
+    if (type && type !== wanted) return { fileId: "", sourceUrl: "" };
+    return {
+      fileId: googleFileIdFromValue(href),
+      sourceUrl: href
+    };
   }
 
   // Classroomが編集画面を開くとき、番号はページのURLにだけ現れることがある。
   function googleFileIdFromLocation(kind) {
-    const wanted = kind === "google-presentation" ? "presentation" : "document";
-    const match = (location.href || "").match(ZIP_GOOGLE_URL);
-    if (!match) return "";
-    const type = ZIP_GOOGLE_TYPES[match[1].toLowerCase()] || "";
-    return type === wanted ? match[2] : "";
+    return googleLinkInfoFromLocation(kind).fileId;
   }
 
   function findSupportedFileInfo() {
@@ -3992,15 +4034,22 @@
     // 変換によるレイアウトのずれが起きず、表示も速い。
     if (state.googleNative && ["google-document", "google-presentation"].includes(fileInfo?.kind)) {
       const embedUrl = googleEmbedUrl(fileInfo);
+      const googleUrl = googleFileUrl(fileInfo);
+      const classroomUrl = isClassroomTop && /^https:\/\/classroom\.google\.com\//i.test(location.href)
+        ? location.href
+        : "";
+      const linkUrl = googleUrl || classroomUrl;
+      const hasDirectGoogleUrl = Boolean(googleUrl);
       return {
         kind: "google-native",
         fileName: fileInfo.fileName || "Google形式の提出",
-        url: googleFileUrl(fileInfo),
+        url: linkUrl,
+        linkLabel: hasDirectGoogleUrl ? "Google Docsで開く" : (classroomUrl ? "Classroomの提出画面を開く" : ""),
         embedUrl,
         title: embedUrl ? "Classroomの表示をそのまま使います" : "この提出物のファイル番号を取得できません",
         body: embedUrl
           ? "「Google形式はPDFにせず表示」がオンのため、PDFへは変換せずGoogleの表示をそのまま出しています。PDFのページ送りや倍率を使いたい場合は、操作パネルでこの設定をオフにしてください。"
-          : "Googleの表示を埋め込むためのファイル番号を画面から読み取れませんでした。操作パネルで「Google形式はPDFにせず表示」をオフにすると、PDFへ変換して表示できます。",
+          : `${hasDirectGoogleUrl ? "Googleの元リンクは取得できました。" : "Googleのファイル番号を画面から読み取れませんでした。"} ${linkUrl ? "下のリンクから提出物を開けます。" : "Classroomの提出画面を開いて確認してください。"} PDFのページ送りや倍率を使いたい場合は、操作パネルで「Google形式はPDFにせず表示」をオフにするとPDFへ変換できます。`,
         status: embedUrl ? "Google形式は変換せずに表示しています。" : "Google形式のファイル番号を取得できませんでした。"
       };
     }

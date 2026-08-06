@@ -164,7 +164,8 @@ assert.deepEqual(
     fileName: googleTitle,
     expectedName: "",
     expectedFileId: googleFileId,
-    expectedGoogleType: "document"
+    expectedGoogleType: "document",
+    sourceUrl: `https://docs.google.com/document/d/${googleFileId}/grading?authuser=5`
   }
 );
 assert.equal(googleHooks.describeDocument().googleType, "document");
@@ -322,6 +323,21 @@ assert.equal(
   googleUrlOnlyHooks.findGoogleFileInfo()?.expectedFileId,
   googleFileId,
   "埋め込み枠が無くても、ページのURLからGoogle形式のファイル番号を取得する"
+);
+
+// ファイル番号がURLに無くても、Googleの元リンクを取得できる場合は、
+// ビューアーの案内からそのリンクを開けるように保持する。
+const googleSourceLinkHooks = runDetection({
+  nodes: [
+    new MockElement({ attributes: { "aria-label": `Google ドキュメント: ${googleTitle}` } }),
+    new MockElement({ href: "https://docs.google.com/document/u/5/edit?usp=sharing" })
+  ]
+});
+assert.equal(googleSourceLinkHooks.findGoogleFileInfo()?.expectedFileId, "");
+assert.equal(
+  googleSourceLinkHooks.findGoogleFileInfo()?.sourceUrl,
+  "https://docs.google.com/document/u/5/edit?usp=sharing",
+  "ファイル番号が無くてもGoogle元リンクを保持する"
 );
 
 const hiddenPreparationHooks = runDetection({ visibilityState: "hidden", hidden: true, hasFocus: false });
