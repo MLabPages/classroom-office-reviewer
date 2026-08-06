@@ -877,6 +877,39 @@ assert.equal(
   false,
   "前の学生のファイルが表示されたままなら、状態を読めなくても切替完了にしない"
 );
+// PDF提出はClassroom自身のビューアで開き、Drive/Docsのプレビュー枠が置かれない
+// ことがある。この場合ファイル番号は前後とも空になるため、番号の入れ替わりでは
+// 判定できない。猶予後は、画面上の提出者名が別人へ変わったことを根拠にする。
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: null,
+    previousFileId: "",
+    displayedFileId: "",
+    studentChangedForMs: 6000,
+    studentLabelStableForMs: 1500,
+    studentLabelChanged: true,
+    filePaneChanged: false,
+    filePaneStableForMs: 0
+  }),
+  true,
+  "PDF提出でファイル番号が取れなくても、提出者名が変わっていれば切替完了にする"
+);
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: null,
+    previousFileId: "",
+    displayedFileId: "",
+    studentChangedForMs: 6000,
+    studentLabelStableForMs: 1500,
+    studentLabelChanged: false,
+    filePaneChanged: false,
+    filePaneStableForMs: 0
+  }),
+  false,
+  "提出者名もファイル番号も変わらないなら、猶予後でも切替完了にしない"
+);
 
 assert.deepEqual(plain(noAttachmentWithoutNavigationHooks.zipCollectionCompletion({
   rosterTotal: 18, collectedCount: 18, stopReason: "end"
