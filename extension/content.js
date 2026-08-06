@@ -419,13 +419,42 @@
     if (!labeledKind && !documentFrame && !slidesFrame) return null;
     const kind = labeledKind || (documentFrame ? "google-document" : "google-presentation");
     const matchingFrame = kind === "google-document" ? documentFrame : slidesFrame;
+    // Classroomが編集画面を直接開いている場合、枠が無いのでそこからは番号を
+    // 取れない。右側のファイル欄のリンクや、Classroom自身のURLからも探す。
+    // 番号が空のままだと表示に使うURLを組み立てられず、案内文だけが出てしまう。
+    const fileId = parseDriveId(matchingFrame?.src || "")
+      || googleFileIdFromLinks(kind)
+      || googleFileIdFromLocation(kind);
     return {
       kind,
       fileName: labeledFileName || (kind === "google-document" ? "Googleドキュメント" : "Googleスライド"),
       expectedName: "",
-      expectedFileId: parseDriveId(matchingFrame?.src || ""),
+      expectedFileId: fileId,
       expectedGoogleType: kind === "google-document" ? "document" : "presentation"
     };
+  }
+
+  // 右側のファイル欄などに置かれたGoogleドキュメント／スライドのリンクから番号を拾う。
+  function googleFileIdFromLinks(kind) {
+    const wanted = kind === "google-presentation" ? "presentation" : "document";
+    for (const node of document.querySelectorAll("a[href]")) {
+      if (isCwrOwnedNode(node)) continue;
+      const href = node.getAttribute("href") || "";
+      const match = href.match(ZIP_GOOGLE_URL);
+      if (!match) continue;
+      const type = ZIP_GOOGLE_TYPES[match[1].toLowerCase()] || "";
+      if (type === wanted) return match[2];
+    }
+    return "";
+  }
+
+  // Classroomが編集画面を開くとき、番号はページのURLにだけ現れることがある。
+  function googleFileIdFromLocation(kind) {
+    const wanted = kind === "google-presentation" ? "presentation" : "document";
+    const match = (location.href || "").match(ZIP_GOOGLE_URL);
+    if (!match) return "";
+    const type = ZIP_GOOGLE_TYPES[match[1].toLowerCase()] || "";
+    return type === wanted ? match[2] : "";
   }
 
   function findSupportedFileInfo() {
@@ -3962,14 +3991,17 @@
     // PDFへ変換しない設定では、Google形式はClassroomの表示をそのまま使う。
     // 変換によるレイアウトのずれが起きず、表示も速い。
     if (state.googleNative && ["google-document", "google-presentation"].includes(fileInfo?.kind)) {
+      const embedUrl = googleEmbedUrl(fileInfo);
       return {
         kind: "google-native",
         fileName: fileInfo.fileName || "Google形式の提出",
         url: googleFileUrl(fileInfo),
-        embedUrl: googleEmbedUrl(fileInfo),
-        title: "Classroomの表示をそのまま使います",
-        body: "「Google形式はPDFにせず表示」がオンのため、PDFへは変換せずGoogleの表示をそのまま出しています。PDFのページ送りや倍率を使いたい場合は、操作パネルでこの設定をオフにしてください。",
-        status: "Google形式は変換せずに表示しています。"
+        embedUrl,
+        title: embedUrl ? "Classroomの表示をそのまま使います" : "この提出物のファイル番号を取得できません",
+        body: embedUrl
+          ? "「Google形式はPDFにせず表示」がオンのため、PDFへは変換せずGoogleの表示をそのまま出しています。PDFのページ送りや倍率を使いたい場合は、操作パネルでこの設定をオフにしてください。"
+          : "Googleの表示を埋め込むためのファイル番号を画面から読み取れませんでした。操作パネルで「Google形式はPDFにせず表示」をオフにすると、PDFへ変換して表示できます。",
+        status: embedUrl ? "Google形式は変換せずに表示しています。" : "Google形式のファイル番号を取得できませんでした。"
       };
     }
     if (fileInfo?.kind === "no-attachment") {

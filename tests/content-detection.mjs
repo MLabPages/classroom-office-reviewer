@@ -272,6 +272,58 @@ assert.equal(
   "「ファイル」見出しを持つ欄を提出物領域として見つける"
 );
 
+// Classroomが編集画面を直接開くと、埋め込み枠からファイル番号を取れない。
+// この場合でもページのURLから番号を拾えないと、埋め込み表示ができず
+// 案内文だけが出てしまう。
+const googleUrlOnlyHooks = (() => {
+  const hooks = {};
+  const label = new MockElement({ attributes: { "aria-label": `Google スライド: ${googleTitle}` } });
+  const region = new MockElement({
+    attributes: { "data-testid": "submission-files", role: "region" },
+    children: [label]
+  });
+  const body = new MockElement({ children: [region] });
+  region.parentElement = body;
+  label.parentElement = region;
+  const window = {};
+  window.top = window;
+  const document = {
+    visibilityState: "visible",
+    hidden: false,
+    body,
+    hasFocus: () => true,
+    querySelector: () => null,
+    querySelectorAll(selector) {
+      if (selector === "iframe[src]") return [];
+      if (selector === "a[href]") return [];
+      if (selector.includes("data-testid") || selector.includes("role='region'")) return [region];
+      return [label];
+    }
+  };
+  const context = vm.createContext({
+    __CWR_TEST_HOOKS__: hooks,
+    chrome: { runtime: { id: "test-extension-id" }, storage: { local: { get: async () => ({}), set: async () => undefined } } },
+    Element: MockElement,
+    atob,
+    document,
+    getComputedStyle: () => ({ display: "block", visibility: "visible" }),
+    globalThis: null,
+    location: {
+      hostname: "classroom.google.com",
+      href: `https://docs.google.com/presentation/d/${googleFileId}/edit`
+    },
+    window
+  });
+  context.globalThis = context;
+  vm.runInContext(content, context);
+  return hooks;
+})();
+assert.equal(
+  googleUrlOnlyHooks.findGoogleFileInfo()?.expectedFileId,
+  googleFileId,
+  "埋め込み枠が無くても、ページのURLからGoogle形式のファイル番号を取得する"
+);
+
 const hiddenPreparationHooks = runDetection({ visibilityState: "hidden", hidden: true, hasFocus: false });
 assert.deepEqual(JSON.parse(JSON.stringify(hiddenPreparationHooks.preparationDocumentState())), {
   visibilityState: "hidden",
