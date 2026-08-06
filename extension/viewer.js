@@ -82,12 +82,24 @@ function showNotice(notice) {
   // ビューアいっぱいに埋め込む。Classroomの小さな枠より大きく読めるうえ、
   // 変換によるレイアウトのずれも起きない。
   if (notice.kind === "google-native" && notice.embedUrl) {
+    const frameWrap = document.createElement("div");
+    frameWrap.id = "google-frame-wrap";
+    if (notice.url && notice.linkLabel) {
+      const link = document.createElement("a");
+      link.id = "google-frame-link";
+      link.href = notice.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = notice.linkLabel;
+      frameWrap.append(link);
+    }
     const frame = document.createElement("iframe");
     frame.id = "google-frame";
     frame.src = notice.embedUrl;
     frame.title = `${notice.fileName || "提出物"} の内容`;
     frame.setAttribute("allow", "fullscreen");
-    pagesElement.replaceChildren(frame);
+    frameWrap.append(frame);
+    pagesElement.replaceChildren(frameWrap);
     window.parent.postMessage({ type: "cwr-viewer-ready" }, "*");
     return;
   }
@@ -110,7 +122,7 @@ function showNotice(notice) {
     link.href = notice.url;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
-    link.textContent = "リンクを開く";
+    link.textContent = notice.linkLabel || "リンクを開く";
     const address = document.createElement("p");
     address.className = "notice-url";
     address.textContent = notice.url;

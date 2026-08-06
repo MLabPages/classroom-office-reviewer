@@ -33,6 +33,10 @@ function ensureNativeHost() {
   try {
     nativePort = chrome.runtime.connectNative("com.mlabpages.classroom_reviewer");
     nativePort.onDisconnect.addListener(() => {
+      // Native Messagingホスト未登録・終了時にChromeが設定する
+      // runtime.lastErrorを読み取らないと、DevToolsに
+      // 「Unchecked runtime.lastError」として残る。
+      void chrome.runtime.lastError?.message;
       nativePort = null;
       nativePortConnecting = false;
     });

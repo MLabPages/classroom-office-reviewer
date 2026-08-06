@@ -72,8 +72,11 @@
     .notice-link { display: inline-block; margin-top: 4px; border: 1px solid #8ab4f8; border-radius: 999px; padding: 9px 18px; color: #d2e3fc; text-decoration: none; }
     .notice-link:hover, .notice-link:focus-visible { background: #3c4043; outline: 2px solid #8ab4f8; }
     /* PDFへ変換しないGoogle形式は、ビューアいっぱいに表示して読みやすくする。 */
-    #google-frame { width: 100%; height: 100%; min-height: 100%; border: 0; background: #fff; }
-    #pages:has(#google-frame) { width: 100%; padding: 0; }
+    #google-frame-wrap { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 100%; }
+    #google-frame-link { flex: 0 0 auto; align-self: flex-start; margin: 8px 12px; border: 1px solid #8ab4f8; border-radius: 999px; padding: 7px 14px; color: #d2e3fc; text-decoration: none; }
+    #google-frame-link:hover, #google-frame-link:focus-visible { background: #3c4043; outline: 2px solid #8ab4f8; }
+    #google-frame { flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; border: 0; background: #fff; }
+    #pages:has(#google-frame-wrap) { width: 100%; padding: 0; }
     .notice-url { margin: 0; overflow-wrap: anywhere; color: #9aa0a6; font-size: 11px; }
     /* 全画面でも倍率・ページ送りを使えるようにする。ふだんは隠し、画面上部へ
        マウスを近づけるか操作したときだけ操作欄を重ねて出す。 */
