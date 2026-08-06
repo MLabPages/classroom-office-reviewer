@@ -45,4 +45,14 @@ assert(viewer.includes('if (event.clientY <= 72) revealFullscreenControls();'));
 assert(viewer.includes('notice.kind === "google-native" && notice.embedUrl'));
 assert(viewerHtml.includes("#google-frame"));
 
+// ビューアが開いていないときは、案内表示のためにビューアを新しく開くこと。
+// ここが無いと「PDFで表示」を押しても画面が変わらない。
+assert(content.includes("function openViewerForNotice(notice)"));
+assert(content.includes("openViewerForNotice(notice);"));
+assert(!content.includes("if (!iframe || !document.body.contains(state.overlay)) return false;"));
+
+// ビューアを開いたまま学生を切り替えたら、自動表示の設定に関係なく追従すること。
+assert(content.includes("const viewerOpen = Boolean(state.overlay) && document.body.contains(state.overlay);"));
+assert(content.includes("const shouldFollow = state.auto || fileChangedWithinStudent || viewerOpen;"));
+
 console.log("Bulk preparation keeps running in hidden tabs and the compact drag control has an explicit label.");
