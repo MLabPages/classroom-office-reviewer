@@ -98,4 +98,11 @@ assert.match(content, /if \(seen\.has\(studentKey\)\) \{/);
 assert.match(content, /seen\.add\(studentKey\);/);
 assert.match(content, /studentKey,\s*fileSeq:/s);
 
-console.log("14件の一括準備・キャッシュ・先読み・排他・安全収集テストに合格しました。");
+// テスト15：右側ファイル欄を特定できない画面でも、一括準備が1人目で止まらない。
+assert.match(content, /FILE_PANE_CONFIRM_GRACE_MS = \d+/);
+assert.match(content, /const filePaneGraceExpired = studentChangedForMs >= FILE_PANE_CONFIRM_GRACE_MS;/);
+assert.match(content, /if \(!filePaneConfirmed && !filePaneGraceExpired\) return false;/);
+assert.doesNotMatch(content, /if \(!filePaneChanged \|\| filePaneStableForMs < NO_ATTACHMENT_CONFIRM_MS\) return false;/);
+assert.match(content, /region \? nodesWithin\(region, "iframe\[src\]"\) : \[\.\.\.document\.querySelectorAll\("iframe\[src\]"\)\]/);
+
+console.log("15件の一括準備・キャッシュ・先読み・排他・安全収集テストに合格しました。");

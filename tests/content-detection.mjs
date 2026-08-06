@@ -802,6 +802,51 @@ assert.equal(
   false,
   "未提出状態も一定時間安定するまで確定しない"
 );
+// 右側ファイル欄そのものを特定できないClassroom画面では、署名がいつまでも
+// 変わらない。この場合に待ち続けると、一括準備が1人目の直後で必ず止まる。
+// 一定時間を過ぎたら、学生名・提出状態・表示中のファイル番号だけで進める。
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: { kind: "office" },
+    previousFileId: "previous-drive-file",
+    displayedFileId: "new-drive-file",
+    studentChangedForMs: 6000,
+    studentLabelStableForMs: 1500,
+    filePaneChanged: false,
+    filePaneStableForMs: 0
+  }),
+  true,
+  "ファイル欄の署名を取得できない画面でも、別の手掛かりが揃えば切替完了にする"
+);
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: { kind: "office" },
+    previousFileId: "previous-drive-file",
+    displayedFileId: "previous-drive-file",
+    studentChangedForMs: 6000,
+    studentLabelStableForMs: 1500,
+    filePaneChanged: false,
+    filePaneStableForMs: 0
+  }),
+  false,
+  "猶予時間を過ぎても、前の学生のファイルが表示されたままなら切替完了にしない"
+);
+assert.equal(
+  noAttachmentWithoutNavigationHooks.submissionChangeReady({
+    studentChanged: true,
+    fileState: { kind: "office" },
+    previousFileId: "previous-drive-file",
+    displayedFileId: "new-drive-file",
+    studentChangedForMs: 2000,
+    studentLabelStableForMs: 1500,
+    filePaneChanged: false,
+    filePaneStableForMs: 0
+  }),
+  false,
+  "切替直後は従来どおり右側ファイル欄の更新を待つ"
+);
 
 assert.deepEqual(plain(noAttachmentWithoutNavigationHooks.zipCollectionCompletion({
   rosterTotal: 18, collectedCount: 18, stopReason: "end"
