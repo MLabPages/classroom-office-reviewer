@@ -97,7 +97,8 @@
     fileSwitching: false,
     ui: null,
     overlay: null,
-    pendingOverlay: null
+    pendingOverlay: null,
+    viewerClosedByUser: false
   };
 
   // 画面に出す準備状況は1か所にまとめ、準備専用タブと採点タブで同じ内容を描く。
@@ -1156,6 +1157,13 @@
     }
     if (message?.type === "cwr-show-pdf") {
       if (!state.enabled) {
+        endDisplayRequest();
+        safeSendMessage({ type: "cwr-release-pdf", pdfUrl: message.pdfUrl }).catch(() => undefined);
+        return false;
+      }
+      // 閉じる操作の直後に、すでに進行していた自動変換の結果で
+      // ビューアーを開き直さない。次の手動表示で解除される。
+      if (state.viewerClosedByUser && !state.overlay) {
         endDisplayRequest();
         safeSendMessage({ type: "cwr-release-pdf", pdfUrl: message.pdfUrl }).catch(() => undefined);
         return false;
@@ -4110,6 +4118,8 @@
   async function startConversion(isAutomatic, requestedFile = null) {
     if (!contextAvailable()) return;
     if (!state.enabled) return;
+    if (isAutomatic && state.viewerClosedByUser && !state.overlay) return false;
+    if (!isAutomatic) state.viewerClosedByUser = false;
     // 自動表示のときだけ、進行中の要求を尊重して二重に走らせない。
     // 手動操作は必ず受け付け、前の要求を捨てて新しい表示を優先する。
     if (isAutomatic && state.busy) return;
@@ -4661,7 +4671,9 @@
       await showSubmissionFile(currentIndex - 1);
       return;
     }
-    const button = findSubmissionButton(direction);
+    // Googleスライドの埋め込みを表示した直後は、Classroom側の学生切替
+    // ボタンが短時間だけ描き直される。すぐに見つからない場合も待ってから押す。
+    const button = await waitForSubmissionButton(direction);
     if (!button || submissionButtonDisabled(button)) {
       setStatus(direction === "next" ? "最後の提出者です。" : "最初の提出者です。", "idle");
       return;
@@ -4930,6 +4942,7 @@
 
   window.addEventListener("message", (event) => {
     if (event.data?.type === "cwr-close") {
+      state.viewerClosedByUser = true;
       removeOverlay();
       setStatus("プレビューを閉じました。", "idle");
     }

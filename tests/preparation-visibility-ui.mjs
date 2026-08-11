@@ -55,5 +55,12 @@ assert(!content.includes("if (!iframe || !document.body.contains(state.overlay))
 // ビューアを開いたまま学生を切り替えたら、自動表示の設定に関係なく追従すること。
 assert(content.includes("const viewerOpen = Boolean(state.overlay) && document.body.contains(state.overlay);"));
 assert(content.includes("const shouldFollow = state.auto || fileChangedWithinStudent || viewerOpen;"));
+// 閉じたビューアーを、切替中に届いた自動変換結果で開き直さない。
+assert(content.includes("viewerClosedByUser: false"));
+assert(content.includes("if (isAutomatic && state.viewerClosedByUser && !state.overlay) return false;"));
+assert(content.includes("if (state.viewerClosedByUser && !state.overlay) {"));
+assert(content.includes("state.viewerClosedByUser = true;"));
+// GoogleスライドでClassroomの切替ボタンが描き直される間も、学生移動を待つ。
+assert(content.includes("const button = await waitForSubmissionButton(direction);"));
 
 console.log("Bulk preparation keeps running in hidden tabs and the compact drag control has an explicit label.");
