@@ -4671,22 +4671,18 @@
       await showSubmissionFile(currentIndex - 1);
       return;
     }
-    // Googleスライドの埋め込みを表示した直後は、Classroom側の学生切替
-    // ボタンが短時間だけ描き直される。すぐに見つからない場合も待ってから押す。
-    const button = await waitForSubmissionButton(direction);
-    if (!button || submissionButtonDisabled(button)) {
+    setStatus(direction === "next" ? "次の提出者へ移動しています…" : "前の提出者へ移動しています…", "working");
+    state.fileSwitching = false;
+    // Googleスライドの埋め込み直後などは、Classroomが学生名・添付欄を
+    // 段階的に更新する。最初の20秒だけで失敗にせず、押下済みなら二重に
+    // 押さずに同じ切替を確認し直す。一括準備と同じ安全な経路を使う。
+    const moved = await moveWithRecovery(direction);
+    if (moved === "end") {
       setStatus(direction === "next" ? "最後の提出者です。" : "最初の提出者です。", "idle");
       return;
     }
-    const before = navigationStudentKey();
-    const beforeFileId = findDisplayedFileId();
-    const beforeLabel = getStudentLabel();
-    const beforePaneSignature = submissionFilePaneSignature();
-    setStatus(direction === "next" ? "次の提出者へ移動しています…" : "前の提出者へ移動しています…", "working");
-    state.fileSwitching = false;
-    button.click();
-    if (!await waitForSubmissionChange(before, 20000, beforeFileId, beforeLabel, beforePaneSignature)) {
-      setStatus("提出者を切り替えられませんでした。Classroomを再読み込みしてください。", "error");
+    if (moved !== "moved") {
+      setStatus("提出者の切替を確認できませんでした。Classroomを再読み込みして、もう一度お試しください。", "error");
       return;
     }
     await waitForSubmissionFile(5000);

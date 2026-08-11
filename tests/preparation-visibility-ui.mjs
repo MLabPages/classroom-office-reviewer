@@ -60,7 +60,8 @@ assert(content.includes("viewerClosedByUser: false"));
 assert(content.includes("if (isAutomatic && state.viewerClosedByUser && !state.overlay) return false;"));
 assert(content.includes("if (state.viewerClosedByUser && !state.overlay) {"));
 assert(content.includes("state.viewerClosedByUser = true;"));
-// GoogleスライドでClassroomの切替ボタンが描き直される間も、学生移動を待つ。
-assert(content.includes("const button = await waitForSubmissionButton(direction);"));
+// GoogleスライドでClassroomの切替が遅れても、同じ学生切替を安全に再確認する。
+assert(content.includes("const moved = await moveWithRecovery(direction);"));
+assert(content.includes("if (moved !== \"moved\") {"));
 
 console.log("Bulk preparation keeps running in hidden tabs and the compact drag control has an explicit label.");
