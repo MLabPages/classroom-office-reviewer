@@ -7,7 +7,7 @@ import { execFile, spawn } from "node:child_process";
 import readline from "node:readline";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { allowedOrigin as isAllowedOrigin, extensionIdFromManifestKey } from "./extension-origin.mjs";
+import { allowedOrigin as isAllowedOrigin, allowedRequest, extensionIdFromManifestKey } from "./extension-origin.mjs";
 
 const execFileAsync = promisify(execFile);
 const nativeDir = path.dirname(fileURLToPath(import.meta.url));
@@ -652,11 +652,11 @@ function servePdf(res, pathname) {
 }
 
 const server = http.createServer(async (req, res) => {
-  setCors(req, res);
-  if (!allowedOrigin(req.headers.origin || "")) {
+  if (!allowedRequest(req, allowedExtensionId, port)) {
     sendJson(res, 403, { ok: false, error: "この接続元からは利用できません。" });
     return;
   }
+  setCors(req, res);
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     res.end();

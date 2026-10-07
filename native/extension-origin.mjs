@@ -24,3 +24,12 @@ export function allowedOrigin(origin, extensionId) {
   if (!origin) return true;
   return EXTENSION_ID_PATTERN.test(extensionId) && origin === `chrome-extension://${extensionId}`;
 }
+
+export function allowedRequest(req, extensionId, port) {
+  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  const count = (name) => req.rawHeaders.filter((_, index) => index % 2 === 0 && req.rawHeaders[index].toLowerCase() === name).length;
+  if (count("host") !== 1 || !hosts.has(req.headers.host) || count("origin") > 1) return false;
+  if (req.headers.origin !== undefined) return !!req.headers.origin && allowedOrigin(req.headers.origin, extensionId);
+  return req.method === "GET" || req.method === "HEAD" ||
+    (count("x-reviewer-native") === 1 && req.headers["x-reviewer-native"] === "1");
+}

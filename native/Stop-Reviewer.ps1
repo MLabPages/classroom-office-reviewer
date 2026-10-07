@@ -25,7 +25,7 @@ if ($null -eq $health -or -not $health.ok -or $health.service -ne 'Classroom Off
 }
 
 try {
-    Invoke-RestMethod -Uri $shutdownUri -Method Post -TimeoutSec 3 | Out-Null
+    Invoke-RestMethod -Uri $shutdownUri -Method Post -Headers @{ 'X-Reviewer-Native' = '1' } -TimeoutSec 3 | Out-Null
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
         Start-Sleep -Milliseconds 150
         if (-not (Get-Process -Id $serverPid -ErrorAction SilentlyContinue)) { break }
