@@ -7,6 +7,7 @@ import { execFile, spawn } from "node:child_process";
 import readline from "node:readline";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { allowedOrigin, allowedRequest, extensionIdFor } from "./extension-origin.mjs";
 
 const execFileAsync = promisify(execFile);
 const nativeDir = path.dirname(fileURLToPath(import.meta.url));
@@ -20,6 +21,7 @@ const wordWindowHostPath = path.join(nativeDir, "Word-Window-Host.ps1");
 const powerPointWindowHostPath = path.join(nativeDir, "PowerPoint-Window-Host.ps1");
 const host = "127.0.0.1";
 const port = 8765;
+const extensionId = extensionIdFor(JSON.parse(await fsp.readFile(path.join(rootDir, "extension", "manifest.json"), "utf8")), path.join(rootDir, "extension"));
 const cacheMaximumAgeMs = 8 * 60 * 60 * 1000;
 const cacheMaximumPdfs = 30;
 let queue = Promise.resolve();
@@ -43,13 +45,9 @@ function log(message) {
   process.stdout.write(`[${new Date().toISOString()}] ${message}\n`);
 }
 
-function allowedOrigin(origin) {
-  return !origin || origin.startsWith("chrome-extension://");
-}
-
 function setCors(req, res) {
   const origin = req.headers.origin || "";
-  if (origin.startsWith("chrome-extension://")) {
+  if (allowedOrigin(origin, extensionId)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
   }
@@ -442,11 +440,11 @@ function servePdf(res, pathname) {
 }
 
 const server = http.createServer(async (req, res) => {
-  setCors(req, res);
-  if (!allowedOrigin(req.headers.origin || "")) {
+  if (!allowedRequest(req, extensionId, port)) {
     sendJson(res, 403, { ok: false, error: "この接続元からは利用できません。" });
     return;
   }
+  setCors(req, res);
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     res.end();

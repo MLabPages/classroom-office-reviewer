@@ -17,7 +17,7 @@ if ($null -eq $process -or $process.CommandLine -notlike '*classroom-word-review
 }
 
 try {
-    Invoke-RestMethod -Uri 'http://127.0.0.1:8765/shutdown' -Method Post -TimeoutSec 3 | Out-Null
+    Invoke-RestMethod -Uri 'http://127.0.0.1:8765/shutdown' -Method Post -Headers @{ 'X-Reviewer-Native' = '1' } -TimeoutSec 3 | Out-Null
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
         Start-Sleep -Milliseconds 150
         if (-not (Get-Process -Id $serverPid -ErrorAction SilentlyContinue)) { break }
