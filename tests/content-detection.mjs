@@ -1376,4 +1376,11 @@ await assert.rejects(zipTimeout,/ZIP作成用のページを読み込めませ�
 assert.equal(zipFrameHooks.windowListeners.has("message"),false,"失敗後の起動通知を残さない");
 assert.equal(zipFrameListeners.get("load").size,1);
 
+// 生徒選択欄から直接移動できない画面では false を返し、矢印での移動に任せる。
+const jumpUrl = `https://classroom.google.com/u/7/c/course/a/work/submissions/by-status/and-sort-first-name/student/${modernStudent}/m/LTEyMzQ1`;
+const jumpHooks = runDetection({href:jumpUrl,pathname:new URL(jumpUrl).pathname,nodes:[nextStudentButton]});
+assert.equal(await jumpHooks.jumpToStudent("123456789012"),true,"すでに目的の学生なら移動しない");
+assert.equal(await jumpHooks.jumpToStudent("999999999999"),false,"選択欄が無ければ従来の移動へ戻る");
+assert.equal(await jumpHooks.jumpToStudent(""),false);
+
 console.log("Content detection handles legacy and modern Classroom URLs, student selectors, attachment listboxes, and bulk ZIP collection.");

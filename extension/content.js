@@ -1090,6 +1090,7 @@
       waitForZipFrameReady,
       restoreEmptyFrameSource,
       zipFrameOrigin,
+      jumpToStudent,
       navigationStudentKey,
       zipStudentKey,
       zipCollectionCompletion,
@@ -3237,6 +3238,45 @@
     return result.status;
   }
 
+  // 生徒選択欄から目的の学生へ直接移動する。1人ずつ矢印で戻ると人数分の
+  // 待ち時間がかかるため、先頭への移動と元の学生への復帰に使う。
+  // 選択欄の構造が変わって直接移動できないときは false を返し、呼び出し側は
+  // 従来どおり矢印で1人ずつ移動する。
+  async function jumpToStudent(decimalId, timeoutMs = 20000) {
+    if (!decimalId || !contextAvailable()) return false;
+    if (zipDecodeStudentId(getStudentIdFromUrl()) === decimalId) return true;
+    const findOption = () => [...document.querySelectorAll(`[data-value="${decimalId}"]`)]
+      .find((node) => !isCwrOwnedNode(node)
+        && (node.getAttribute("aria-checked") !== null || node.getAttribute("aria-selected") !== null || node.getAttribute("role") === "option"));
+    const selector = document.querySelector("[role='combobox'][aria-label='生徒を選択する'], [role='combobox'][aria-label='Select student']");
+    let option = findOption();
+    let openedMenu = false;
+    if (!option || !visible(option)) {
+      if (!selector || !visible(selector)) return false;
+      selector.click();
+      openedMenu = true;
+      const openedAt = Date.now();
+      while (Date.now() - openedAt < 3000) {
+        option = findOption();
+        if (option && visible(option)) break;
+        await localWait(100);
+      }
+    }
+    if (!option || !visible(option)) {
+      if (openedMenu) selector?.click();
+      return false;
+    }
+    const before = navigationStudentKey();
+    const beforeFileId = findDisplayedFileId();
+    const beforeLabel = getStudentLabel();
+    const beforePaneSignature = submissionFilePaneSignature();
+    option.click();
+    const changed = await waitForSubmissionChange(before, timeoutMs, beforeFileId, beforeLabel, beforePaneSignature, {
+      before, beforeFileId, beforeLabel, beforePaneSignature
+    });
+    return changed && zipDecodeStudentId(getStudentIdFromUrl()) === decimalId;
+  }
+
   // Classroomを先頭から順にたどり、提出者ごとの添付情報を集める。
   // 取得やZIP作成はここでは行わない。
   async function collectZipSubmissions() {
@@ -3245,6 +3285,7 @@
     const collected = [];
     const seenKeys = new Set();
     const startStudentKey = getStudentKey();
+    const startDecimalId = zipDecodeStudentId(getStudentIdFromUrl());
     let forwardMoves = 0;
     let stopReason = "";
 
@@ -3253,6 +3294,9 @@
       counts: { studentsDone: 0, studentsTotal: roster.length, filesDone: 0, filesFailed: 0, filesTotal: 0 },
       detail: "先頭の提出者へ移動しています…"
     });
+    // 選択欄の先頭へ直接移動する。直後の矢印確認で、本当に先頭かを確かめる。
+    // 並び順が異なった場合だけ、残りを1人ずつ戻る。
+    if (roster[0]?.studentId) await jumpToStudent(roster[0].studentId);
     for (let attempts = 0; attempts < 1000 && !zipRun.cancelled; attempts += 1) {
       if (await zipMovePrevious() !== "moved") break;
       setZipProgress({ detail: `先頭の提出者へ移動しています（${attempts + 1}人分）…` });
@@ -3323,7 +3367,9 @@
     // 元の提出者へ戻れたかどうかで判断する（1回でも取りこぼすとずれるため）。
     if (forwardMoves > 0 && startStudentKey) {
       setZipProgress({ detail: "元の提出者へ戻しています…" });
-      for (let index = 0; index <= forwardMoves + 2; index += 1) {
+      // 最後の学生から1人ずつ戻らず、選択欄で元の学生へ直接移動する。
+      const jumped = await jumpToStudent(startDecimalId);
+      for (let index = 0; !jumped && index <= forwardMoves + 2; index += 1) {
         if (getStudentKey() === startStudentKey) break;
         if (await zipMovePrevious() !== "moved") break;
       }
