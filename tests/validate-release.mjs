@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.9.10";
+const expectedVersion = "0.9.11";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -217,5 +217,6 @@ await import("./helper-startup.mjs");
 await import("./native-origin.mjs");
 await import("./submission-list.mjs");
 await import("./bulk-zip.mjs");
+await import("./zip-frame-bootstrap.mjs");
 
 console.log(`Release settings are consistent for v${expectedVersion} on port ${expectedPort}.`);

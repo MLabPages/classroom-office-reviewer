@@ -392,7 +392,11 @@ export async function handleZipMessage(message) {
 // Nodeでのテストでは読み込むだけで副作用を起こさない。
 if (typeof window !== "undefined" && typeof parent !== "undefined" && parent !== window) {
   window.addEventListener("message", (event) => {
-    if (event.origin !== PARENT_ORIGIN) return;
+    if (event.origin !== PARENT_ORIGIN || event.source !== parent) return;
+    if (event.data?.type === "cwr-zip-ping") {
+      parent.postMessage({ type: "cwr-zip-ready" }, PARENT_ORIGIN);
+      return;
+    }
     handleZipMessage(event.data);
   });
   // 読み込みが終わったことを親へ伝える。ここが届く前に指示を送ると取りこぼす。

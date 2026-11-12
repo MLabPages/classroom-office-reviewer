@@ -1087,6 +1087,9 @@
       getStudentKey,
       submissionCatalogContext,
       prepareViewerFrame,
+      waitForZipFrameReady,
+      restoreEmptyFrameSource,
+      zipFrameOrigin,
       navigationStudentKey,
       zipStudentKey,
       zipCollectionCompletion,
@@ -3344,19 +3347,36 @@
     frame.setAttribute("tabindex", "-1");
     frame.title = "提出物のZIP作成";
     frame.src = chrome.runtime.getURL("bulk-zip.html");
-    zipRun.framePromise = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("ZIP作成用のページを読み込めませんでした。Classroomを再読み込みしてください。")), 15000);
-      const onReady = (event) => {
-        if (event.source !== frame.contentWindow || event.data?.type !== "cwr-zip-ready") return;
-        clearTimeout(timer);
-        window.removeEventListener("message", onReady);
-        resolve(frame);
-      };
-      window.addEventListener("message", onReady);
-    });
+    restoreEmptyFrameSource(frame);
+    zipRun.framePromise = waitForZipFrameReady(frame, zipFrameOrigin());
     document.body.appendChild(frame);
     zipRun.frame = frame;
     return zipRun.framePromise;
+  }
+
+  function waitForZipFrameReady(frame, origin, timeoutMs = 15000) {
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        window.removeEventListener("message", onReady);
+        frame.removeEventListener("load", onLoad);
+      };
+      const onReady = (event) => {
+        if (event.source !== frame.contentWindow || event.origin !== origin || event.data?.type !== "cwr-zip-ready") return;
+        cleanup();
+        resolve(frame);
+      };
+      const onLoad = () => {
+        // モジュール初期化時の一度きりの通知を取り逃しても、読み込み後に応答を確認する。
+        frame.contentWindow?.postMessage({ type: "cwr-zip-ping" }, origin);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("ZIP作成用のページを読み込めませんでした。Classroomを再読み込みしてください。"));
+      }, timeoutMs);
+      window.addEventListener("message", onReady);
+      frame.addEventListener("load", onLoad);
+    });
   }
 
   // 取得が終わったら作業用フレームは片付ける。採点中のページに、使い終えた
@@ -3368,11 +3388,9 @@
   }
 
   function zipFrameOrigin() {
-    try {
-      return new URL(chrome.runtime.getURL("bulk-zip.html")).origin;
-    } catch {
-      return "*";
-    }
+    // chrome-extension: の origin が "null" になるURL実装でも、宛先を正しく指定する。
+    const url = new URL(chrome.runtime.getURL("bulk-zip.html"));
+    return `${url.protocol}//${url.host}`;
   }
 
   function postToZipFrame(message) {
@@ -3554,10 +3572,21 @@
     zipRun.assignmentName = zipAssignmentName();
     endDisplayRequest();
     removeOverlay();
-    setZipProgress({ phase: "collect", title: "提出物を一括ダウンロード", detail: "提出者の一覧を確認しています…" });
+    setZipProgress({ phase: "collect", title: "提出物を一括ダウンロード", detail: "ZIP作成の準備を確認しています…" });
     updateUiLabels();
 
     try {
+      // 起動できない作業用ページのために、全員を巡回してから失敗するのを防ぐ。
+      await ensureZipFrame();
+      if (zipRun.cancelled) {
+        zipRun.running = false;
+        zipRun.collecting = false;
+        releaseZipFrame();
+        setZipProgress({ phase: "cancelled", title: "一括ダウンロードを中止しました", detail: "提出物の確認は開始していません。" });
+        updateUiLabels();
+        return;
+      }
+      setZipProgress({ detail: "提出者の一覧を確認しています…" });
       const { collected, completion } = await collectZipSubmissions();
       zipRun.collecting = false;
       if (zipRun.cancelled) {
@@ -3572,7 +3601,7 @@
       }
       if (!completion?.complete) throw new Error(completion?.message || "提出者の巡回が途中で止まったため、ZIP作成を中止しました。");
       zipRun.students = applyRosterStudentNumbers(collected, zipRun.rosterText);
-      // 取得用のフレームは、Classroomの確認が終わってから読み込む。
+      // 起動確認済みのフレームへ、全員分の情報を渡す。
       await ensureZipFrame();
       setZipProgress({ phase: "download", detail: "提出物の取得を開始しています…" });
       postToZipFrame({
@@ -4880,9 +4909,9 @@
 
   // PDFを持たない表示（Google形式をそのまま出す場合や、共有リンク・添付なしの
   // 案内）のためにビューアを開く。PDF表示と同じ枠・同じ操作欄をそのまま使う。
-  function prepareViewerFrame(iframe, overlay) {
+  function restoreEmptyFrameSource(iframe) {
     // 空のsrcdocが付くと、srcの拡張ページを読み込まず真っ黒になる。
-    // 自分のビューアーだけを対象に、一度だけ本来のURLへ戻す。
+    // 自分のビューアーとZIP作業ページだけを対象に、一度だけ本来のURLへ戻す。
     let restoredSource = false;
     iframe.addEventListener("load", () => {
       if (!restoredSource && iframe.getAttribute("srcdoc") === "") {
@@ -4890,6 +4919,10 @@
         iframe.removeAttribute("srcdoc");
       }
     });
+  }
+
+  function prepareViewerFrame(iframe, overlay) {
+    restoreEmptyFrameSource(iframe);
     const onReady = (event) => {
       if (event.source !== iframe.contentWindow || !["cwr-viewer-ready", "cwr-viewer-error"].includes(event.data?.type)) return;
       clearTimeout(timer);

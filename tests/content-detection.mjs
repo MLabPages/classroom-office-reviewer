@@ -74,7 +74,7 @@ class MockElement {
   }
 }
 
-function runDetection({ nodes = [], frames = [], href, pathname, runtimeId = "test-extension-id", storageBroken = false, visibilityState = "visible", hidden = false, hasFocus = true } = {}) {
+function runDetection({ nodes = [], frames = [], href, pathname, runtimeId = "test-extension-id", storageBroken = false, visibilityState = "visible", hidden = false, hasFocus = true, globals = {} } = {}) {
   const hooks = {};
   const location = {
     hostname: "classroom.google.com",
@@ -122,7 +122,7 @@ function runDetection({ nodes = [], frames = [], href, pathname, runtimeId = "te
     };
   const context = vm.createContext({
     __CWR_TEST_HOOKS__: hooks,
-    chrome: { runtime: runtimeId ? { id: runtimeId } : {}, storage },
+    chrome: { runtime: runtimeId ? { id: runtimeId, getURL:(path)=>`chrome-extension://${runtimeId}/${path}` } : {}, storage },
     Element: MockElement,
     // ClassroomはURLで提出者を base64 で表す。ブラウザと同じ変換を用意する。
     atob,
@@ -133,7 +133,8 @@ function runDetection({ nodes = [], frames = [], href, pathname, runtimeId = "te
     globalThis: null,
     setTimeout, clearTimeout,
     location,
-    window
+    window,
+    ...globals
   });
   context.globalThis = context;
   vm.runInContext(content, context);
@@ -1338,5 +1339,41 @@ frameListeners.get("load")();
 assert.equal(frameAttributes.has("srcdoc"),true,"再読み込みを繰り返すループにしない");
 viewerHooks.windowListeners.get("message")({source:viewerFrame.contentWindow,data:{type:"cwr-viewer-ready"}});
 assert.equal(viewerHooks.windowListeners.has("message"),false);
+
+// ZIP作業ページは、空srcdocからの復旧後、正しい送信元の準備完了だけを受け取る。
+const zipFrameHooks = runDetection();
+const zipFrameListeners = new Map();
+const zipFrameAttributes = new Map([["srcdoc",""]]);
+const pings = [];
+const zipFrame = {
+  contentWindow:{postMessage:(message,origin)=>pings.push({message,origin})},
+  addEventListener:(name,listener)=>{
+    if(!zipFrameListeners.has(name)) zipFrameListeners.set(name,new Set());
+    zipFrameListeners.get(name).add(listener);
+  },
+  removeEventListener:(name,listener)=>zipFrameListeners.get(name)?.delete(listener),
+  getAttribute:(name)=>zipFrameAttributes.has(name)?zipFrameAttributes.get(name):null,
+  removeAttribute:(name)=>zipFrameAttributes.delete(name)
+};
+const zipOrigin = "chrome-extension://dbafjkigeiajjijjijmplmoodkiclcgg";
+assert.equal(runDetection({runtimeId:"dbafjkigeiajjijjijmplmoodkiclcgg",globals:{URL}}).zipFrameOrigin(),zipOrigin);
+zipFrameHooks.restoreEmptyFrameSource(zipFrame);
+const zipReady = zipFrameHooks.waitForZipFrameReady(zipFrame,zipOrigin,1000);
+for(const listener of zipFrameListeners.get("load")) listener();
+assert.equal(zipFrameAttributes.has("srcdoc"),false);
+assert.equal(pings[0].message.type,"cwr-zip-ping");
+assert.equal(pings[0].origin,zipOrigin);
+const zipReadyListener = zipFrameHooks.windowListeners.get("message");
+zipReadyListener({source:{},origin:zipOrigin,data:{type:"cwr-zip-ready"}});
+zipReadyListener({source:zipFrame.contentWindow,origin:"https://example.invalid",data:{type:"cwr-zip-ready"}});
+assert.equal(zipFrameHooks.windowListeners.has("message"),true,"別のページの通知を準備完了と誤認しない");
+zipReadyListener({source:zipFrame.contentWindow,origin:zipOrigin,data:{type:"cwr-zip-ready"}});
+assert.equal(await zipReady,zipFrame);
+assert.equal(zipFrameHooks.windowListeners.has("message"),false);
+assert.equal(zipFrameListeners.get("load").size,1,"起動確認用のload監視を解除する");
+const zipTimeout = zipFrameHooks.waitForZipFrameReady(zipFrame,zipOrigin,5);
+await assert.rejects(zipTimeout,/ZIP作成用のページを読み込めませんでした/);
+assert.equal(zipFrameHooks.windowListeners.has("message"),false,"失敗後の起動通知を残さない");
+assert.equal(zipFrameListeners.get("load").size,1);
 
 console.log("Content detection handles legacy and modern Classroom URLs, student selectors, attachment listboxes, and bulk ZIP collection.");
