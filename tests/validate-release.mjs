@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const expectedVersion = "0.9.9";
+const expectedVersion = "0.9.10";
 const expectedPort = "18765";
 
 const read = (file) => readFile(new URL(`../${file}`, import.meta.url), "utf8");
@@ -213,6 +213,7 @@ assert(zipWriter.includes("0x0800"));
 
 await import("./content-detection.mjs");
 await import("./background-routing.mjs");
+await import("./helper-startup.mjs");
 await import("./native-origin.mjs");
 await import("./submission-list.mjs");
 await import("./bulk-zip.mjs");

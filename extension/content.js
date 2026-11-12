@@ -17,7 +17,8 @@
   const SUBMISSION_BUTTON_WAIT_MS = 5000;
   // 表示要求の返事が返らないまま放置されると、次へ・前への操作が黙って
   // 効かなくなる。変換は長くても数十秒なので、これを過ぎたら操作を戻す。
-  const DISPLAY_REQUEST_TIMEOUT_MS = 45000;
+  // 初回の補助アプリ起動（最大45秒）と変換（最大120秒）の両方を待てる余裕を持つ。
+  const DISPLAY_REQUEST_TIMEOUT_MS = 180000;
   // 「添付ファイルはありません」が描き直しの一瞬だけ出ることがある。
   // この時間だけ続けて見えたときに「添付なし」として確定する。
   const NO_ATTACHMENT_CONFIRM_MS = 1500;
@@ -236,6 +237,11 @@
     for (const frame of visibleFrames) {
       let node = frame.parentElement;
       for (let distance = 1; node && node !== document.body && distance <= 10; distance += 1) {
+        // 2026年のUIは、プレビューと添付listboxが同じ区画に並ぶ。
+        // 最も近い共通の親に限定し、生徒一覧や過去の非表示DOMへ広げない。
+        if (node.querySelector?.("[role='listbox'][aria-label='添付ファイル'], [role='listbox'][aria-label='Attachments']")) {
+          return node;
+        }
         const label = nodeAttributeLabel(node);
         const fileNodes = nodesWithin(node, "a[href], [role='menuitem'], iframe[src]");
         if (SUBMISSION_FILE_REGION_HINT.test(label) && fileNodes.length) addCandidate(node, distance);
@@ -605,6 +611,14 @@
     );
     const nestedUrl = fileUrlOf(nestedLink);
     if (nestedUrl) return nestedUrl;
+    // data-attachment-idはClassroom内の番号であり、Drive IDではない。
+    // 選択中の項目だけ、実際のプレビューURLへ結び付ける。
+    if (node?.hasAttribute?.("data-attachment-id") && node.getAttribute("aria-selected") === "true") {
+      const region = submissionFileRegion();
+      const frame = nodesWithin(region, "iframe[src]").find((item) =>
+        visible(item) && /(?:drive|docs)\.google\.com/i.test(item.src || ""));
+      if (frame) return frame.src;
+    }
     const selectionId = menuSelectionIdOf(node);
     if (!selectionId) return "";
     const candidates = nodesWithin(submissionFileRegion(),
@@ -626,6 +640,9 @@
   function findSubmissionFileMenuItems() {
     const region = submissionFileRegion();
     if (!region) return [];
+    const options = nodesWithin(region, "[role='option'][data-attachment-id]")
+      .filter((node) => !isCwrOwnedNode(node) && visible(node));
+    if (options.length) return options;
     const items = nodesWithin(region, "[role='menuitem']").filter((node) => {
       if (isCwrOwnedNode(node)) return false;
       if (node.getAttribute?.("role") !== "menuitem") return false;
@@ -685,6 +702,7 @@
       expectedName: googleType ? "" : fileName,
       expectedFileId: fileId,
       expectedGoogleType: googleType,
+      ...(node.getAttribute("data-attachment-id") ? { attachmentKey: node.getAttribute("data-attachment-id") } : {}),
       sourceUrl
     };
   }
@@ -734,7 +752,7 @@
     const nodes = [...menuItems, ...linkNodes].filter((node) => !isCwrOwnedNode(node));
     for (const node of nodes) {
       const url = fileUrlOf(node);
-      const isMenuItem = node.getAttribute?.("role") === "menuitem";
+      const isMenuItem = ["menuitem", "option"].includes(node.getAttribute?.("role"));
       // 選択欄の項目は閉じていると見えない。さらに新しいClassroomでは、
       // 提出ファイルへのDriveリンク自体が画面に出ない作りになったため、
       // 「見えないリンク」を捨てると添付が1件も見つからず、表示が
@@ -750,6 +768,7 @@
       if (!attachment) continue;
       const identity = attachment.expectedFileId
         ? `id:${attachment.expectedFileId}`
+        : attachment.attachmentKey ? `attachment:${attachment.attachmentKey}`
         : (attachment.kind === "link"
           ? `url:${(attachment.sourceUrl || "").trim().toLowerCase()}`
           : `name:${attachment.fileName.trim().toLowerCase()}`);
@@ -763,6 +782,7 @@
 
   function sameFile(left, right) {
     if (!left || !right) return false;
+    if (left.attachmentKey && right.attachmentKey) return left.attachmentKey === right.attachmentKey;
     // 共有リンクの提出はファイル番号を持たないため、URLで見分ける。
     // 名前だけで比べると、似た名前の別リンクを同じものとして落としてしまう。
     if (left.kind === "link" || right.kind === "link") {
@@ -925,6 +945,9 @@
     const target = normalizedFileName(typeof file === "string" ? file : file?.fileName);
     const targetId = typeof file === "string" ? "" : (file?.expectedFileId || "");
     const items = findSubmissionFileMenuItems().map((node) => ({ node, attachment: attachmentInfoOf(node) }));
+    if (file?.attachmentKey) {
+      return items.find((item) => item.attachment?.attachmentKey === file.attachmentKey)?.node || null;
+    }
     if (targetId) {
       const byId = items.find((item) => item.attachment?.expectedFileId === targetId);
       if (byId) return byId.node;
@@ -1062,6 +1085,8 @@
       preparationDocumentVisible,
       getStudentIdFromUrl,
       getStudentKey,
+      submissionCatalogContext,
+      prepareViewerFrame,
       navigationStudentKey,
       zipStudentKey,
       zipCollectionCompletion,
@@ -1200,6 +1225,12 @@
 
   function getStudentLabel() {
     const markers = ["提出済み", "Turned in", "返却済み", "Returned", "割り当て済み", "Assigned", "遅れて提出", "Done late", "不足", "Missing"];
+    // 現行UIでは、選択欄に提出状態の文言が付かない。
+    const studentSelector = document.querySelector("[role='combobox'][aria-label='生徒を選択する'], [role='combobox'][aria-label='Select student']");
+    if (studentSelector && visible(studentSelector)) {
+      const label = textOf(studentSelector);
+      if (label && label.length < 220) return label;
+    }
     
     // Classroomの新しいUI：ドロップダウン内で現在選択されている生徒 (aria-checked="true")
     // data-value 属性を持つ項目は生徒リストである可能性が高い。ステータス絞り込みメニュー等の場合はマーカーが含まれるため除外される。
@@ -1243,7 +1274,8 @@
   // Classroomは表示中の提出者をURLの #u=... で表す。画面から名前を読み取るより
   // 確実で、描画が間に合っていなくても取得できる。
   function getStudentIdFromUrl() {
-    return location.href.match(/[#&?]u=([^&]+)/)?.[1] || "";
+    return location.href.match(/\/student\/([^/?#]+)/)?.[1]
+      || location.href.match(/[#&?]u=([^&]+)/)?.[1] || "";
   }
 
   function getStudentKey() {
@@ -1359,7 +1391,7 @@
 
   function submissionCatalogContext() {
     const path = location.pathname || (location.href || "").split(/[?#]/)[0];
-    return path.replace(/\/u\/\d+(?=\/)/i, "/u/*");
+    return path.replace(/\/submissions(?:\/.*)?$/, "/submissions").replace(/\/u\/\d+(?=\/)/i, "/u/*");
   }
 
   function assignmentKey() {
@@ -3137,6 +3169,45 @@
     return files;
   }
 
+  // 新しい添付listboxは、未選択の項目にDrive URLを持たない。
+  // 1件ずつ選んで実際のプレビューIDを確かめ、2件目以降を黙って落とさない。
+  async function collectZipFilesForCurrentStudent() {
+    const options = findSubmissionFileMenuItems().filter((node) => node.getAttribute("data-attachment-id"));
+    if (options.length < 2) return zipFilesForCurrentStudent();
+    const files = [];
+    const originalKey = options.find((node) => node.getAttribute("aria-selected") === "true")?.getAttribute("data-attachment-id");
+    try {
+      for (const option of options) {
+        if (zipRun.cancelled) break;
+        if (option.getAttribute("aria-selected") !== "true") {
+          const previousId = findDisplayedFileId();
+          option.click();
+          if (!await waitForDisplayedFileChange(previousId)) {
+            throw new Error("添付ファイルの切替を確認できませんでした。ZIPへの入れ忘れを防ぐため中止しました。");
+          }
+        }
+        const current = currentDisplayedFileInfo();
+        if (!current?.expectedFileId) throw new Error("添付ファイルの番号を確認できませんでした。Classroomの表示を確認してください。");
+        if (files.some((file) => file.fileId === current.expectedFileId)) continue;
+        files.push({
+          kind: current.kind,
+          fileName: current.fileName,
+          fileId: current.expectedFileId,
+          googleType: current.expectedGoogleType || "",
+          sourceUrl: current.sourceUrl || sourceUrlForFile(current)
+        });
+      }
+    } finally {
+      const original = options.find((node) => node.getAttribute("data-attachment-id") === originalKey);
+      if (original && original.getAttribute("aria-selected") !== "true") {
+        const previousId = findDisplayedFileId();
+        original.click();
+        await waitForDisplayedFileChange(previousId);
+      }
+    }
+    return files;
+  }
+
   function setZipProgress(patch = {}) {
     // counts は一部だけ渡すことがある。Object.assign より先に前の値と混ぜて
     // おかないと、渡さなかった項目（総人数など）が消えてしまう。
@@ -3212,9 +3283,9 @@
       if (!status || ZIP_SUBMITTED_STATUS.test(status)) {
         const fileState = await waitForSubmissionFile(status ? 12000 : 8000);
         if (fileState && !fileState.unsupported && !fileState.noAttachment) {
-          files = zipFilesForCurrentStudent();
+          files = await collectZipFilesForCurrentStudent();
         } else if (fileState?.unsupported) {
-          files = zipFilesForCurrentStudent();
+          files = await collectZipFilesForCurrentStudent();
         }
       }
 
@@ -4157,7 +4228,7 @@
     state.catalogActiveKey = "";
     const key = getSubmissionKey(fileInfo);
     logCurrentFileContext(isAutomatic ? "自動表示を開始" : "PDF表示を開始", fileInfo);
-    setStatus("提出物を取得中…", "working");
+    setStatus("表示を準備しています…", "working");
     try {
       const response = await safeSendMessage({
         type: "cwr-start",
@@ -4809,6 +4880,32 @@
 
   // PDFを持たない表示（Google形式をそのまま出す場合や、共有リンク・添付なしの
   // 案内）のためにビューアを開く。PDF表示と同じ枠・同じ操作欄をそのまま使う。
+  function prepareViewerFrame(iframe, overlay) {
+    // 空のsrcdocが付くと、srcの拡張ページを読み込まず真っ黒になる。
+    // 自分のビューアーだけを対象に、一度だけ本来のURLへ戻す。
+    let restoredSource = false;
+    iframe.addEventListener("load", () => {
+      if (!restoredSource && iframe.getAttribute("srcdoc") === "") {
+        restoredSource = true;
+        iframe.removeAttribute("srcdoc");
+      }
+    });
+    const onReady = (event) => {
+      if (event.source !== iframe.contentWindow || !["cwr-viewer-ready", "cwr-viewer-error"].includes(event.data?.type)) return;
+      clearTimeout(timer);
+      window.removeEventListener("message", onReady);
+      if (event.data.type === "cwr-viewer-ready") state.ui?.classList.add("cwr-hidden");
+      else state.ui?.classList.remove("cwr-hidden");
+    };
+    const timer = setTimeout(() => {
+      window.removeEventListener("message", onReady);
+      if (!document.body.contains(overlay)) return;
+      state.ui?.classList.remove("cwr-hidden");
+      setStatus("ビューアーを読み込めませんでした。再表示またはZIP作成をお試しください。", "error");
+    }, 15000);
+    window.addEventListener("message", onReady);
+  }
+
   function openViewerForNotice(notice) {
     if (!contextAvailable()) return;
     state.pendingOverlay?.remove();
@@ -4828,6 +4925,7 @@
     iframe.src = viewerUrl.href;
     iframe.title = `${notice.fileName || "提出物"} の内容`;
     iframe.allow = "fullscreen";
+    prepareViewerFrame(iframe, overlay);
     iframe.addEventListener("load", () => {
       iframe.contentWindow?.postMessage({ type: "cwr-show-notice", ...notice }, "*");
       const viewerStatus = state.viewerStatus;
@@ -4842,7 +4940,6 @@
     `);
     attachResizeHandles(overlay);
     document.body.appendChild(overlay);
-    state.ui?.classList.add("cwr-hidden");
     state.overlay = overlay;
     applyOverlayBounds();
   }
@@ -4893,6 +4990,7 @@
     iframe.src = viewerUrl.href;
     iframe.title = `${fileName || "Office提出物"} の高忠実度プレビュー`;
     iframe.allow = "fullscreen";
+    prepareViewerFrame(iframe, overlay);
     iframe.addEventListener("load", () => {
       const viewerStatus = state.viewerStatus;
       if (viewerStatus) iframe.contentWindow?.postMessage({ type: "cwr-viewer-status", ...viewerStatus }, "*");
@@ -4907,7 +5005,6 @@
     attachResizeHandles(overlay);
     if (previousOverlay) overlay.style.visibility = "hidden";
     document.body.appendChild(overlay);
-    state.ui?.classList.add("cwr-hidden");
 
     if (!previousOverlay) {
       state.overlay = overlay;

@@ -107,6 +107,11 @@ responses.set(1, {
 const selectedWord = await hooks.findCurrentDocument(1);
 assert.equal(hooks.isGoogleNative(selectedWord), false);
 
+// Driveの埋め込み枠に名前が無くても、同じIDのClassroom側PDF名を使う。
+responses.set(0, {fileName:"提出物.pdf",fileId:"pdf-file-id-123456789012345",submissionView:true,authuser:5});
+responses.set(1, {fileName:"",fileId:"pdf-file-id-123456789012345",submissionView:true});
+assert.equal((await hooks.findCurrentDocument(1)).fileName,"提出物.pdf");
+
 responses.set(0, {
   fileName: "overview-card.docx",
   fileId: "overview-file-id-1234567890123",

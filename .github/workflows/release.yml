@@ -22,13 +22,16 @@ jobs:
       - name: Validate release settings
         run: node tests/validate-release.mjs
 
+      - name: Check native startup and local HTTP access
+        run: node --test tests/native-host.mjs tests/test-http-security.mjs
+
       - name: Build portable ZIP
         shell: pwsh
         run: |
           $stage = Join-Path $PWD "dist/Classroom-Office-Reviewer"
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
           Copy-Item extension, native -Destination $stage -Recurse
-          Copy-Item Start-Reviewer.cmd, Stop-Reviewer.cmd, Open-Chrome-Setup.cmd, README.md, PRIVACY.md, LICENSE, THIRD_PARTY_NOTICES.md -Destination $stage
+          Copy-Item Setup-Reviewer.cmd, Install-NativeHost.cmd, Start-Reviewer.cmd, Stop-Reviewer.cmd, Open-Chrome-Setup.cmd, README.md, PRIVACY.md, LICENSE, THIRD_PARTY_NOTICES.md -Destination $stage
           $runtime = Join-Path $stage "runtime"
           New-Item -ItemType Directory -Path $runtime -Force | Out-Null
           Copy-Item (Get-Command node.exe).Source -Destination (Join-Path $runtime "node.exe")

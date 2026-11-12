@@ -8,7 +8,7 @@ if (-not (Test-Path $manifestPath)) {
 }
 
 # manifest.json の path を絶対パスに更新する
-$manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+$manifest = Get-Content $manifestPath -Encoding UTF8 -Raw | ConvertFrom-Json
 $manifest.path = $cmdPath
 $manifest | ConvertTo-Json -Depth 10 | Set-Content $manifestPath -Encoding UTF8
 
@@ -20,7 +20,6 @@ if (-not (Test-Path $registryPath)) {
 Set-ItemProperty -Path $registryPath -Name '(default)' -Value $manifestPath -Type String
 
 Write-Host "Chrome拡張機能の自動起動(Native Messaging Host)を登録しました。" -ForegroundColor Green
-Write-Host "Chromeの拡張機能(Classroom Office Reviewer)が有効になると、補助アプリも連動して起動・終了するようになります。"
-Start-Sleep -Seconds 3
+Write-Host "初回設定は完了です。次回からClassroomの「PDFで表示」を押すだけで自動起動します。"
 
 

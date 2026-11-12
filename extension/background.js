@@ -26,22 +26,30 @@ async function fetchWithTimeout(url, init, timeoutMs, timeoutMessage) {
 
 let nativePort = null;
 let nativePortConnecting = false;
+let nativeHostError = "";
+let helperHealthPending = null;
 
 function ensureNativeHost() {
-  if (nativePort || nativePortConnecting) return;
+  if (nativePort) {
+    try { nativePort.postMessage({ type: "ensure-started" }); return; }
+    catch { nativePort = null; }
+  }
+  if (nativePortConnecting) return;
   nativePortConnecting = true;
+  nativeHostError = "";
   try {
     nativePort = chrome.runtime.connectNative("com.mlabpages.classroom_reviewer");
     nativePort.onDisconnect.addListener(() => {
       // Native Messagingホスト未登録・終了時にChromeが設定する
       // runtime.lastErrorを読み取らないと、DevToolsに
       // 「Unchecked runtime.lastError」として残る。
-      void chrome.runtime.lastError?.message;
+      nativeHostError = chrome.runtime.lastError?.message || "";
       nativePort = null;
       nativePortConnecting = false;
     });
     nativePort.onMessage.addListener(() => {});
   } catch (e) {
+    nativeHostError = e.message || "";
     nativePort = null;
   } finally {
     nativePortConnecting = false;
@@ -49,18 +57,33 @@ function ensureNativeHost() {
 }
 
 async function helperHealth() {
+  if (helperHealthPending) return helperHealthPending;
+  helperHealthPending = waitForHelper().finally(() => { helperHealthPending = null; });
+  return helperHealthPending;
+}
+
+async function waitForHelper() {
   ensureNativeHost();
-  const response = await fetchWithTimeout(
-    `${HELPER_BASE}/health`,
-    { cache: "no-store" },
-    15000,
-    "補助アプリが応答しません。Start-Reviewer.cmd を起動し直してください。"
-  );
-  if (!response.ok) throw new Error("補助アプリに接続できません。");
-  const health = await response.json();
   const expectedVersion = chrome.runtime.getManifest().version;
-  if (health.version !== expectedVersion) {
-    throw new Error(`補助アプリが古い版（v${health.version || "不明"}）です。最新版のStart-Reviewer.cmdを起動してください。`);
+  const deadline = Date.now() + 45000;
+  let health;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetchWithTimeout(`${HELPER_BASE}/health`, { cache: "no-store" }, 2000, "表示の準備を待っています。");
+      if (response.ok) {
+        health = await response.json();
+        if (health.ok && health.service === "Classroom Office Reviewer" && health.version === expectedVersion) break;
+      }
+    } catch {}
+    if (nativeHostError && !health) {
+      throw new Error("自動起動の設定を確認できません。初回だけ Setup-Reviewer.cmd を実行してから、もう一度表示してください。");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  if (!health?.ok || health.service !== "Classroom Office Reviewer" || health.version !== expectedVersion) {
+    throw new Error(health?.version && health.version !== expectedVersion
+      ? "補助アプリの更新が必要です。最新版の Setup-Reviewer.cmd を一度実行してください。"
+      : "表示の準備に時間がかかっています。もう一度お試しください。初回は Setup-Reviewer.cmd で設定してください。");
   }
   const stored = await chrome.storage.local.get(HELPER_SESSION_KEY);
   if (health.sessionId && stored[HELPER_SESSION_KEY] !== health.sessionId) {
@@ -111,9 +134,10 @@ async function findCurrentDocument(tabId) {
   const downloadable = descriptors.filter((item) => item.downloadUrl || item.fileId);
   const selected = downloadable.find((item) => ["document", "presentation"].includes(item.googleType))
     || downloadable.find((item) => /\.(?:docx?|pptx?)$/i.test(item.fileName || ""))
+    || downloadable.find((item) => /\.pdf$/i.test(item.fileName || ""))
     || downloadable[0]
     || null;
-  if (selected && isGoogleNative(selected)) {
+  if (selected) {
     const friendly = descriptors.find((item) => item.fileId === selected.fileId
       && item.fileName
       && !/^Google(?:ドキュメント|スライド)$/i.test(item.fileName));
@@ -1071,6 +1095,7 @@ async function startConversion(tabId, submissionKey, expectedName = "", expected
 
 if (globalThis.__CWR_BACKGROUND_TEST_HOOKS__) {
   Object.assign(globalThis.__CWR_BACKGROUND_TEST_HOOKS__, {
+    helperHealth,
     buildGooglePdfExportUrl,
     findCurrentDocument,
     isGoogleNative,
@@ -1117,7 +1142,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({
         ok: false,
         error: error instanceof TypeError
-          ? "補助アプリが起動していません。Start-Reviewer.cmd をダブルクリックしてください。"
+          ? "補助アプリに接続できません。もう一度お試しください。初回は Setup-Reviewer.cmd で設定してください。"
           : error.message
       });
     }

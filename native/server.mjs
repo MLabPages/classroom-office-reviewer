@@ -57,7 +57,6 @@ await fsp.mkdir(cacheDir, { recursive: true });
 await fsp.mkdir(temporaryDir, { recursive: true });
 await fsp.mkdir(logsDir, { recursive: true });
 await fsp.mkdir(path.dirname(queuePath), { recursive: true });
-await fsp.writeFile(pidFile, String(process.pid), "utf8");
 await loadPdfIndex();
 await pruneTemporaryFiles();
 
@@ -665,8 +664,8 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url || "/", `http://${host}:${port}`);
   if (req.method === "GET" && url.pathname === "/health") {
-    const summary = await cacheSummary();
-    sendJson(res, 200, { ok: true, service: "Classroom Office Reviewer", version: appVersion, sessionId: serviceSessionId, cachePath: cacheDir, cacheBytes: summary.totalBytes, cacheFiles: summary.files, cacheWarningBytes });
+    // 生存確認で全PDFを走査しない。使用量の集計は /cache-summary で行う。
+    sendJson(res, 200, { ok: true, service: "Classroom Office Reviewer", version: appVersion, sessionId: serviceSessionId, cachePath: cacheDir, cacheWarningBytes });
     return;
   }
   if (req.method === "GET" && url.pathname.startsWith("/file/")) {
@@ -843,10 +842,12 @@ const server = http.createServer(async (req, res) => {
   sendJson(res, 404, { ok: false, error: "要求された機能が見つかりません。" });
 });
 
-server.listen(port, host, () => log(`listening on http://${host}:${port}`));
-server.on("error", async (error) => {
+server.listen(port, host, async () => {
+  await fsp.writeFile(pidFile, String(process.pid), "utf8");
+  log(`listening on http://${host}:${port}`);
+});
+server.on("error", (error) => {
   log(`server error: ${error.message}`);
-  await fsp.rm(pidFile, { force: true }).catch(() => undefined);
   process.exitCode = 1;
 });
 

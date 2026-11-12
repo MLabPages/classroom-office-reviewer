@@ -23,6 +23,8 @@ class MockElement {
     return this.attributes[name] || null;
   }
 
+  hasAttribute(name) { return Object.hasOwn(this.attributes, name); }
+
   getBoundingClientRect() {
     return this.rect;
   }
@@ -30,6 +32,7 @@ class MockElement {
   matches(selector) {
     return selector.split(",").some((part) => {
       const value = part.trim();
+      if (/^\[[^\]]+\]\[/.test(value)) return value.match(/\[[^\]]+\]/g).every((attribute) => this.matches(attribute));
       if (value === "a[href]") return Boolean(this.href);
       if (value === "iframe[src]") return Boolean(this.src);
       if (/^(?:a|iframe|button|div|span|p)$/.test(value)) return value === (this.src ? "iframe" : this.href ? "a" : "div");
@@ -71,10 +74,11 @@ class MockElement {
   }
 }
 
-function runDetection({ nodes = [], frames = [], href, runtimeId = "test-extension-id", storageBroken = false, visibilityState = "visible", hidden = false, hasFocus = true } = {}) {
+function runDetection({ nodes = [], frames = [], href, pathname, runtimeId = "test-extension-id", storageBroken = false, visibilityState = "visible", hidden = false, hasFocus = true } = {}) {
   const hooks = {};
   const location = {
     hostname: "classroom.google.com",
+    ...(pathname ? {pathname} : {}),
     href: href || "https://classroom.google.com/u/5/g/tg/course/work#u=student&t=f"
   };
   const fileRegion = new MockElement({
@@ -85,12 +89,15 @@ function runDetection({ nodes = [], frames = [], href, runtimeId = "test-extensi
   fileRegion.parentElement = body;
   const window = {};
   window.top = window;
+  const windowListeners = new Map();
+  window.addEventListener = (name, listener) => windowListeners.set(name, listener);
+  window.removeEventListener = (name) => windowListeners.delete(name);
   const document = {
     visibilityState,
     hidden,
     body,
     hasFocus: () => hasFocus,
-    querySelector: () => null,
+    querySelector: (selector) => body.querySelector(selector),
     querySelectorAll(selector) {
       if (selector === "iframe[src]") return frames;
       if (selector === "a[href], iframe[src]") return frames;
@@ -124,11 +131,13 @@ function runDetection({ nodes = [], frames = [], href, runtimeId = "test-extensi
       ? { display: "none", visibility: "hidden" }
       : { display: "block", visibility: "visible" }),
     globalThis: null,
+    setTimeout, clearTimeout,
     location,
     window
   });
   context.globalThis = context;
   vm.runInContext(content, context);
+  hooks.windowListeners = windowListeners;
   return hooks;
 }
 
@@ -1279,4 +1288,55 @@ assert.match(content, /cwrZipFileNameStyle/);
 assert.match(content, /名簿CSV（学籍番号。氏名列は任意）/);
 assert.match(content, /氏名列は任意です。入力内容は保存しません。/);
 
-console.log("Content detection handles Word duplicates, native Google documents, PDF submissions, multiple attachments, progress wording, and bulk ZIP collection.");
+// 2026年の採点画面：パス中の学生IDと、提出状態のないcombobox。
+const modernStudent = "MTIzNDU2Nzg5MDEy";
+const modernUrl = `https://classroom.google.com/u/7/c/course/a/work/submissions/by-status/and-sort-first-name/student/${modernStudent}/m/LTEyMzQ1`;
+const modernHooks = runDetection({
+  href: modernUrl,
+  pathname: new URL(modernUrl).pathname,
+  nodes: [nextStudentButton, new MockElement({
+    text: "26_0001 学生A",
+    attributes: { role: "combobox", "aria-label": "生徒を選択する" }
+  })]
+});
+assert.equal(modernHooks.getStudentIdFromUrl(), modernStudent);
+assert.equal(modernHooks.getStudentLabel(), "26_0001 学生A");
+assert.equal(modernHooks.getStudentKey(), `u:${modernStudent}`);
+assert.equal(modernHooks.sameSubmissionStudent(`u:${modernStudent}|pdf-id`), true);
+assert.equal(modernHooks.sameSubmissionStudent("u:OTHER|pdf-id"), false);
+assert.equal(modernHooks.zipDecodeStudentId(modernHooks.getStudentIdFromUrl()), "123456789012");
+assert.equal(modernHooks.submissionCatalogContext(), "/u/*/c/course/a/work/submissions");
+assert.equal(runDetection({href:modernUrl.replace(modernStudent,"OTHER"),pathname:new URL(modernUrl.replace(modernStudent,"OTHER")).pathname}).submissionCatalogContext(), modernHooks.submissionCatalogContext());
+
+const modernFrame = new MockElement({src:`https://docs.google.com/file/d/${googleFileId}/grading`});
+const modernOption = new MockElement({text:"提出物.pdf", attributes:{role:"option", "data-attachment-id":"-12345", "aria-selected":"true"}});
+const modernOther = new MockElement({text:"提出物.pdf", attributes:{role:"option", "data-attachment-id":"-67890", "aria-selected":"false"}});
+const modernList = new MockElement({attributes:{role:"listbox", "aria-label":"添付ファイル"}, children:[modernOption,modernOther]});
+const modernAttachmentHooks = runDetection({nodes:[modernList,nextStudentButton],frames:[modernFrame]});
+assert.equal(modernAttachmentHooks.findSubmissionFileMenuItems().length, 2);
+assert.equal(modernAttachmentHooks.findSubmissionAttachments().length, 2, "同名の別添付を落とさない");
+assert.equal(modernAttachmentHooks.findSubmissionAttachments()[1].expectedFileId, "", "未選択のClassroom内番号をDrive IDとして扱わない");
+assert.equal(modernAttachmentHooks.selectedSubmissionAttachment().expectedFileId, googleFileId);
+assert.equal(modernAttachmentHooks.selectedSubmissionAttachment().attachmentKey, "-12345");
+assert.equal(modernAttachmentHooks.findSupportedFileInfo().kind, "pdf");
+
+// 空のsrcdocによってビューアーのURLが無視されても、一度だけ読み直す。
+const viewerHooks = runDetection();
+const frameListeners = new Map();
+const frameAttributes = new Map([["srcdoc",""]]);
+const viewerFrame = {
+  contentWindow:{},
+  addEventListener:(name,listener)=>frameListeners.set(name,listener),
+  getAttribute:(name)=>frameAttributes.has(name)?frameAttributes.get(name):null,
+  removeAttribute:(name)=>frameAttributes.delete(name)
+};
+viewerHooks.prepareViewerFrame(viewerFrame,{});
+frameListeners.get("load")();
+assert.equal(frameAttributes.has("srcdoc"),false);
+frameAttributes.set("srcdoc","");
+frameListeners.get("load")();
+assert.equal(frameAttributes.has("srcdoc"),true,"再読み込みを繰り返すループにしない");
+viewerHooks.windowListeners.get("message")({source:viewerFrame.contentWindow,data:{type:"cwr-viewer-ready"}});
+assert.equal(viewerHooks.windowListeners.has("message"),false);
+
+console.log("Content detection handles legacy and modern Classroom URLs, student selectors, attachment listboxes, and bulk ZIP collection.");

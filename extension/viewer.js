@@ -58,7 +58,7 @@ function showError(error) {
   const message = document.createElement("div");
   message.id = "message";
   message.dataset.kind = "error";
-  message.textContent = `${error.message} Start-Reviewer.cmd を起動し直してください。`;
+  message.textContent = `${error.message} もう一度「PDFで表示」を押してください。初回設定が未完了の場合は Setup-Reviewer.cmd を一度実行してください。`;
   pagesElement.replaceChildren(message);
   window.parent.postMessage({ type: "cwr-viewer-error" }, "*");
 }

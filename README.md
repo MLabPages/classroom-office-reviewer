@@ -31,11 +31,12 @@ Word／PowerPointはPC上のMicrosoft OfficeでPDFに変換し、Googleドキュ
 
 1. [最新版の配布ページ](https://github.com/MLabPages/classroom-office-reviewer/releases/latest)から `Classroom-Office-Reviewer-Windows.zip` をダウンロードします。
 2. ZIPを右クリックして「すべて展開」します。ZIPの中から直接起動しないでください。
-3. 展開先の `Start-Reviewer.cmd` または Chrome連動で自動起動するための `Install-NativeHost.cmd` をダブルクリックします。
-4. `Open-Chrome-Setup.cmd` をダブルクリックします。
-5. 開いたChrome画面で右上の「デベロッパー モード」をオンにします。
-6. 「パッケージ化されていない拡張機能を読み込む」を押し、`extension` フォルダを選びます。
-7. 開いているClassroomを再読み込みします。
+3. 展開先の `Setup-Reviewer.cmd` を一度だけダブルクリックし、自動起動を登録します。
+4. セットアップで開いたChrome画面で右上の「デベロッパー モード」をオンにします。
+5. 「パッケージ化されていない拡張機能を読み込む」を押し、`extension` フォルダを選びます。
+6. 開いているClassroomを再読み込みします。
+
+次回からはClassroomの「PDFで表示」を押すだけで、補助アプリが裏で自動起動します。毎回 `Start-Reviewer.cmd` を開く必要はありません。起動中は「表示を準備しています…」と表示し、自動で接続を待ち直します。既に導入済みの方も、最新版のフォルダで `Setup-Reviewer.cmd` を一度実行し、Chromeの拡張機能とClassroomを再読み込みしてください。登録後はフォルダを移動しないでください。移動した場合は移動先で再登録します。
 
 Windowsの警告が出た場合は、ファイル名と配布元がこのリポジトリであることを確認してから実行してください。
 
@@ -150,8 +151,8 @@ flowchart LR
 ## 困ったとき
 
 - 左下のボタンが出ない: 拡張機能を再読み込みし、Classroomも再読み込みします。
-- 「補助アプリが起動していません」: `Start-Reviewer.cmd` を起動します。
-- 「補助アプリに接続できません」: 最新版へ更新後、`Start-Reviewer.cmd` を起動してClassroomを再読み込みします。
+- 自動起動の設定を求められる: 最新版の `Setup-Reviewer.cmd` を一度実行します。従来の `Install-NativeHost.cmd` でも登録できます。
+- 「補助アプリに接続できません」: 初回設定後、Chromeの拡張機能とClassroomを再読み込みします。手動確認用の `Start-Reviewer.cmd` も引き続き使えます。
 - レイアウトが変わる: 文書で使われたフォントがPCに入っているか確認します。
 - パスワード付き／破損ファイルは変換できません。
 - 一括準備が止まって見える: パネルの「準備タブを開く」を押します。準備専用タブを前面にすると、止まっていたところから自動で再開します。
@@ -161,7 +162,7 @@ flowchart LR
 
 ## 開発者向け
 
-ソースから使う場合はNode.js 20以降を用意し、`Start-Reviewer.cmd` を起動します。配布ZIPはタグ `v*` のpushでGitHub Actionsから自動生成されます。
+ソースから使う場合はNode.js 20以降を用意し、`Setup-Reviewer.cmd` で自動起動を登録します。配布ZIPはタグ `v*` のpushでGitHub Actionsから自動生成されます。
 
 - Chrome拡張: `extension/`
 - ローカル補助アプリ: `native/server.mjs`
